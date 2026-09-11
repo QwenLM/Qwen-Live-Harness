@@ -1,0 +1,10 @@
+node_modules
+dist
+release
+coverage
+package-lock.json
+packages/live-host/package-lock.json
+*.tsbuildinfo
+LICENSE
+packages/live-host/resources
+.qwen

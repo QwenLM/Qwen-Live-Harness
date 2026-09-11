@@ -1,0 +1,45 @@
+{
+  "name": "qwen-live-harness",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": "github:QwenLM/Qwen-Live-Harness",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "packages/qwen-live"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @qwen-code/qwen-live",
+    "typecheck": "npm run typecheck --workspace @qwen-code/qwen-live && tsc --project integration-tests/tsconfig.json --noEmit",
+    "start": "node packages/qwen-live/dist/index.js",
+    "init": "node packages/qwen-live/dist/index.js init",
+    "test": "npm run test:daemon && npm run test:scripts && npm run test:integration",
+    "test:daemon": "npm run test --workspace @qwen-code/qwen-live",
+    "test:host": "npm run test --prefix packages/live-host",
+    "test:scripts": "vitest run --config scripts/tests/vitest.config.ts",
+    "test:integration": "vitest run --config integration-tests/vitest.config.ts",
+    "test:backends": "vitest run --config integration-tests/vitest.backends.config.ts",
+    "build:host": "npm run build --prefix packages/live-host",
+    "typecheck:host": "npm run typecheck --prefix packages/live-host",
+    "check:boundaries": "node scripts/check-repository-boundaries.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "lint": "eslint packages/qwen-live/src integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
+    "format:check": "prettier --check .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/node": "^22.13.10",
+    "@types/ws": "^8.5.0",
+    "eslint": "^9.24.0",
+    "eslint-config-prettier": "^10.1.2",
+    "globals": "^16.0.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.30.1",
+    "vitest": "^3.1.1"
+  }
+}
