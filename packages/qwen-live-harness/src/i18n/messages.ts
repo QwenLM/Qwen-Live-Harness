@@ -407,8 +407,8 @@ export const LIVE_MESSAGES = {
     'zh-CN': '正在打开 Qwen Live Harness Host。',
   },
   'startup.connecting': {
-    en: 'Starting Qwen Live Harness…',
-    'zh-CN': '正在启动 Qwen Live Harness…',
+    en: 'Starting Qwen Live Harness… Initial setup of coding agents may take a few minutes.',
+    'zh-CN': '正在启动 Qwen Live Harness… 编程代理的首次准备可能需要几分钟。',
   },
   'startup.retry': {
     en: 'Retry startup',

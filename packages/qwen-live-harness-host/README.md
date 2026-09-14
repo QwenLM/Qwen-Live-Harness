@@ -105,7 +105,7 @@ GitHub draft。draft 不发布 npm；稳定版先完成 Host 和公共 OSS 分�
 bucket 名称表示现有基础设施归属，不是产品名，也不要求 qwen-code checkout。
 GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
 `qwen-live-harness-host-latest` feed。旧 prefix、tag 和产物不是 fallback。当前源码版本
-0.4.0 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
+0.4.1 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
 不代表旧名称产物可替代。
 
 管理员需要为新仓库配置以下发布凭据；仓库迁移不会复制或写入这些凭据：

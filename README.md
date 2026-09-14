@@ -91,6 +91,9 @@ Desktop startup registration is stored with discovery in
 launch environment's PATH, not API keys. Bootstrap logs are saved under
 `~/.qwen-live-harness/run/logs/`, retaining five files of at most 1 MiB each.
 Startup failures show an error instead of repeatedly restarting the daemon.
+Cold coding-agent installation can take several minutes; desktop startup allows
+both backend initialization phases to finish, with an eleven-minute outer limit.
+Quit still cancels an in-progress startup.
 Use **Retry startup** in the menu bar to retry explicitly, or quit and reopen
 the Host. If the CLI was stopped while opening Host, merely activating that
 window does not recreate the stopped daemon.
