@@ -108,7 +108,7 @@ GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
 0.4.1 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
 不代表旧名称产物可替代。
 
-管理员需要为新仓库配置以下发布凭据；仓库迁移不会复制或写入这些凭据：
+管理员需要为新仓库配置以下发布凭据和信任关系；仓库迁移不会复制或写入这些配置：
 
 - Developer ID：`MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`，或
   `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`；`APPLE_KEYCHAIN_PASSWORD` 可选。
@@ -118,9 +118,14 @@ GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
 - OSS：`ALIYUN_OSS_ACCESS_KEY_ID`、`ALIYUN_OSS_ACCESS_KEY_SECRET`；创建
   `production-release` environment 并配置保护规则。可选变量为 `ALIYUN_OSS_ENDPOINT`、
   `ALIYUN_OSS_BUCKET`、`ALIYUN_OSS_PUBLIC_BASE_URL`、`OSSUTIL_URL`、`OSSUTIL_SHA256`。
-- npm：`production-release` environment 中的 `NPM_TOKEN`，需要拥有
-  `qwen-live-harness` 的发布权限。公开源码发布启用 provenance；private 源码发布
-  使用 token，不生成公开源码 provenance。
+- npm：在 `qwen-live-harness` 包的 Settings 中配置 GitHub Actions
+  [Trusted Publisher](https://docs.npmjs.com/trusted-publishers)：Organization or user
+  填 `QwenLM`，Repository 填 `Qwen-Live-Harness`，Workflow filename 填
+  `qwen-live-harness-host-release.yml`（不含目录），Environment name 填
+  `production-release`，允许直接 `npm publish`。发布 job 使用 GitHub 托管 runner
+  和 `id-token: write` 获取短期 OIDC 凭据，不读取 `NPM_TOKEN`。Node.js 至少需要
+  22.14.0，npm 至少需要 11.5.1。公开源码发布启用 provenance；private 仓库同样
+  支持 OIDC，但不生成公开源码 provenance。
 
 新的 bundle ID 为 `com.alibaba.qwen-live-harness.host`，产品名为
 `Qwen Live Harness Host`，安装路径为 `/Applications/Qwen Live Harness Host.app`。
