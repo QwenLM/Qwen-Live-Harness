@@ -4,14 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { getWorkflowJob, getWorkflowStep } from './workflow-helpers.js';
 
 const workflow = readFileSync(
-  '.github/workflows/live-host-release.yml',
+  '.github/workflows/qwen-live-harness-host-release.yml',
   'utf8',
 );
 const daemon = JSON.parse(
-  readFileSync('packages/qwen-live/package.json', 'utf8'),
+  readFileSync('packages/qwen-live-harness/package.json', 'utf8'),
 );
 const host = JSON.parse(
-  readFileSync('packages/live-host/package.json', 'utf8'),
+  readFileSync('packages/qwen-live-harness-host/package.json', 'utf8'),
 );
 
 function resolveVersion({ version = daemon.version, branch = 'main' } = {}) {
@@ -39,6 +39,17 @@ function resolveVersion({ version = daemon.version, branch = 'main' } = {}) {
 }
 
 describe('standalone release ownership', () => {
+  it('uses the unscoped product package and executable without legacy aliases', () => {
+    expect(daemon.name).toBe('qwen-live-harness');
+    expect(Object.keys(daemon.bin)).toEqual(['qwen-live-harness']);
+    expect(host.name).toBe('qwen-live-harness-host');
+    expect(host.private).toBe(true);
+    const workspace = JSON.parse(readFileSync('package.json', 'utf8'));
+    expect(workspace.name).toBe('qwen-live-harness-workspace');
+    expect(workspace.private).toBe(true);
+    expect(workspace.workspaces).toEqual(['packages/qwen-live-harness']);
+  });
+
   it('publishes only the committed, paired package versions from main', () => {
     expect(host.version).toBe(daemon.version);
     expect(resolveVersion().status).toBe(0);
@@ -74,9 +85,9 @@ describe('standalone release ownership', () => {
   it('builds only this repository and preserves independent distribution ownership', () => {
     for (const file of [
       'ci.yml',
-      'live-host.yml',
-      'live-host-release.yml',
-      'sync-live-host-to-oss.yml',
+      'qwen-live-harness-host.yml',
+      'qwen-live-harness-host-release.yml',
+      'sync-qwen-live-harness-host-to-oss.yml',
     ]) {
       const source = readFileSync(`.github/workflows/${file}`, 'utf8');
       expect(source).not.toMatch(
@@ -88,5 +99,34 @@ describe('standalone release ownership', () => {
     expect(workflow).toContain(
       "github.repository == 'QwenLM/Qwen-Live-Harness'",
     );
+  });
+
+  it('verifies the renamed application and protocol identity before publishing', () => {
+    const builder = readFileSync(
+      'packages/qwen-live-harness-host/electron-builder.yml',
+      'utf8',
+    );
+    const installer = readFileSync(
+      'packages/qwen-live-harness/src/host/qwen-live-harness-host-installer.ts',
+      'utf8',
+    );
+    const signing = getWorkflowStep(
+      getWorkflowJob(workflow, 'build'),
+      'Verify signing and notarization',
+    );
+    const ci = readFileSync(
+      '.github/workflows/qwen-live-harness-host.yml',
+      'utf8',
+    );
+    for (const source of [builder, installer, signing, ci]) {
+      expect(source).toContain('com.alibaba.qwen-live-harness.host');
+      expect(source).toContain('Qwen Live Harness Host');
+    }
+    for (const source of [builder, signing, ci]) {
+      expect(source).toContain('QwenLiveHarnessProtocolVersion');
+    }
+    expect(signing).toContain('TeamIdentifier=NF4574S59H');
+    expect(installer).toContain("'NF4574S59H'");
+    expect(builder).toContain("'Qwen-Live-Harness-Host-${arch}.${ext}'");
   });
 });

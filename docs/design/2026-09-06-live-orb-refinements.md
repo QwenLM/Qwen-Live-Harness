@@ -49,7 +49,7 @@ not the selected source or transmitted frames.
 
 ## Ownership and scope
 
-Changes are confined to live-host renderer, native window policy, a one-shot
+Changes are confined to qwen-live-harness-host renderer, native window policy, a one-shot
 startup helper, shared Host-local UI types/geometry, tests and READMEs. No wire
 protocol or model/Memory/Proactive behavior changes. Configuration, media and
 model traffic used by tests are synthetic; startup auto-call will not be tested

@@ -1,4 +1,4 @@
-name: 'Qwen Live CI'
+name: 'Qwen Live Harness CI'
 
 on:
   pull_request:

@@ -2,18 +2,22 @@
 
 基线：qwen-code `f649d65d1f49b049c7dac3365617d6d02f0a4cfe`。所有结果必须记录实际执行的命令、环境与通过/失败，不将 fake provider 的证据写成真实音视频验收。
 
+这是 2026-09-11 的历史迁仓验收记录，不是 2026-09-14 统一命名后的复验报告。
+文档中的包路径和 CLI 拼写已更新为当前名称，历史通过结论不代表新 npm 身份、下载 feed、
+macOS bundle ID 或授权已经发布/验证；统一命名的无兼容迁移说明见 [migration.md](../migration.md)。
+
 ## 基线检查
 
 - 全局 `qwen --version`、`qwen --help`：确认外部后端入口，不修改登录态或调用模型。
 - 新仓库最初为空，无法构建/测试。源 daemon 的 SDK 依赖为 file:../sdk-typescript，vitest alias 直读 SDK 源码；Host parity 测试还读取 CLI 的 Live types，图标路径也指向 Electron sibling。这些是独立安装必须消除的失败点。
-- 当前公开 Host manifest 为 protocol v7，源码为 v9；不能用旧公开 Host 的“已安装”状态证明此次配套发行可用。
+- 当时公开 Host manifest 为 protocol v7，源码为 v9；不能用旧公开 Host 的“已安装”状态证明此次配套发行可用。
 
 ## 新仓库
 
 1. 独立依赖：在新仓库 npm ci。检查运行时安装树无 Qwen CLI / core / SDK 包，无仓库外 file 依赖与符号链接。SDK 仅在开发期从 npm 安装，HTTP adaptor 单独打包，不把其附带的 CLI 带入发布包。
 2. 构建与类型：npm run build、npm run typecheck；分别执行 daemon 单元测试及 Host build/typecheck/test。
 3. 协议契约：Host 与 standalone daemon 的双向消息、音频帧、v9 epoch/outputId/结束回执一致；不再加载 qwen-code 类型或旧协议副本。
-4. 打包：npm pack daemon，在 mktemp 创建的目录安装 tarball，运行 qwen-live --help 并导入公开入口；确认无测试、工作区源码、私有数据或 file: SDK 依赖。
+4. 打包：npm pack daemon，在 mktemp 创建的目录安装 tarball，运行 qwen-live-harness --help 并导入公开入口；确认无测试、工作区源码、私有数据或 file: SDK 依赖。
 5. 完整进程测试：fake DashScope + fake Host + ACP 子进程，验证直答、handoff、结果回流、语音授权、追加指令、打断、清理及 discovery 所有权。所有服务仅监听 loopback，配置/数据隔离。
 6. 外部后端兼容：通过显式 TEST_CLI_PATH 使用实际 Qwen CLI，保留已有 M1/M2/M4 集成用例；不要求新仓库内存在 CLI/core 源码。Qoder 真账户测试另列，不擅自调用用户账户。
 7. 原生打包：构建本机测试 app，校验 appId、协议、资源和原生模块；签名、公证及实际系统授权列为发行验证，不用开发启动替代。

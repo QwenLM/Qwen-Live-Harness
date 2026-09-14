@@ -1,4 +1,4 @@
-# Qwen Live extension on the merged M5 baseline
+# Qwen Live Harness extension on the merged M5 baseline
 
 ## Scope
 
@@ -10,8 +10,9 @@ PR are explicitly outside this preparation step.
 The initial checkout was PR #10769 at `f7b0b88b2f`. M5 subsequently merged as
 `829385a14e`. The migration targets the fetched main snapshot `078b924989`.
 The original local work is retained in the backup branch
-`backup/qwen-live-enhancements-20260908` at `ea4e78064e`; only that local delta
-is transplanted onto `feat/qwen-live-enhancements`, not the old PR history.
+`backup/qwen-live-harness-enhancements-20260908` at `ea4e78064e`; only that local delta
+is transplanted onto the historical `feat/qwen-live-enhancements` branch, not the
+old PR history. This is an upstream Git reference, not a current package or command.
 
 ## Conflict decisions and invariants
 
@@ -44,7 +45,7 @@ unrelated package versions/metadata must not be downgraded during migration.
 
 ## Validation plan
 
-Run builds and heavy test groups serially. Verify qwen-live and Host typechecks,
+Run builds and heavy test groups serially. Verify qwen-live-harness and Host typechecks,
 the repository build/bundle, focused CLI compatibility tests, complete Live and
 Host tests, inert realtime/ACP integration tests, lockfile/format/lint checks,
 and an independent source/transport replay. Reuse prior before/after UI evidence

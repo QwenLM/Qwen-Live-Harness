@@ -12,7 +12,7 @@ assert(
   npmCli && existsSync(npmCli),
   'Run this check with npm run check:package',
 );
-const temporary = mkdtempSync(join(tmpdir(), 'qwen-live-package-'));
+const temporary = mkdtempSync(join(tmpdir(), 'qwen-live-harness-package-'));
 const require = createRequire(import.meta.url);
 const run = (args, cwd = temporary) =>
   execFileSync(process.execPath, [npmCli, ...args], {
@@ -25,7 +25,7 @@ try {
   const [packed] = JSON.parse(
     run(
       ['pack', '--json', '--pack-destination', temporary],
-      join(root, 'packages/qwen-live'),
+      join(root, 'packages/qwen-live-harness'),
     ),
   );
   assert(
@@ -50,8 +50,12 @@ try {
     '--omit=dev',
     join(temporary, packed.filename),
   ]);
-  const installed = join(temporary, 'node_modules/@qwen-code/qwen-live');
+  const installed = join(temporary, 'node_modules/qwen-live-harness');
   const pkg = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, 'qwen-live-harness');
+  assert.deepEqual(pkg.bin, { 'qwen-live-harness': 'dist/index.js' });
+  assert(existsSync(join(temporary, 'node_modules/.bin/qwen-live-harness')));
+  assert(!existsSync(join(temporary, 'node_modules/.bin/qwen-live')));
   assert.equal(
     pkg.repository.url,
     'git+https://github.com/QwenLM/Qwen-Live-Harness.git',
@@ -77,20 +81,20 @@ try {
   );
   const cliEnv = {
     ...process.env,
-    QWEN_LIVE_DATA_DIR: join(temporary, 'data'),
+    QWEN_LIVE_HARNESS_DATA_DIR: join(temporary, 'data'),
   };
   const output = execFileSync(
     process.execPath,
     [join(installed, 'dist/index.js'), '--help'],
     { encoding: 'utf8', env: cliEnv },
   );
-  assert.match(output, /qwen-live/u);
+  assert.match(output, /Usage: qwen-live-harness \[init\] \[--debug\]/u);
   execFileSync(
     process.execPath,
     [
       '--input-type=module',
       '-e',
-      'const m = await import("@qwen-code/qwen-live"); if (!m.LiveDaemon || !m.loadConfig) throw new Error("missing public API");',
+      'const m = await import("qwen-live-harness"); if (!m.LiveDaemon || !m.loadConfig) throw new Error("missing public API");',
     ],
     { cwd: temporary, env: cliEnv },
   );

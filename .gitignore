@@ -10,4 +10,4 @@ coverage/
 .env.*
 !.env.example
 *.log
-packages/qwen-live/LICENSE
+packages/qwen-live-harness/LICENSE

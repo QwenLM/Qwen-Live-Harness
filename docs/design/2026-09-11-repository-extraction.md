@@ -1,6 +1,9 @@
-# Qwen Live 独立拆分与仓库迁移
+# Qwen Live Harness 独立拆分与仓库迁移
 
 日期：2026-09-11。源代码基线：QwenLM/qwen-code `f649d65d1f49b049c7dac3365617d6d02f0a4cfe`（已合并 #11369）。目标仓库：QwenLM/Qwen-Live-Harness。
+
+2026-09-14 命名更新：本文件的当前路径和启动说明已按统一命名调整。最初迁仓保留身份的
+决定已被用户确认的“全部使用新名称、不保留兼容”取代；下文的数据/权限及发布边界以此为准。
 
 ## 目标与现状
 
@@ -20,9 +23,9 @@
 
 ## 仓库与运行时边界
 
-新仓库保留两个目录：`packages/qwen-live` 为 Node daemon；`packages/live-host` 为 Electron macOS Host，包含原生 Appshot 源码和资源。Host 单独安装依赖，daemon 的普通安装不下载 Electron。纯文本 i18n 和协议契约在新仓库内部配套验证。
+新仓库保留两个目录：`packages/qwen-live-harness` 为 Node daemon；`packages/qwen-live-harness-host` 为 Electron macOS Host，包含原生 Appshot 源码和资源。Host 单独安装依赖，daemon 的普通安装不下载 Electron。纯文本 i18n 和协议契约在新仓库内部配套验证。
 
-默认运行链路为 Host → 本机 WebSocket → qwen-live → ACP 子进程。Qwen Code 是可选后端；选择 REST/SSE adaptor 才连接 qwen serve。仅使用 Qoder 等 ACP 后端时，不安装或启动 Qwen Code。官方 SDK 只作为构建期依赖，其 HTTP client 编入可选 adaptor，并随包保留许可证；因为 SDK 的 npm 包还附带整个 Qwen CLI，不能把它列为运行时依赖。构建及 tarball 检查确认最终安装不含 SDK 包、Qwen CLI、core 或 acp-bridge；移除 file:../sdk-typescript 依赖和测试源码 alias。
+默认运行链路为 Host → 本机 WebSocket → qwen-live-harness → ACP 子进程。Qwen Code 是可选后端；选择 REST/SSE adaptor 才连接 qwen serve。仅使用 Qoder 等 ACP 后端时，不安装或启动 Qwen Code。官方 SDK 只作为构建期依赖，其 HTTP client 编入可选 adaptor，并随包保留许可证；因为 SDK 的 npm 包还附带整个 Qwen CLI，不能把它列为运行时依赖。构建及 tarball 检查确认最终安装不含 SDK 包、Qwen CLI、core 或 acp-bridge；移除 file:../sdk-typescript 依赖和测试源码 alias。
 
 qwen-code 侧删除 Live 专用 daemon/route、ACP 注入、语音转录回写、Web Shell 设置和 Host 安装发布入口。普通 Conversations runtime、会话活动状态、会话恢复日志、工具审批、steering、附件与 peer 通信属于后端通用能力，必须保留。不得把名字包含 live 的普通运行状态代码一概删除。
 
@@ -30,19 +33,33 @@ qwen-code 侧删除 Live 专用 daemon/route、ACP 注入、语音转录回写�
 
 ## 用户数据与权限
 
-保留 `qwen-live` 命令、`~/.qwen-live` 配置/记忆/日志及 `~/.qwen/live/daemon.json` discovery 路径、环境变量和旧配置读取。迁仓不执行配置重写、数据复制或删除，不把用户 API key、controller token、会话日志或屏幕数据写入仓库。
+命令和无 scope 的 npm 包统一为 `qwen-live-harness`；配置/记忆/日志默认使用
+`~/.qwen-live-harness`，discovery 使用 `~/.qwen-live-harness/run/daemon.json`，产品环境变量
+仅使用 `QWEN_LIVE_HARNESS_*`。不读取旧名称对应的配置、discovery、环境变量或 Host 偏好，
+不保留命令别名和下载旧源 fallback。首次启动需要重新 init；不执行旧数据复制、重写或删除，
+也不卸载旧应用。用户应先退出旧 daemon 和 Host。不把 API key、controller token、会话日志
+或屏幕数据写入仓库。
 
-保留 Host bundle ID `com.alibaba.qwen-code.live-host`、签名 Team ID `NF4574S59H`、产品名与安装路径 `/Applications/Qwen Live Host.app`，以维持已有 macOS 授权身份。发布仍要求真实 Developer ID 签名、公证与验证；未签名本机构建不能冒充已验证的授权迁移。
+Host 使用新的 bundle ID `com.alibaba.qwen-live-harness.host`、产品名 `Qwen Live Harness Host`
+和安装路径 `/Applications/Qwen Live Harness Host.app`。签名 Team ID `NF4574S59H` 是实际发布者
+身份，保持不变；新 bundle ID 不承诺继承原 macOS 授权。用户需要重新确认所需权限。发布仍要求
+真实 Developer ID 签名、公证与验证；未签名本机构建不能冒充已验证的授权迁移。
 
 Proactive 和 Memory 的既有模型调用与成本行为保持不变。迁移自动化测试使用本地 fake provider 和临时数据目录，不使用用户账户、摄像头、麦克风或已有后台会话。
 
 ## 构建、版本与发布
 
-当前 npm daemon 已到 0.2.0，当前公开 Host manifest 也是 0.2.0 / protocol v7，源码中的 0.1.0 / 0.0.5 不是下次可发布版本。首次独立仓库候选版本统一为 0.3.0，配套 protocol v9。
+最初迁仓时，原 npm daemon 和公开 Host manifest 为 0.2.0 / protocol v7，首次独立仓库
+候选版本统一为 0.3.0，配套 protocol v9。命名更新不自行改变源码版本或宣称新包已发布。
 
 新仓库拥有 npm lock、严格 TypeScript、daemon 与 Host 测试、协议一致性检查、npm 包内容检查，以及独立 CI 和手动发布 workflow。Host 的构建、资源、manifest 及发布脚本只依赖新仓库。集成测试通过外部可执行文件接入真实 Qwen CLI，默认协议测试使用自带 fake ACP，不通过 checkout qwen-code 来掩盖依赖。
 
-目标仓库目前 private，尚无可见的发布 secrets/variables，旧公开下载源仍是 protocol v7。公开自动安装需要目标 release 可访问或配置可访问的分发源，以及签名、公证、npm 发布权限配置。代码迁移不会自动改变仓库可见性、复制证书/凭据、发布 npm 包或发布不匹配的 Host。新代码中发布归属指向新仓库，首次正式发行前以本地源码构建验证。
+命名更新后的 tag/feed 为 `qwen-live-harness-host-vX.Y.Z` / `qwen-live-harness-host-latest`，
+产物使用 `Qwen-Live-Harness-Host-*`，OSS 前缀为 `qwen-live-harness-host`；实际基础设施
+bucket `qwen-code-assets` 保持不变。旧名称发行版不是 fallback，版本或协议相同也不能替代。
+公开自动安装需要新名称的目标 release 或公开 OSS 产物，以及签名、公证、无 scope 的 npm
+包发布权限配置。源码修改不会改变仓库可见性、复制证书/凭据、发布 npm 包或修改远端 feed；
+新身份的正式产物发布前以本地源码构建验证。
 
 ## 执行与交付
 

@@ -12,22 +12,22 @@ import {
 } from './fake-dashscope-server.js';
 import {
   FakeHost,
-  spawnQwenLive,
+  spawnQwenLiveHarness,
   startLiveCall,
   waitForLiveResponseAfter,
-  type SpawnedQwenLive,
+  type SpawnedQwenLiveHarness,
 } from './qwen-live-harness.js';
 
 describe('standalone daemon with an external ACP process', () => {
   let temporary: string;
   let dataDir: string;
   let fakeDash: FakeDashScopeServer;
-  let live: SpawnedQwenLive;
+  let live: SpawnedQwenLiveHarness;
   let host: FakeHost;
   let conn: FakeDashScopeConnection;
 
   beforeAll(async () => {
-    temporary = await mkdtemp(join(tmpdir(), 'qwen-live-standalone-'));
+    temporary = await mkdtemp(join(tmpdir(), 'qwen-live-harness-standalone-'));
     dataDir = join(temporary, 'data');
     const discoveryDir = join(temporary, 'discovery');
     await mkdir(dataDir);
@@ -35,9 +35,9 @@ describe('standalone daemon with an external ACP process', () => {
     fakeDash = await startFakeDashScopeServer();
     const agent = resolve(
       dirname(fileURLToPath(import.meta.url)),
-      '../packages/qwen-live/test-fixtures/fake-acp-agent.mjs',
+      '../packages/qwen-live-harness/test-fixtures/fake-acp-agent.mjs',
     );
-    live = await spawnQwenLive({
+    live = await spawnQwenLiveHarness({
       dataDir,
       discoveryDir,
       cwd: temporary,

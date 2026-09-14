@@ -1,6 +1,6 @@
 # Qwen Live Harness
 
-Qwen Live is a standalone voice application for working with coding agents.
+Qwen Live Harness is a standalone voice application for working with coding agents.
 Talk to the realtime model, delegate tasks to Qwen Code, Qoder, or other ACP
 agents, and receive results and permission requests while the work runs.
 The macOS Host provides the global shortcut, audio, screen and camera input.
@@ -28,15 +28,16 @@ The daemon installs independently of Electron and Qwen Code. To build the
 matching Host, install Xcode command-line tools and Node headers, then run:
 
 ```sh
-npm ci --prefix packages/live-host
+npm ci --prefix packages/qwen-live-harness-host
 npm run build:host
 npm run typecheck:host
 npm run test:host
 ```
 
-The first extracted version is **0.3.0**, using Host protocol **v9**. Until its
-signed release is published, an older released Host is not a compatible
-replacement for the matching build. See the [Host guide](packages/live-host/README.md)
+The current source version is **0.3.0**, using Host protocol **v9**. The renamed
+package and signed Host must be published under their new identities before
+registry installation or automatic Host download can be used. Do not substitute
+an older differently named Host. See the [Host guide](packages/qwen-live-harness-host/README.md)
 for packaging and the release workflow for signing requirements.
 
 ## Configure and run
@@ -46,18 +47,38 @@ npm run init
 npm start
 ```
 
+In a second terminal, start the matching source-built Host:
+
+```sh
+npm --prefix packages/qwen-live-harness-host start
+```
+
+For foreground diagnostics, use `npm start -- --debug` for the daemon and
+`npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug` for the
+Host. These source commands do not require a globally installed CLI. The
+published npm package and CLI are both named `qwen-live-harness` (unscoped);
+an installed CLI uses `qwen-live-harness init` and `qwen-live-harness`.
+Until a new-name signed Host is available, decline the wizard's Host download
+offer and use the source-built Host above.
+
 The wizard detects supported agents already installed on your machine. Select
 an ACP backend such as `qwen --acp` or `qodercli --acp`; `qwen serve` is needed
 only when you explicitly use the optional REST/SSE backend. A DashScope API key
 is required for realtime voice. Proactive and Memory can make additional model
 requests; configure them in the wizard or settings.
 
-Configuration, conversations and Memory remain in `~/.qwen-live`. The default
-Host discovery file remains `~/.qwen/live/daemon.json`. Existing custom data
-directories and the Host application identity are preserved. A repository
-migration does not require copying your API key or deleting existing data.
+This is a **breaking identity change with no compatibility aliases**. Run
+`npm run init` for a fresh configuration under `~/.qwen-live-harness`; configuration,
+conversations and Memory from the previous installation are not read or copied.
+Host discovery is now `~/.qwen-live-harness/run/daemon.json`, and environment
+overrides use only `QWEN_LIVE_HARNESS_*`. The Host is now **Qwen Live Harness Host**
+with bundle ID `com.alibaba.qwen-live-harness.host` and install path
+`/Applications/Qwen Live Harness Host.app`; macOS permissions may need to be granted
+again. Quit the previous daemon and Host before starting these builds. The rename
+does not delete previous apps, data, permissions or shell configuration, and does
+not modify any remote release feed. See [migration details](docs/migration.md).
 
-See the [daemon guide](packages/qwen-live/README.md) for backend configuration,
+See the [daemon guide](packages/qwen-live-harness/README.md) for backend configuration,
 visual input, Memory, diagnostics and capability limits.
 
 This migration does not implement M3 peer integration. Backend completion and

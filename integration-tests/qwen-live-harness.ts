@@ -5,23 +5,23 @@
  */
 
 /**
- * e2e harness for the standalone `qwen-live` daemon (packages/qwen-live).
+ * e2e harness for the standalone `qwen-live-harness` daemon (packages/qwen-live-harness).
  *
  * Everything here talks to real subprocesses over real network/file
  * boundaries — no package sources are imported:
- *   - `spawnQwenLive` boots `node packages/qwen-live/dist/index.js` with a
+ *   - `spawnQwenLiveHarness` boots `node packages/qwen-live-harness/dist/index.js` with a
  *     hermetic env (tmp data/discovery dirs, fake DashScope endpoint, a real
  *     `qwen serve` URL) and parses the single machine-readable stdout line,
  *     following the `_daemon-harness.spawnDaemon` pattern.
  *   - `FakeHost` speaks Host protocol v9 against the daemon's `/live/host`
- *     WebSocket: discovery-file lookup, Bearer token + `x-qwen-live-nonce`
+ *     WebSocket: discovery-file lookup, Bearer token + `x-qwen-live-harness-nonce`
  *     headers, `host.hello`, auto `host.pong`, auto success replies to
  *     `host.capture_visual`, `host.action`, binary input
  *     audio frames (8-byte BigUInt64BE epoch prefix + PCM16), and records
  *     `host.welcome`/`host.state` plus raw output PCM frames.
  *   - `bootLiveStack` assembles the full fixture: tmp workspace + HOME, a
  *     fake OpenAI model endpoint, a real `qwen serve`, a fake DashScope
- *     realtime server, the qwen-live daemon, and a connected FakeHost.
+ *     realtime server, the qwen-live-harness daemon, and a connected FakeHost.
  *   - `waitForLiveLogEvents` reads the daemon's append-only session JSONL
  *     (`<dataDir>/sessions/*.jsonl`) as a synchronization point for
  *     daemon-internal happenings (e.g. "the backend turn_complete event
@@ -62,16 +62,17 @@ import {
 type JsonObject = Record<string, unknown>;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const QWEN_LIVE_BIN =
+const QWEN_LIVE_HARNESS_BIN =
   process.env['TEST_LIVE_PATH'] ??
-  path.resolve(__dirname, '../packages/qwen-live/dist/index.js');
+  path.resolve(__dirname, '../packages/qwen-live-harness/dist/index.js');
 
-export const QWEN_LIVE_REALTIME_MODEL = 'fake-omni-realtime';
-export const QWEN_LIVE_API_KEY = 'sk-test';
-const SERVE_TOKEN = 'qwen-live-e2e-token';
-const LIVE_LISTENING_RE = /qwen-live listening on http:\/\/127\.0\.0\.1:(\d+)/;
+export const QWEN_LIVE_HARNESS_REALTIME_MODEL = 'fake-omni-realtime';
+export const QWEN_LIVE_HARNESS_API_KEY = 'sk-test';
+const SERVE_TOKEN = 'qwen-live-harness-e2e-token';
+const LIVE_LISTENING_RE =
+  /qwen-live-harness listening on http:\/\/127\.0\.0\.1:(\d+)/;
 const DISPOSE_GRACE_MS = 10_000;
-const LIVE_HOST_BUNDLE_ID = 'com.alibaba.qwen-code.live-host';
+const LIVE_HOST_BUNDLE_ID = 'com.alibaba.qwen-live-harness.host';
 const LIVE_HOST_PROTOCOL_VERSION = 9;
 const LIVE_INPUT_AUDIO_EPOCH_BYTES = 8;
 const LIVE_OUTPUT_AUDIO_HEADER_BYTES = 16;
@@ -121,7 +122,7 @@ export interface LiveDiscoveryRecordShape {
 }
 
 export function liveDiscoveryPath(discoveryDir: string): string {
-  return path.join(discoveryDir, 'live', 'daemon.json');
+  return path.join(discoveryDir, 'run', 'daemon.json');
 }
 
 export async function readLiveDiscovery(
@@ -131,20 +132,20 @@ export async function readLiveDiscovery(
   return JSON.parse(raw) as LiveDiscoveryRecordShape;
 }
 
-// -- qwen-live daemon process --------------------------------------------------
+// -- qwen-live-harness daemon process --------------------------------------------------
 
-export interface SpawnQwenLiveOptions {
+export interface SpawnQwenLiveHarnessOptions {
   serveUrl?: string;
   serveToken?: string;
   /**
-   * Backends JSON (QWEN_LIVE_BACKENDS). When set it replaces the implicit
+   * Backends JSON (QWEN_LIVE_HARNESS_BACKENDS). When set it replaces the implicit
    * qwen-code serve backend entirely.
    */
   backends?: string;
   realtimeEndpoint: string;
   dataDir: string;
   discoveryDir: string;
-  /** Default workspace cwd for handoff-created sessions (QWEN_LIVE_CWD). */
+  /** Default workspace cwd for handoff-created sessions (QWEN_LIVE_HARNESS_CWD). */
   cwd: string;
   apiKey?: string;
   model?: string;
@@ -152,7 +153,7 @@ export interface SpawnQwenLiveOptions {
   env?: Record<string, string>;
 }
 
-export interface SpawnedQwenLive {
+export interface SpawnedQwenLiveHarness {
   proc: ChildProcess;
   port: number;
   url: string;
@@ -162,9 +163,9 @@ export interface SpawnedQwenLive {
   dispose: () => Promise<void>;
 }
 
-export async function spawnQwenLive(
-  opts: SpawnQwenLiveOptions,
-): Promise<SpawnedQwenLive> {
+export async function spawnQwenLiveHarness(
+  opts: SpawnQwenLiveHarnessOptions,
+): Promise<SpawnedQwenLiveHarness> {
   const bootTimeoutMs = opts.bootTimeoutMs ?? 15_000;
   writeFileSync(
     path.join(opts.dataDir, 'config.json'),
@@ -174,25 +175,26 @@ export async function spawnQwenLive(
     }),
     { mode: 0o600 },
   );
-  const proc = spawn(process.execPath, [QWEN_LIVE_BIN], {
+  const proc = spawn(process.execPath, [QWEN_LIVE_HARNESS_BIN], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       PATH: process.env['PATH'],
       SystemRoot: process.env['SystemRoot'],
       HOME: opts.dataDir,
-      DASHSCOPE_API_KEY: opts.apiKey ?? QWEN_LIVE_API_KEY,
-      QWEN_LIVE_REALTIME_ENDPOINT: opts.realtimeEndpoint,
-      QWEN_LIVE_REALTIME_MODEL: opts.model ?? QWEN_LIVE_REALTIME_MODEL,
+      DASHSCOPE_API_KEY: opts.apiKey ?? QWEN_LIVE_HARNESS_API_KEY,
+      QWEN_LIVE_HARNESS_REALTIME_ENDPOINT: opts.realtimeEndpoint,
+      QWEN_LIVE_HARNESS_REALTIME_MODEL:
+        opts.model ?? QWEN_LIVE_HARNESS_REALTIME_MODEL,
       ...(opts.backends
-        ? { QWEN_LIVE_BACKENDS: opts.backends }
+        ? { QWEN_LIVE_HARNESS_BACKENDS: opts.backends }
         : {
-            QWEN_LIVE_SERVE_URL: opts.serveUrl,
+            QWEN_LIVE_HARNESS_SERVE_URL: opts.serveUrl,
             QWEN_SERVER_TOKEN: opts.serveToken,
           }),
-      QWEN_LIVE_DATA_DIR: opts.dataDir,
-      QWEN_LIVE_DISCOVERY_DIR: opts.discoveryDir,
-      QWEN_LIVE_CWD: opts.cwd,
-      QWEN_LIVE_PORT: '0',
+      QWEN_LIVE_HARNESS_DATA_DIR: opts.dataDir,
+      QWEN_LIVE_HARNESS_DISCOVERY_DIR: opts.discoveryDir,
+      QWEN_LIVE_HARNESS_CWD: opts.cwd,
+      QWEN_LIVE_HARNESS_PORT: '0',
       ...opts.env,
     },
   });
@@ -223,7 +225,7 @@ export async function spawnQwenLive(
     const bootTimer = setTimeout(() => {
       fail(
         new Error(
-          `qwen-live boot timeout after ${bootTimeoutMs}ms:\n` +
+          `qwen-live-harness boot timeout after ${bootTimeoutMs}ms:\n` +
             `stdout=${stdoutBuf.value}\nstderr=${stderrBuf.value}`,
         ),
         true,
@@ -239,7 +241,7 @@ export async function spawnQwenLive(
     const onExit = (code: number | null) => {
       fail(
         new Error(
-          `qwen-live exited with ${code} before listening:\n` +
+          `qwen-live-harness exited with ${code} before listening:\n` +
             `stdout=${stdoutBuf.value}\nstderr=${stderrBuf.value}`,
         ),
       );
@@ -320,7 +322,7 @@ export class FakeHost {
       {
         headers: {
           Authorization: `Bearer ${record.token ?? ''}`,
-          'x-qwen-live-nonce': record.instanceNonce,
+          'x-qwen-live-harness-nonce': record.instanceNonce,
         },
       },
     );
@@ -676,7 +678,7 @@ export interface LiveStack {
   fakeOpenAI: FakeOpenAIServer;
   serve: SpawnedDaemon;
   fakeDash: FakeDashScopeServer;
-  live: SpawnedQwenLive;
+  live: SpawnedQwenLiveHarness;
   host: FakeHost;
   /**
    * Session created directly by the test harness to pre-spawn the serve
@@ -691,11 +693,17 @@ export async function bootLiveStack(
   options: BootLiveStackOptions,
 ): Promise<LiveStack> {
   const workspaceDir = realpathSync(
-    mkdtempSync(path.join(tmpdir(), 'qwen-live-e2e-ws-')),
+    mkdtempSync(path.join(tmpdir(), 'qwen-live-harness-e2e-ws-')),
   );
-  const homeDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-e2e-home-'));
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-e2e-data-'));
-  const discoveryDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-e2e-disc-'));
+  const homeDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-e2e-home-'),
+  );
+  const dataDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-e2e-data-'),
+  );
+  const discoveryDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-e2e-disc-'),
+  );
   const qwenHome = path.join(homeDir, '.qwen');
   mkdirSync(qwenHome, { recursive: true });
   // Keep the model round-trips predictable: no follow-up suggestion turns.
@@ -716,9 +724,9 @@ export async function bootLiveStack(
     // Debug escape hatch: keep the temp dirs (session JSONL logs live in
     // `<dataDir>/sessions`) for post-mortem inspection. KEEP_OUTPUT=true is
     // the repo-wide convention (test-helper.ts, globalSetup.ts) and is set
-    // by the e2e lanes; QWEN_LIVE_E2E_KEEP keeps only these fixtures.
+    // by the e2e lanes; QWEN_LIVE_HARNESS_E2E_KEEP keeps only these fixtures.
     if (
-      !process.env['QWEN_LIVE_E2E_KEEP'] &&
+      !process.env['QWEN_LIVE_HARNESS_E2E_KEEP'] &&
       process.env['KEEP_OUTPUT'] !== 'true'
     ) {
       for (const dir of [workspaceDir, homeDir, dataDir, discoveryDir]) {
@@ -757,7 +765,7 @@ export async function bootLiveStack(
     });
     disposers.push(() => serve.dispose());
 
-    // Pre-spawn the serve daemon's ACP child so the qwen-live orchestrator's
+    // Pre-spawn the serve daemon's ACP child so the qwen-live-harness orchestrator's
     // first createSession (inside the 5s tool-dispatch budget) is fast.
     const prewarm = await serve.client.createOrAttachSession({
       workspaceCwd: workspaceDir,
@@ -767,7 +775,7 @@ export async function bootLiveStack(
     const fakeDash = await startFakeDashScopeServer();
     disposers.push(() => fakeDash.close());
 
-    const live = await spawnQwenLive({
+    const live = await spawnQwenLiveHarness({
       serveUrl: serve.base,
       serveToken: SERVE_TOKEN,
       realtimeEndpoint: fakeDash.url,
@@ -846,7 +854,7 @@ export interface AcpLiveStack {
   /** Present in "multi" mode only (harness-prewarmed serve session id). */
   prewarmSessionId?: string;
   fakeDash: FakeDashScopeServer;
-  live: SpawnedQwenLive;
+  live: SpawnedQwenLiveHarness;
   host: FakeHost;
   dispose(): Promise<void>;
 }
@@ -855,11 +863,17 @@ export async function bootAcpLiveStack(
   options: BootAcpStackOptions,
 ): Promise<AcpLiveStack> {
   const workspaceDir = realpathSync(
-    mkdtempSync(path.join(tmpdir(), 'qwen-live-acp-ws-')),
+    mkdtempSync(path.join(tmpdir(), 'qwen-live-harness-acp-ws-')),
   );
-  const homeDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-acp-home-'));
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-acp-data-'));
-  const discoveryDir = mkdtempSync(path.join(tmpdir(), 'qwen-live-acp-disc-'));
+  const homeDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-acp-home-'),
+  );
+  const dataDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-acp-data-'),
+  );
+  const discoveryDir = mkdtempSync(
+    path.join(tmpdir(), 'qwen-live-harness-acp-disc-'),
+  );
   const qwenHome = path.join(homeDir, '.qwen');
   mkdirSync(qwenHome, { recursive: true });
   writeFileSync(
@@ -877,7 +891,7 @@ export async function bootAcpLiveStack(
       }
     }
     if (
-      !process.env['QWEN_LIVE_E2E_KEEP'] &&
+      !process.env['QWEN_LIVE_HARNESS_E2E_KEEP'] &&
       process.env['KEEP_OUTPUT'] !== 'true'
     ) {
       for (const dir of [workspaceDir, homeDir, dataDir, discoveryDir]) {
@@ -960,7 +974,7 @@ export async function bootAcpLiveStack(
           ]
         : [acpBackend];
 
-    const live = await spawnQwenLive({
+    const live = await spawnQwenLiveHarness({
       realtimeEndpoint: fakeDash.url,
       dataDir,
       discoveryDir,

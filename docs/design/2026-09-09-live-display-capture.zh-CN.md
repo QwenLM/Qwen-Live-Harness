@@ -16,7 +16,7 @@ monitor 和 Screen Live Feed 能看到所选显示器的完整画面。保留前
   `visualInput.screenDisplayId`；默认值 `primary` 表示系统主显示器。明确指定的
   UUID 不可用时，停止采集并报错，不能改选其他显示器或回退到窗口。
 - 原生截图覆盖选定显示器的完整画面，包括桌面、菜单栏、Dock 和其他应用，但排除
-  Live Host 自己的窗口。macOS 14+ 使用 ScreenCaptureKit 的显示器过滤器；macOS
+  Qwen Live Harness Host 自己的窗口。macOS 14+ 使用 ScreenCaptureKit 的显示器过滤器；macOS
   12/13 使用选定显示器的边界和组合窗口列表。显示器采集不读取 AX。将原生输出限制
   在现有的实时 1920x1080 范围内，同时保留完整画面和宽高比；继续遵守当前的 FPS、
   JPEG 和传输限制。

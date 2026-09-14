@@ -35,7 +35,7 @@ Public agent text, plan and tool updates become a new observation-only activity
 event, never a model instruction. Thought chunks, arbitrary raw objects,
 credentials and binary/image payloads are not forwarded.
 
-Shared pure contract is the public `@qwen-code/qwen-live/subagents` module,
+Shared pure contract is the public `qwen-live-harness/subagents` module,
 compiled into Host through the same style of aliases as i18n. It defines a
 strict bounded snapshot validator. Optional `subagentsV1` welcome/state field
 and an independent `host.subagents` update avoid marking legacy daemons as

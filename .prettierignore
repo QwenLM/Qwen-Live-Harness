@@ -3,8 +3,8 @@ dist
 release
 coverage
 package-lock.json
-packages/live-host/package-lock.json
+packages/qwen-live-harness-host/package-lock.json
 *.tsbuildinfo
 LICENSE
-packages/live-host/resources
+packages/qwen-live-harness-host/resources
 .qwen

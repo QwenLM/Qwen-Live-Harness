@@ -6,10 +6,10 @@
 
 /**
  * Scriptable stand-in for the DashScope qwen-omni realtime endpoint that
- * `packages/qwen-live` connects to (`ws://…/api-ws/v1/realtime?model=…`).
+ * `packages/qwen-live-harness` connects to (`ws://…/api-ws/v1/realtime?model=…`).
  *
  * Wire behavior mirrors what the daemon's realtime client
- * (`packages/qwen-live/src/realtime/realtime-session.ts`) expects:
+ * (`packages/qwen-live-harness/src/realtime/realtime-session.ts`) expects:
  *   - on connect the server sends `session.created`; the client answers with
  *     `session.update`, which we acknowledge with `session.updated` so the
  *     client resolves its open() promise;
@@ -22,7 +22,7 @@
  *     `beginResponse`/`finishResponse`). Message shapes follow the provider
  *     events the client's `case` branches parse (see the responseCreated /
  *     functionCall / responseDone helpers in
- *     packages/qwen-live/src/realtime/realtime-session.test.ts).
+ *     packages/qwen-live-harness/src/realtime/realtime-session.test.ts).
  *
  * `autoAckResponses` (default on) answers client-initiated `response.create`
  * requests (speakToUser flow) with an immediate `response.created` +
@@ -95,7 +95,7 @@ export interface WaitForMessageOptions {
 }
 
 export interface FakeDashScopeServer {
-  /** HTTP origin, e.g. `http://127.0.0.1:PORT` — feed to the daemon as QWEN_LIVE_REALTIME_ENDPOINT. */
+  /** HTTP origin, e.g. `http://127.0.0.1:PORT` — feed to the daemon as QWEN_LIVE_HARNESS_REALTIME_ENDPOINT. */
   url: string;
   port: number;
   connections: FakeDashScopeConnection[];

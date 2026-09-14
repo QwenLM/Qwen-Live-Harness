@@ -7,7 +7,7 @@ Add Simplified Chinese and English to the last Settings group. The first init
 question selects these languages with left/right keys, before the setup banner
 or overwrite prompt; all subsequent fixed wizard text follows that choice.
 Use one editable, browser-safe typed catalogue with English/Chinese pairs for
-Live Host, setup, native menus, status/error messages and CLI user guidance.
+Qwen Live Harness Host, setup, native menus, status/error messages and CLI user guidance.
 User data, device/model names, transcripts, provider error detail and model
 prompts remain unchanged. Existing configs default to English; a fresh init
 offers Chinese first. The setting is independent of Memory and may change
@@ -15,7 +15,7 @@ during a call without reconnecting media or changing model settings.
 
 ## Ownership and integration
 
-The canonical dictionary is `packages/qwen-live/src/i18n/messages.ts`, exported
+The canonical dictionary is `packages/qwen-live-harness/src/i18n/messages.ts`, exported
 through the package's public `./i18n` entry. Host build/type aliases compile this
 same pure module into its standalone bundle, without Electron dependencies in
 root workspaces or a new runtime package installation. No duplicate dictionary

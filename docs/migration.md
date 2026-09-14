@@ -7,9 +7,10 @@ Source commit: `f649d65d1f49b049c7dac3365617d6d02f0a4cfe`, the merge of
 The imported snapshot retains source copyright notices and Apache-2.0 licensing.
 Original commit history remains available in the source repository at this SHA.
 
-The migration imports `packages/qwen-live`, `packages/live-host`, the eight
-M1/M2/M4 Live integration suites and their local provider fixtures, and the
-Host release/OSS tooling. Repository-specific build dependencies and tests are
+The imported daemon and Host now live in `packages/qwen-live-harness` and
+`packages/qwen-live-harness-host`. The migration also imports the eight M1/M2/M4
+integration suites and their local provider fixtures, and the Host release/OSS
+tooling. Repository-specific build dependencies and tests are
 adapted here. Qwen Code's core, CLI, serve and SDK implementations are not
 copied into the application. The REST/SSE adaptor bundles the official SDK's
 HTTP client at build time. The SDK is a development dependency because its npm
@@ -41,26 +42,53 @@ retired injected speech tool are no longer available; public peer discovery,
 control and progress reporting belong to M3. Live's own Proactive monitors are
 unaffected.
 
-## Stable user state
+## Breaking naming change (2026-09-14)
 
-No automatic migration or deletion of configuration, credentials or sessions
-is performed. Keep the same data-directory overrides when switching binaries.
-The command remains `qwen-live`, the daemon package remains
-`@qwen-code/qwen-live`, and default data remains `~/.qwen-live`.
+The original extraction preserved application identities. The subsequent naming
+change intentionally replaces them without aliases, legacy discovery, environment
+fallbacks or automatic data migration. Current identities are:
 
-Host keeps its existing application name, bundle ID, signing team and discovery
-path so repository ownership does not introduce a different macOS application
-identity. Stop the old Live daemon before starting its replacement; discovery
-ownership checks intentionally reject two active owners.
+| Surface                                       | Current identity                                                      |
+| --------------------------------------------- | --------------------------------------------------------------------- |
+| Product                                       | `Qwen Live Harness`                                                   |
+| Public npm package and executable             | `qwen-live-harness` (unscoped)                                        |
+| Private workspace / Host packages             | `qwen-live-harness-workspace` / `qwen-live-harness-host`              |
+| Default config, conversations and Memory root | `~/.qwen-live-harness`                                                |
+| Default Host discovery                        | `~/.qwen-live-harness/run/daemon.json`                                |
+| Product environment overrides                 | `QWEN_LIVE_HARNESS_*`                                                 |
+| Host app / install path                       | `Qwen Live Harness Host` / `/Applications/Qwen Live Harness Host.app` |
+| macOS bundle ID                               | `com.alibaba.qwen-live-harness.host`                                  |
+| Host debug switch                             | `--live-harness-debug`                                                |
+| Release tags                                  | `qwen-live-harness-host-vX.Y.Z` / `qwen-live-harness-host-latest`     |
+| Release assets / OSS prefix                   | `Qwen-Live-Harness-Host-*` / `qwen-live-harness-host`                 |
 
-## First release
+Quit the previous daemon and Host before using the renamed builds. From the
+repository root, run `npm run init`, then `npm start`; in a second terminal use
+`npm --prefix packages/qwen-live-harness-host start`. Update shell variables and any
+explicit path overrides yourself. The renamed default data directory starts
+fresh: previous credentials, sessions, Memory and Host preferences are not read
+or copied. Previous applications and data are left in place, not uninstalled or
+deleted. Do not point a new data override at private old data unless you explicitly
+intend to use it.
 
-The last npm release and public Host manifest are 0.2.0; the latter uses protocol
-v7. The extracted candidate is 0.3.0 with protocol v9. Build both components
-together until a matching signed Host release is available.
+The new app has a different macOS permission identity; grant required permissions
+again. Developer ID team `NF4574S59H` remains the actual publisher identity, not
+a product name. Hardware permissions and signed installs need separate validation.
+The standard `DASHSCOPE_API_KEY` credential and backend commands such as `qwen
+--acp` / `qwen serve` are provider/backend contracts, not renamed product aliases.
 
-At extraction the new repository is private and has no configured release
-credentials. Its GitHub release URLs are not public downloads. The release
-workflow and public OSS distribution require the publisher setup documented
-with the workflows. Code migration does not publish npm, change repository
-visibility, or transfer signing secrets automatically.
+## Publication boundary
+
+The current source version remains 0.3.0 with protocol v9. Renaming source does
+not publish the unscoped npm package, change registry ownership, or create/move
+GitHub releases and OSS objects. Build both components together until matching
+new-name artifacts are published. Installers use only the new asset names, bundle
+ID, release tags and OSS prefix; previously published artifacts are not a fallback,
+even if their version or protocol matches.
+
+The existing `qwen-code-assets` OSS bucket is publisher infrastructure; the
+product-specific prefix changes independently. When the repository is private,
+its GitHub fallback is available only to users with access. Public installation
+requires the publisher setup documented in the Host guide. No secrets, repository
+visibility settings, old release feeds or installed applications are changed by
+this source update.

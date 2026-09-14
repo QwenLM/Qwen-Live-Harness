@@ -1,5 +1,5 @@
 {
-  "name": "qwen-live-harness",
+  "name": "qwen-live-harness-workspace",
   "version": "0.3.0",
   "private": true,
   "type": "module",
@@ -9,24 +9,24 @@
     "node": ">=22.13"
   },
   "workspaces": [
-    "packages/qwen-live"
+    "packages/qwen-live-harness"
   ],
   "scripts": {
-    "build": "npm run build --workspace @qwen-code/qwen-live",
-    "typecheck": "npm run typecheck --workspace @qwen-code/qwen-live && tsc --project integration-tests/tsconfig.json --noEmit",
-    "start": "node packages/qwen-live/dist/index.js",
-    "init": "node packages/qwen-live/dist/index.js init",
+    "build": "npm run build --workspace qwen-live-harness",
+    "typecheck": "npm run typecheck --workspace qwen-live-harness && tsc --project integration-tests/tsconfig.json --noEmit",
+    "start": "node packages/qwen-live-harness/dist/index.js",
+    "init": "node packages/qwen-live-harness/dist/index.js init",
     "test": "npm run test:daemon && npm run test:scripts && npm run test:integration",
-    "test:daemon": "npm run test --workspace @qwen-code/qwen-live",
-    "test:host": "npm run test --prefix packages/live-host",
+    "test:daemon": "npm run test --workspace qwen-live-harness",
+    "test:host": "npm run test --prefix packages/qwen-live-harness-host",
     "test:scripts": "vitest run --config scripts/tests/vitest.config.ts",
     "test:integration": "vitest run --config integration-tests/vitest.config.ts",
     "test:backends": "vitest run --config integration-tests/vitest.backends.config.ts",
-    "build:host": "npm run build --prefix packages/live-host",
-    "typecheck:host": "npm run typecheck --prefix packages/live-host",
+    "build:host": "npm run build --prefix packages/qwen-live-harness-host",
+    "typecheck:host": "npm run typecheck --prefix packages/qwen-live-harness-host",
     "check:boundaries": "node scripts/check-repository-boundaries.mjs",
     "check:package": "node scripts/check-package.mjs",
-    "lint": "eslint packages/qwen-live/src integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
+    "lint": "eslint packages/qwen-live-harness/src integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },

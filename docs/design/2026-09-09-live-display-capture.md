@@ -18,7 +18,7 @@ Existing uncommitted subagent controls are the baseline and must be preserved.
   `primary` means the system's primary display. Explicit unavailable UUIDs fail
   closed without selecting another display or falling back to a window.
 - The native screenshot covers the whole selected display, including desktop,
-  menu bar, Dock and other apps, excluding Live Host's own windows. Use a
+  menu bar, Dock and other apps, excluding Qwen Live Harness Host's own windows. Use a
   display ScreenCaptureKit filter on macOS 14+ and selected-display bounds with
   a composed window list on macOS 12/13. Display capture does not read AX.
   Bound native output to the existing realtime 1920x1080 envelope, preserving

@@ -213,7 +213,7 @@ missing handoff, task, tool, permission, or interruption behavior.
 
 ### Retained
 
-- the installed Qwen Live Host and its global-shortcut/background ownership;
+- the installed Qwen Live Harness Host and its global-shortcut/background ownership;
 - Bluetooth and other selected input-device capture and audio output;
 - the internal fixed Appshot implementation and its existing native permission
   ownership;

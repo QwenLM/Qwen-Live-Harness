@@ -7,8 +7,18 @@ import ts from 'typescript';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = (path) => JSON.parse(readFileSync(join(root, path), 'utf8'));
 const rootPackage = json('package.json');
-for (const name of ['qwen-live', 'live-host']) {
+assert.equal(rootPackage.name, 'qwen-live-harness-workspace');
+assert.deepEqual(rootPackage.workspaces, ['packages/qwen-live-harness']);
+for (const name of ['qwen-live-harness', 'qwen-live-harness-host']) {
   const pkg = json(`packages/${name}/package.json`);
+  assert.equal(
+    pkg.name,
+    name,
+    `${name}: package identity must match its directory`,
+  );
+  if (name === 'qwen-live-harness') {
+    assert.deepEqual(pkg.bin, { 'qwen-live-harness': 'dist/index.js' });
+  }
   assert.equal(
     pkg.version,
     rootPackage.version,
