@@ -14,6 +14,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { LIVE_HOST_PROTOCOL_VERSION } from './types.js';
+import { PACKAGE_VERSION } from '../version.js';
 import {
   liveMessage,
   liveText,
@@ -88,6 +89,12 @@ interface InstalledLiveHost {
   protocolVersion: number;
 }
 
+export interface LiveHostLaunchOptions {
+  debug?: boolean;
+  discoveryPath?: string;
+  connectOnly?: boolean;
+}
+
 export interface LiveHostInstallerDeps {
   platform?: NodeJS.Platform;
   architecture?: string;
@@ -96,7 +103,7 @@ export interface LiveHostInstallerDeps {
     architecture: LiveHostArchitecture,
     onStatus: (status: LiveHostInstallStatus) => void,
   ) => Promise<InstalledLiveHost>;
-  launch?: () => Promise<void>;
+  launch?: (options?: LiveHostLaunchOptions) => Promise<void>;
 }
 
 export function isExpectedLiveHostSignature(output: string): boolean {
@@ -153,6 +160,12 @@ export function parseLiveHostReleaseManifest(
     value['bundleId'] !== LIVE_HOST_BUNDLE_ID
   ) {
     throw new InstallerError('installer.manifestIncompatible');
+  }
+  if (version !== PACKAGE_VERSION) {
+    throw new InstallerError('installer.versionMismatch', {
+      installed: version,
+      required: PACKAGE_VERSION,
+    });
   }
   return {
     schemaVersion: 1,
@@ -237,7 +250,23 @@ async function inspectApp(appPath: string): Promise<InstalledLiveHost> {
 }
 
 function isCompatibleInstalledHost(host: InstalledLiveHost): boolean {
-  return host.protocolVersion === LIVE_HOST_PROTOCOL_VERSION;
+  return (
+    host.protocolVersion === LIVE_HOST_PROTOCOL_VERSION &&
+    host.version === PACKAGE_VERSION
+  );
+}
+
+function assertCompatibleInstalledHost(host: InstalledLiveHost): void {
+  if (host.version !== PACKAGE_VERSION)
+    throw new InstallerError('installer.versionMismatch', {
+      installed: host.version,
+      required: PACKAGE_VERSION,
+    });
+  if (host.protocolVersion !== LIVE_HOST_PROTOCOL_VERSION)
+    throw new InstallerError('installer.protocol', {
+      installed: host.protocolVersion,
+      required: LIVE_HOST_PROTOCOL_VERSION,
+    });
 }
 
 async function inspectInstalledHost(): Promise<InstalledLiveHost | undefined> {
@@ -445,8 +474,20 @@ async function installLatestHost(
   }
 }
 
-async function launchInstalledHost(): Promise<void> {
-  await run('/usr/bin/open', [LIVE_HOST_APP_PATH]);
+async function launchInstalledHost(
+  options?: LiveHostLaunchOptions,
+): Promise<void> {
+  const hostArgs: string[] = [];
+  if (options?.debug) hostArgs.push('--live-harness-debug');
+  if (options?.connectOnly) hostArgs.push('--qwen-live-harness-connect-only');
+  if (options?.discoveryPath)
+    hostArgs.push(
+      `--qwen-live-harness-discovery-file=${path.resolve(options.discoveryPath)}`,
+    );
+  await run('/usr/bin/open', [
+    LIVE_HOST_APP_PATH,
+    ...(hostArgs.length > 0 ? ['--args', ...hostArgs] : []),
+  ]);
 }
 
 function errorMessage(error: unknown): string {
@@ -479,7 +520,7 @@ export class LiveHostInstaller {
   private readonly installLatest: NonNullable<
     LiveHostInstallerDeps['installLatest']
   >;
-  private readonly launchHost: () => Promise<void>;
+  private readonly launchHost: NonNullable<LiveHostInstallerDeps['launch']>;
 
   constructor(deps: LiveHostInstallerDeps = {}) {
     this.platform = deps.platform ?? process.platform;
@@ -511,16 +552,23 @@ export class LiveHostInstaller {
     return this.getStatus();
   }
 
-  ensureInstalled(force = false): Promise<LiveHostInstallStatus> {
+  ensureInstalled(
+    force = false,
+    options: { launch?: boolean } = {},
+  ): Promise<LiveHostInstallStatus> {
     if (this.operation) return this.operation;
-    const operation = this.runInstall(force).finally(() => {
-      if (this.operation === operation) this.operation = undefined;
-    });
+    const operation = this.runInstall(force, options.launch !== false).finally(
+      () => {
+        if (this.operation === operation) this.operation = undefined;
+      },
+    );
     this.operation = operation;
     return operation;
   }
 
-  async launch(): Promise<LiveHostInstallStatus> {
+  async launch(
+    options?: LiveHostLaunchOptions,
+  ): Promise<LiveHostInstallStatus> {
     if (this.platform !== 'darwin') {
       return this.setError(liveMessage('installer.macOnly'), false);
     }
@@ -529,17 +577,9 @@ export class LiveHostInstaller {
       const installed = await this.inspectInstalled();
       if (!installed)
         return this.setError(liveMessage('installer.notInstalled'), true);
-      if (!isCompatibleInstalledHost(installed)) {
-        return this.setError(
-          liveMessage('installer.protocol', {
-            installed: installed.protocolVersion,
-            required: LIVE_HOST_PROTOCOL_VERSION,
-          }),
-          true,
-        );
-      }
+      assertCompatibleInstalledHost(installed);
       this.status = { state: 'launching', version: installed.version };
-      await this.launchHost();
+      await this.launchHost(options);
       this.status = { state: 'installed', version: installed.version };
     } catch (error) {
       this.setError(errorMessage(error), true);
@@ -547,7 +587,10 @@ export class LiveHostInstaller {
     return this.getStatus();
   }
 
-  private async runInstall(force: boolean): Promise<LiveHostInstallStatus> {
+  private async runInstall(
+    force: boolean,
+    launch: boolean,
+  ): Promise<LiveHostInstallStatus> {
     if (this.platform !== 'darwin') {
       return this.setError(liveMessage('installer.macOnly'), false);
     }
@@ -563,8 +606,11 @@ export class LiveHostInstaller {
         (await this.installLatest(currentArchitecture, (status) => {
           this.status = { ...status };
         }));
-      this.status = { state: 'launching', version: ready.version };
-      await this.launchHost();
+      assertCompatibleInstalledHost(ready);
+      if (launch) {
+        this.status = { state: 'launching', version: ready.version };
+        await this.launchHost();
+      }
       this.status = { state: 'installed', version: ready.version };
     } catch (error) {
       this.setError(errorMessage(error), true);

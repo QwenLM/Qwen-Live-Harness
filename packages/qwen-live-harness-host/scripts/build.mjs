@@ -8,6 +8,10 @@ import { build as viteBuild } from 'vite';
 const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const distDir = join(appDir, 'dist');
 const liveTextAlias = {
+  'qwen-live-harness/startup': join(
+    appDir,
+    '../qwen-live-harness/src/startup.ts',
+  ),
   'qwen-live-harness/subagents': join(
     appDir,
     '../qwen-live-harness/src/subagents/types.ts',

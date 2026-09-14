@@ -175,29 +175,33 @@ export async function spawnQwenLiveHarness(
     }),
     { mode: 0o600 },
   );
-  const proc = spawn(process.execPath, [QWEN_LIVE_HARNESS_BIN], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      PATH: process.env['PATH'],
-      SystemRoot: process.env['SystemRoot'],
-      HOME: opts.dataDir,
-      DASHSCOPE_API_KEY: opts.apiKey ?? QWEN_LIVE_HARNESS_API_KEY,
-      QWEN_LIVE_HARNESS_REALTIME_ENDPOINT: opts.realtimeEndpoint,
-      QWEN_LIVE_HARNESS_REALTIME_MODEL:
-        opts.model ?? QWEN_LIVE_HARNESS_REALTIME_MODEL,
-      ...(opts.backends
-        ? { QWEN_LIVE_HARNESS_BACKENDS: opts.backends }
-        : {
-            QWEN_LIVE_HARNESS_SERVE_URL: opts.serveUrl,
-            QWEN_SERVER_TOKEN: opts.serveToken,
-          }),
-      QWEN_LIVE_HARNESS_DATA_DIR: opts.dataDir,
-      QWEN_LIVE_HARNESS_DISCOVERY_DIR: opts.discoveryDir,
-      QWEN_LIVE_HARNESS_CWD: opts.cwd,
-      QWEN_LIVE_HARNESS_PORT: '0',
-      ...opts.env,
+  const proc = spawn(
+    process.execPath,
+    [QWEN_LIVE_HARNESS_BIN, '--daemon-only'],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        PATH: process.env['PATH'],
+        SystemRoot: process.env['SystemRoot'],
+        HOME: opts.dataDir,
+        DASHSCOPE_API_KEY: opts.apiKey ?? QWEN_LIVE_HARNESS_API_KEY,
+        QWEN_LIVE_HARNESS_REALTIME_ENDPOINT: opts.realtimeEndpoint,
+        QWEN_LIVE_HARNESS_REALTIME_MODEL:
+          opts.model ?? QWEN_LIVE_HARNESS_REALTIME_MODEL,
+        ...(opts.backends
+          ? { QWEN_LIVE_HARNESS_BACKENDS: opts.backends }
+          : {
+              QWEN_LIVE_HARNESS_SERVE_URL: opts.serveUrl,
+              QWEN_SERVER_TOKEN: opts.serveToken,
+            }),
+        QWEN_LIVE_HARNESS_DATA_DIR: opts.dataDir,
+        QWEN_LIVE_HARNESS_DISCOVERY_DIR: opts.discoveryDir,
+        QWEN_LIVE_HARNESS_CWD: opts.cwd,
+        QWEN_LIVE_HARNESS_PORT: '0',
+        ...opts.env,
+      },
     },
-  });
+  );
 
   const stdoutBuf = { value: '' };
   const stderrBuf = { value: '' };

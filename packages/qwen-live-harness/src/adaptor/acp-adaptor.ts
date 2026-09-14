@@ -49,6 +49,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { Client } from '@agentclientprotocol/sdk';
 import { LiveLogger } from '../logger.js';
+import { PACKAGE_VERSION } from '../version.js';
 import {
   clampTail,
   classifyOption,
@@ -665,7 +666,7 @@ export class AcpAdaptor implements BackendAdaptor {
       conn.initialize({
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
-        clientInfo: { name: 'qwen-live-harness', version: '0.3.0' },
+        clientInfo: { name: 'qwen-live-harness', version: PACKAGE_VERSION },
       }),
       this.handshakeDeadline(initializeTimeoutMs),
     ];

@@ -1,6 +1,6 @@
 {
   "name": "qwen-live-harness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Standalone realtime voice harness for Qwen Code, Qoder and other ACP agents.",
   "repository": {
     "type": "git",
@@ -26,6 +26,10 @@
     "./i18n": {
       "types": "./dist/i18n/messages.d.ts",
       "import": "./dist/i18n/messages.js"
+    },
+    "./startup": {
+      "types": "./dist/startup.d.ts",
+      "import": "./dist/startup.js"
     },
     "./subagents": {
       "types": "./dist/subagents/types.d.ts",

@@ -26,7 +26,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function resolveDiscoveryPath(environment = process.env): string {
+export function resolveDiscoveryPath(
+  environment = process.env,
+  argv: readonly string[] = process.argv,
+): string {
+  const prefix = '--qwen-live-harness-discovery-file=';
+  const launchPaths = argv.filter((argument) => argument.startsWith(prefix));
+  if (launchPaths.length) {
+    const path = launchPaths[0]!.slice(prefix.length);
+    if (
+      launchPaths.length !== 1 ||
+      !isAbsolute(path) ||
+      path.includes('\0') ||
+      path.length > 4_096
+    ) {
+      throw new Error('Invalid desktop discovery path');
+    }
+    return resolve(path);
+  }
   const configured = environment.QWEN_LIVE_HARNESS_DISCOVERY_FILE;
   if (!configured)
     return join(homedir(), '.qwen-live-harness', 'run', 'daemon.json');

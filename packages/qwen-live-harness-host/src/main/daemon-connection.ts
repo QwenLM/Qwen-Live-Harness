@@ -263,6 +263,11 @@ export class LiveDaemonConnection {
     this.discovery.start();
   }
 
+  /** Supplied only by the authenticated, version-checked startup probe. */
+  rememberStartupTarget(record: LiveDiscoveryRecord): void {
+    if (!this.quitRequested) this.shutdownTarget = { ...record };
+  }
+
   stop(): void {
     this.discovery.stop();
     this.cancelReconnect();

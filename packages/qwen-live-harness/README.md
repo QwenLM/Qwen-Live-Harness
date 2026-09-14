@@ -60,13 +60,14 @@ The wizard will:
   consolidation model when enabled (default: `qwen3.7-plus`)
 - Set a default working directory for coding sessions
 - On macOS: check if the Qwen Live Harness Host app is installed and offer to install it
+- Register the current Node/CLI runtime so the installed Host can start it
 
-When done, it writes `~/.qwen-live-harness/config.json`. From a source checkout,
-continue with `npm start`. For a globally installed package, the equivalent
-commands are `qwen-live-harness init` and `qwen-live-harness`; both the npm package
-and executable are named `qwen-live-harness`, with no npm scope. This rename does
-not publish the new package or signed Host automatically.
-Until the new-name signed Host is available, skip the wizard's optional Host
+When done, it writes `~/.qwen-live-harness/config.json` and desktop startup
+registration, without starting the Host, daemon or a call. From a source
+checkout, continue with `npm start`. For a globally installed package, the
+equivalent commands are `qwen-live-harness init` and `qwen-live-harness`; both the
+npm package and executable are named `qwen-live-harness`, with no npm scope.
+Before the matching signed Host is published, skip the wizard's optional Host
 download and run the source-built Host described below.
 
 The new identities do not read the previous installation's configuration, Memory,
@@ -75,16 +76,35 @@ and update shell overrides to `QWEN_LIVE_HARNESS_*`. Existing apps and user data
 are left untouched; there is no automatic migration or old-name fallback. See
 [migration details](../../docs/migration.md).
 
-### 3. Start the daemon
+### 3. Start the application
 
 ```bash
 npm start
-# → qwen-live-harness listening on http://127.0.0.1:<port>
+# Or, with the global CLI: qwen-live-harness
 ```
 
-In a second terminal from the repository root, build and run the Host:
+The CLI starts or reuses a daemon and opens the installed macOS Host. After
+setup, opening **Qwen Live Harness Host** from Applications or Launchpad works
+as well: it connects to an existing daemon or launches the registered one.
+Repeated CLI or desktop launches reuse the running application. Existing users
+with a valid config can run the CLI once to refresh desktop startup registration
+without overwriting their configuration.
+
+The Host does not contain Node or the daemon package. A Host downloaded on its
+own asks you to install the CLI and complete `qwen-live-harness init` first.
+If Node or the CLI moves, run the CLI from its new installation to refresh the
+registration. The desktop launcher uses the recorded absolute Node/entry paths
+and PATH, so it does not depend on Finder loading your shell startup files.
+See [Desktop startup](#desktop-startup) for diagnostics and custom directories.
+
+For source Host development, use the internal daemon-only mode in one terminal
+and build/run the Host in a second terminal from the repository root:
 
 ```bash
+# Terminal 1
+npm start -- --daemon-only --debug
+
+# Terminal 2
 npm ci --prefix packages/qwen-live-harness-host
 npm run build:host
 npm --prefix packages/qwen-live-harness-host start
@@ -98,6 +118,33 @@ An existing call or an explicit start/stop/new/quit consumes that startup
 intention; reconnects, renderer reloads and failed starts never loop into a
 new call. Press `Command+E` to start or end a call manually (an explicitly
 configured shortcut still takes precedence).
+
+### Desktop startup
+
+Initialization atomically saves configuration before writing a private runtime
+registration at `~/.qwen-live-harness/run/runtime.json`. Ordinary CLI startup
+refreshes it as well. Registration stores the Node executable, CLI entry point,
+version, working directory, data/discovery directories and PATH. It does not
+copy API keys or arbitrary environment variables. Use config for settings that
+must also work when launching from the desktop.
+
+`QWEN_LIVE_HARNESS_DATA_DIR` selects the config/data directory.
+`QWEN_LIVE_HARNESS_DISCOVERY_DIR` selects the discovery base independently;
+runtime registration and discovery are under its `run/` directory. For a
+separately launched Host using a custom discovery base, set its
+`QWEN_LIVE_HARNESS_DISCOVERY_FILE` to the full `run/daemon.json` path. The default
+discovery base remains `~/.qwen-live-harness` even when the data directory changes.
+
+Host-initiated startup writes bounded diagnostics under the discovery base's
+`run/logs/` directory, keeping the latest five `daemon-startup-*.log` files with
+at most 1 MiB per file. Missing configuration, invalid runtime paths, version
+incompatibility and failed startups are surfaced to the user. An initial launch
+can start a missing daemon once; a subsequent disconnect does not cause an
+automatic restart loop. `End call` ends the interaction while leaving the app
+available. `Quit Host` requests coordinated shutdown of the daemon and Host.
+
+The internal `--daemon-only` CLI option runs just the daemon for debugging and
+tests. Host uses this mode when bootstrapping, preventing recursive Host launches.
 
 The setup panel and orb first appear at the bottom-right. Drag the setup
 header or orb to move them; Host remembers the shared position across restarts

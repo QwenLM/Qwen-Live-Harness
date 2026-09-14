@@ -42,6 +42,7 @@ import { persistScreenDisplayPreference } from './visual-preferences.js';
 import { liveMessage } from './i18n/messages.js';
 import { MonitorDebugStore } from './proactive/monitor-debug-store.js';
 import { escapeAnsiCtrlCodes } from './realtime/sanitize.js';
+import { PACKAGE_VERSION } from './version.js';
 import {
   MAX_SUBAGENTS_REQUEST_BYTES,
   parseSubagentsControlRequest,
@@ -124,16 +125,23 @@ export class LiveDaemon {
   }
 
   async start(): Promise<{ port: number; url: string }> {
+    const assertStarting = () => {
+      if (this.stopping)
+        throw new Error(liveMessage('startup.startup_aborted'));
+    };
+    assertStarting();
     if (this.logger.debugEnabled) {
       const archive = new MonitorDebugStore((event, details) =>
         this.logger.debug(`${event} ${JSON.stringify(details)}`),
       );
       if (await archive.initialize()) this.monitorDebug = archive;
     }
+    assertStarting();
     // Fail fast when the default backend is missing or too old — before we
     // take the Host discovery file from anyone. Secondary backends are
     // best-effort: a failure marks them unavailable and startup continues.
     await this.registry.preflight((message) => this.logger.warn(message));
+    assertStarting();
 
     let memoryBaseUrl = '';
     try {
@@ -269,9 +277,16 @@ export class LiveDaemon {
     });
 
     const port = await this.listen();
+    assertStarting();
     const url = `http://127.0.0.1:${port}`;
 
     await this.publishDiscovery(url);
+    if (this.stopping) {
+      // Shutdown may have removed discovery before publication completed.
+      // Never leave this late record pointing at an exiting bootstrap child.
+      await this.removeDiscovery();
+      assertStarting();
+    }
 
     // The single machine-readable stdout line; harnesses parse the port
     // from it (same pattern as `qwen serve`).
@@ -500,6 +515,26 @@ export class LiveDaemon {
     }
     if (this.stopping) {
       res.writeHead(503).end();
+      return;
+    }
+    if (route === 'GET /live/instance') {
+      if (!this.authorize(req)) {
+        res.writeHead(401).end();
+        return;
+      }
+      if (!this.authorizeInstance(req)) {
+        res.writeHead(409).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          pid: process.pid,
+          instanceNonce: this.instanceNonce,
+          protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+          version: PACKAGE_VERSION,
+        }),
+      );
       return;
     }
     if (route === 'POST /live/subagents') {

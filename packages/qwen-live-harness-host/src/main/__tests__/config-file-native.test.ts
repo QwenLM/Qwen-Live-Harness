@@ -63,6 +63,8 @@ function fixture() {
   };
   const handlers = new Map<string, Handler>();
   const context = {
+    daemonBootstrap: undefined,
+    startupInvocationError: undefined,
     ipcMain: {
       on: (channel: string, callback: Handler) =>
         handlers.set(channel, callback),

@@ -11,6 +11,7 @@ export type LiveCliCommand = 'start' | 'init' | 'help';
 export interface LiveCliArgs {
   command: LiveCliCommand;
   debug: boolean;
+  daemonOnly: boolean;
 }
 
 export const LIVE_CLI_USAGE = liveText('en', 'cli.usage');
@@ -18,9 +19,14 @@ export const LIVE_CLI_USAGE = liveText('en', 'cli.usage');
 export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
   let command: LiveCliCommand = 'start';
   let debug = false;
+  let daemonOnly = false;
   for (const argument of args) {
     if (argument === '--debug' || argument === '-d') {
       debug = true;
+      continue;
+    }
+    if (argument === '--daemon-only') {
+      daemonOnly = true;
       continue;
     }
     if (argument === '--help' || argument === '-h') {
@@ -33,5 +39,9 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
     }
     throw new Error(liveMessage('cli.unknownArgument', { argument }));
   }
-  return { command, debug };
+  if (daemonOnly && command === 'init')
+    throw new Error(
+      liveMessage('cli.unknownArgument', { argument: '--daemon-only init' }),
+    );
+  return { command, debug, daemonOnly };
 }

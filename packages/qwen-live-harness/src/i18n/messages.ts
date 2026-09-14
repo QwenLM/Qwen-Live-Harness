@@ -365,8 +365,9 @@ export const LIVE_MESSAGES = {
   'init.memorySummary': { en: 'Memory: {name}', 'zh-CN': '记忆：{name}' },
   'init.hostSummary': { en: 'Host: {status}', 'zh-CN': 'Host：{status}' },
   'init.run': {
-    en: 'Run `qwen-live-harness` to start the daemon.',
-    'zh-CN': '运行 `qwen-live-harness` 启动服务。',
+    en: 'Setup is complete. Run `qwen-live-harness` or open Qwen Live Harness Host to start. Setup itself does not start a call.',
+    'zh-CN':
+      '初始化已完成。运行 `qwen-live-harness` 或打开 Qwen Live Harness Host 即可启动；初始化本身不会开始通话。',
   },
   'init.disabled': { en: 'disabled', 'zh-CN': '已关闭' },
   'init.hostSkipped': { en: 'skipped', 'zh-CN': '已跳过' },
@@ -393,9 +394,91 @@ export const LIVE_MESSAGES = {
       '已开启 debug。前台诊断日志省略媒体和连接凭据，但视觉 Monitor 归档包含真实屏幕／摄像头画面、音频和提示词／回复文本。归档就绪后会打印目录；分享前请检查敏感内容。',
   },
   'cli.usage': {
-    en: 'Usage: qwen-live-harness [init] [--debug]\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive visual Monitor archives\n  --help, -h   Show this help',
+    en: 'Usage: qwen-live-harness [init] [--debug]\n\nStart or reuse the daemon and open the desktop Host.\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive visual Monitor archives\n  --daemon-only  Run the daemon without opening Host (development)\n  --help, -h   Show this help',
     'zh-CN':
-      '用法：qwen-live-harness [init] [--debug]\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的视觉 Monitor 归档\n  --help, -h   显示帮助',
+      '用法：qwen-live-harness [init] [--debug]\n\n启动或复用服务，并打开桌面 Host。\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的视觉 Monitor 归档\n  --daemon-only  仅运行服务，不打开 Host（开发调试）\n  --help, -h   显示帮助',
+  },
+  'cli.reused': {
+    en: 'Connected to the running Qwen Live Harness daemon.',
+    'zh-CN': '已复用正在运行的 Qwen Live Harness 服务。',
+  },
+  'cli.hostOpened': {
+    en: 'Qwen Live Harness Host is opening.',
+    'zh-CN': '正在打开 Qwen Live Harness Host。',
+  },
+  'startup.connecting': {
+    en: 'Starting Qwen Live Harness…',
+    'zh-CN': '正在启动 Qwen Live Harness…',
+  },
+  'startup.retry': {
+    en: 'Retry startup',
+    'zh-CN': '重试启动',
+  },
+  'startup.runtime_missing': {
+    en: 'Desktop startup has not been configured. Run qwen-live-harness init in a terminal, then reopen this app.',
+    'zh-CN':
+      '尚未配置桌面启动。请在终端运行 qwen-live-harness init，再重新打开应用。',
+  },
+  'startup.runtime_invalid': {
+    en: 'Desktop startup information is invalid. Run qwen-live-harness in a terminal to refresh it.',
+    'zh-CN':
+      '桌面启动信息无效。请在终端运行 qwen-live-harness 以更新启动信息。',
+  },
+  'startup.runtime_unavailable': {
+    en: 'The installed Node.js or CLI could not be found or is incompatible. Reinstall qwen-live-harness and run it once in a terminal.',
+    'zh-CN':
+      '找不到已安装的 Node.js 或 CLI，或版本不兼容。请重新安装 qwen-live-harness，并在终端运行一次。',
+  },
+  'startup.config_missing': {
+    en: 'Configuration is missing. Run qwen-live-harness init in a terminal first.',
+    'zh-CN': '缺少配置，请先在终端运行 qwen-live-harness init。',
+  },
+  'startup.discovery_invalid': {
+    en: 'The local daemon connection record is invalid. Close Qwen Live Harness and run it again in a terminal.',
+    'zh-CN': '本地服务连接记录无效。请关闭 Qwen Live Harness，再从终端启动。',
+  },
+  'startup.daemon_unresponsive': {
+    en: 'The daemon is not responding. Check its terminal or startup log. Use Retry startup in the menu bar, or quit and reopen this app.',
+    'zh-CN':
+      '服务没有响应。请检查其终端或启动日志；可在菜单栏选择“重试启动”，或退出后重新打开应用。',
+  },
+  'startup.daemon_mismatch': {
+    en: 'The running daemon and Host do not match. Quit the running application, then start matching versions.',
+    'zh-CN': '当前服务与 Host 不匹配。请退出正在运行的应用，再启动配套版本。',
+  },
+  'startup.daemon_start_failed': {
+    en: 'The daemon could not start. Check the startup log or run qwen-live-harness in a terminal for details, then reopen this app to retry.',
+    'zh-CN':
+      '服务启动失败。请检查启动日志，或在终端运行 qwen-live-harness 查看原因，再重新打开应用重试。',
+  },
+  'startup.startup_timeout': {
+    en: 'Daemon startup timed out. Check the startup log, then reopen this app to retry.',
+    'zh-CN': '服务启动超时。请检查启动日志，再重新打开应用重试。',
+  },
+  'startup.startup_aborted': {
+    en: 'Startup was cancelled.',
+    'zh-CN': '启动已取消。',
+  },
+  'startup.startup_cleanup_failed': {
+    en: 'The starting daemon could not be stopped. Retry Quit before starting again.',
+    'zh-CN': '未能停止正在启动的服务。请重试退出，再重新启动。',
+  },
+  'startup.startup_busy': {
+    en: 'Another startup is still in progress. Wait for it to finish, then retry.',
+    'zh-CN': '另一次启动仍在进行中，请等待完成后重试。',
+  },
+  'startup.invalidDiscoveryPath': {
+    en: 'The desktop launch path is invalid. Run qwen-live-harness init again.',
+    'zh-CN': '桌面启动路径无效，请重新运行 qwen-live-harness init。',
+  },
+  'startup.profileMismatch': {
+    en: 'Host is already using another configuration. Quit it before opening this one.',
+    'zh-CN': 'Host 正在使用另一份配置。请先退出，再打开当前配置。',
+  },
+  'installer.versionMismatch': {
+    en: 'Qwen Live Harness Host version {installed} does not match CLI version {required}. Install matching Host and CLI versions.',
+    'zh-CN':
+      'Qwen Live Harness Host 版本 {installed} 与 CLI 版本 {required} 不匹配，请安装配套版本。',
   },
   'cli.unknownArgument': {
     en: 'Unknown qwen-live-harness argument: {argument}',
@@ -1367,6 +1450,20 @@ export const LIVE_MESSAGES = {
 
 export type LiveMessageKey = keyof typeof LIVE_MESSAGES;
 export type LiveMessageParams = Readonly<Record<string, string | number>>;
+
+/** Browser-safe mapping: never put raw process errors or credentials into UI text. */
+export function startupErrorMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? error.code
+      : undefined;
+  const key = typeof code === 'string' ? `startup.${code}` : '';
+  return liveMessage(
+    Object.hasOwn(LIVE_MESSAGES, key)
+      ? (key as LiveMessageKey)
+      : 'startup.daemon_start_failed',
+  );
+}
 
 export function isLiveLanguage(value: unknown): value is LiveLanguage {
   return value === 'en' || value === 'zh-CN';

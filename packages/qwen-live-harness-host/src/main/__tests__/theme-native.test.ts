@@ -123,6 +123,8 @@ function fixture(saved?: LiveTheme, systemDark = false) {
     },
   };
   const context = {
+    daemonBootstrap: undefined,
+    startupInvocationError: undefined,
     app: {
       getPath: (name: string) => {
         assert.equal(name, 'userData');

@@ -13,12 +13,14 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getStableLiveDiscoveryBaseDir } from './host/discovery.js';
 import { isScreenDisplayId } from './host/screen-display.js';
 import { resolveMemoryConfig, type MemoryConfig } from './memory/config.js';
 import type { LiveLanguage } from './i18n/messages.js';
 import { resolveLiveLanguage } from './language-preferences.js';
-import { resolveLiveDataDirectory } from './paths.js';
+import {
+  resolveLiveDataDirectory,
+  resolveLiveDiscoveryDirectory,
+} from './paths.js';
 
 /**
  * One backend the live call can drive. `name` is what the voice model sees
@@ -917,10 +919,7 @@ export function loadConfig(
     backends,
     ...(defaultCwd ? { defaultCwd } : {}),
     dataDir,
-    discoveryDir:
-      pathStr(env['QWEN_LIVE_HARNESS_DISCOVERY_DIR']) ??
-      pathStr(file['discoveryDir']) ??
-      getStableLiveDiscoveryBaseDir(),
+    discoveryDir: resolveLiveDiscoveryDirectory(env, file['discoveryDir']),
     ...(shortcut ? { shortcut } : {}),
     visualInput,
     proactive,

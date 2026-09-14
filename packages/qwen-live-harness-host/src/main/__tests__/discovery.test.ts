@@ -49,6 +49,30 @@ async function discoveryFile(
 }
 
 describe('Live daemon discovery', () => {
+  it('accepts one absolute desktop launch override before the environment', () => {
+    const environment = {
+      QWEN_LIVE_HARNESS_DISCOVERY_FILE: '/environment/daemon.json',
+    };
+    assert.equal(
+      resolveDiscoveryPath(environment, [
+        'Host',
+        '--qwen-live-harness-discovery-file=/custom profile/daemon.json',
+      ]),
+      '/custom profile/daemon.json',
+    );
+    for (const arguments_ of [
+      ['--qwen-live-harness-discovery-file=relative/daemon.json'],
+      ['--qwen-live-harness-discovery-file='],
+      ['--qwen-live-harness-discovery-file=/path/with\0nul'],
+      [
+        '--qwen-live-harness-discovery-file=/first/daemon.json',
+        '--qwen-live-harness-discovery-file=/second/daemon.json',
+      ],
+    ]) {
+      assert.throws(() => resolveDiscoveryPath(environment, arguments_));
+    }
+  });
+
   it('uses only the Harness discovery location and environment override', () => {
     const expected = join(
       homedir(),

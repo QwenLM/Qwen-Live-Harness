@@ -15,11 +15,16 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { runInit } from './init.js';
-import { LiveDaemon } from './daemon.js';
 import { LiveLogger } from './logger.js';
 import { parseLiveCliArgs, type LiveCliArgs } from './cli-args.js';
 import { readPreferredLiveLanguage as preferredLanguage } from './language-preferences.js';
-import { displayLiveMessage, liveText } from './i18n/messages.js';
+import {
+  displayLiveMessage,
+  liveText,
+  startupErrorMessage,
+} from './i18n/messages.js';
+import { startCliApplication, type ManagedDaemon } from './cli-startup.js';
+import { StartupError } from './startup.js';
 
 export { loadConfig, type BackendConfig, type LiveConfig } from './config.js';
 export { LiveDaemon } from './daemon.js';
@@ -31,7 +36,7 @@ export type {
   BackendHandle,
 } from './adaptor/types.js';
 
-async function main(debug: boolean): Promise<void> {
+async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
   const logger = new LiveLogger(debug ? 'debug' : undefined);
   if (logger.debugEnabled) {
     logger.debug(liveText(preferredLanguage(), 'cli.debugNotice'));
@@ -47,9 +52,12 @@ async function main(debug: boolean): Promise<void> {
       }`,
     );
   });
-  let daemon: LiveDaemon;
+  let config: ReturnType<typeof loadConfig>;
+  let daemon: ManagedDaemon | undefined;
+  const startup = new AbortController();
+  let startOperation: Promise<unknown> = Promise.resolve();
   try {
-    daemon = new LiveDaemon(loadConfig(), { logger });
+    config = loadConfig();
   } catch (error) {
     logger.error(
       displayLiveMessage(
@@ -65,9 +73,11 @@ async function main(debug: boolean): Promise<void> {
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    startup.abort();
     logger.info(`received ${signal}, shutting down`);
-    daemon
-      .stopForProcessExit()
+    startOperation
+      .catch(() => undefined)
+      .then(() => daemon?.stopForProcessExit())
       .catch((error: unknown) => {
         logger.error(
           `shutdown failed: ${
@@ -87,15 +97,29 @@ async function main(debug: boolean): Promise<void> {
   });
 
   try {
-    await daemon.start();
+    startOperation = startCliApplication(config, {
+      debug,
+      daemonOnly,
+      signal: startup.signal,
+      logger,
+      onDaemonCreated: (created) => {
+        daemon = created;
+      },
+    });
+    await startOperation;
   } catch (error) {
+    if (shuttingDown) return;
     logger.error(
       displayLiveMessage(
         preferredLanguage(),
-        error instanceof Error ? error.message : String(error),
+        error instanceof StartupError
+          ? startupErrorMessage(error)
+          : error instanceof Error
+            ? error.message
+            : String(error),
       ),
     );
-    await daemon.stop().catch(() => undefined);
+    await daemon?.stop().catch(() => undefined);
     process.exitCode = 1;
   }
 }
@@ -114,7 +138,7 @@ function runCli(args: LiveCliArgs): void {
     });
     return;
   }
-  void main(args.debug);
+  void main(args.debug, args.daemonOnly);
 }
 
 // Only run as a daemon when invoked as the bin, not when imported. npm

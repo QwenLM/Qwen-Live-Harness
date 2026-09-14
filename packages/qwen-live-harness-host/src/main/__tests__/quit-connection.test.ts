@@ -138,6 +138,43 @@ async function fixture(
 }
 
 describe('Host Quit ownership and acknowledgement', () => {
+  it('quits an authenticated startup target even before the WebSocket handshake', async () => {
+    const record = {
+      url: 'http://127.0.0.1:4321',
+      token: 'startup-token',
+      protocolVersion: LIVE_PROTOCOL_VERSION,
+      pid: process.pid,
+      instanceNonce: 'verified_startup_instance',
+    };
+    const calls: Array<{ url: string; options?: RequestInit }> = [];
+    mock.method(
+      globalThis,
+      'fetch',
+      async (url: URL, options?: RequestInit) => {
+        calls.push({ url: url.toString(), options });
+        return new Response(
+          JSON.stringify({
+            stopped: true,
+            instanceNonce: record.instanceNonce,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      },
+    );
+    const connection = new LiveDaemonConnection('0.4.0', callbacks);
+    connection.rememberStartupTarget(record);
+    record.token = 'later-mutation';
+    await connection.requestQuit();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, 'http://127.0.0.1:4321/live/quit');
+    assert.deepEqual(calls[0]?.options?.headers, {
+      authorization: 'Bearer startup-token',
+      'x-qwen-live-harness-nonce': record.instanceNonce,
+    });
+    assert.equal(calls[0]?.options?.method, 'POST');
+    connection.stop();
+  });
+
   it('closes only Host when there is no authenticated connection', async () => {
     const connection = new LiveDaemonConnection('0.0.6', callbacks);
     await connection.requestQuit();

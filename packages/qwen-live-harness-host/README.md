@@ -8,26 +8,39 @@ WebShell 或 Session 窗口；对话由连接的 daemon 管理，编码任务由
 ## 用户要求
 
 - macOS 12 或更高版本。
-- 本机运行的独立 `qwen-live-harness` daemon。
+- 本机安装的 Node.js 22.13 或更高版本，以及独立 `qwen-live-harness` CLI。
 - 可调用 `qwen3.5-omni-plus-realtime` 的 DashScope API key。
 
-`qwen-live-harness` 可直接从命令行启动并连接 Host；编码后端按配置通过 ACP 或 REST/SSE 接入。
+`qwen-live-harness` 会启动或复用 daemon，然后打开 Host；完成一次初始化后，双击 Host
+也会按需启动 daemon。编码后端按配置通过 ACP 或 REST/SSE 接入。
 不需要 qwen-code 源码或 `qwen serve`。原生音视频功能目前要求 macOS。
+
+启动失败时，可在菜单栏选择 **Retry startup／重试启动**，或退出 Host 后重新打开。
+如果在 CLI 拉起 Host 的过程中停止了 daemon，再次激活这个窗口不会重新创建服务；
+请通过“重试启动”明确恢复。普通断线不会反复拉起 daemon。
 
 ## 首次启用
 
-以下命令用于已安装的新名称 npm 包；本次源码改名不会自动发布 npm 或签名 Host。
-从源码启动请按下面“开发构建”操作。在新签名产物发布前，不要用旧名称的 Host 替代。
-
-1. 运行 `qwen-live-harness init`，配置语言、DashScope API key 和可用编码后端。
-2. 运行 `qwen-live-harness` 启动 daemon；全局快捷键默认是 `Command+E`。
-3. 按 daemon 引导安装 Host。安装器优先从阿里云 OSS 下载当前架构的签名 Host；
+1. 安装 Node.js 和 `qwen-live-harness` CLI，运行 `qwen-live-harness init`，配置语言、
+   DashScope API key 和可用编码后端，并按向导下载安装 Host。安装器优先从阿里云 OSS
+   下载当前架构的签名 Host；
    镜像不可用时回退到独立的 GitHub `qwen-live-harness-host-latest` feed。下载后校验 manifest、
    SHA-256、bundle identity、Developer ID 签名和 Gatekeeper，然后原子安装到
-   `/Applications/Qwen Live Harness Host.app` 并启动。
-4. 按 Host 引导完成麦克风以及当前视觉源需要的授权：Screen 需要辅助功能和屏幕
+   `/Applications/Qwen Live Harness Host.app`。初始化会登记桌面启动所需的 Node、CLI 路径
+   和工作目录，但不会打开 Host、启动 daemon 或开始通话。
+2. 运行 `qwen-live-harness`，或从“应用程序”／启动器双击 **Qwen Live Harness Host**。
+   两个入口都会补齐缺少的进程，复用已经运行的实例；全局快捷键默认是 `Command+E`。
+3. 按 Host 引导完成麦克风以及当前视觉源需要的授权：Screen 需要辅助功能和屏幕
    录制，Camera 需要摄像头。授权只能由用户在 macOS 完成；当前 Source 的 readiness
    通过前 Live 不可使用。
+
+只有 Host App、尚未安装 CLI 或初始化时，界面会提示先在终端完成安装和
+`qwen-live-harness init`。Host 不内置 Node 或 daemon 运行时。已有有效配置的用户只需
+运行一次 CLI，即可登记或刷新桌面启动路径，无需重新覆盖配置。以后若移动或移除 Node
+或 CLI，使用有效的 CLI 再运行一次即可刷新登记。
+
+Host 与 CLI 必须使用配套版本；即使协议号一致，也不接受不同版本的已安装 Host 或下载
+manifest。初始化遇到旧 Host 会提示安装配套版本，普通启动发现版本不匹配会明确报错。
 
 API key 保存在用户级 `~/.qwen-live-harness/config.json`。停止 daemon 会结束当前通话并撤下
 Host discovery；不会卸载 Host 或删除对话。本次统一命名是无兼容别名的身份切换：
@@ -54,9 +67,9 @@ npm run dist:mac
 构建完成后，在仓库根目录的两个终端分别执行：
 
 ```bash
-# 终端一：首次运行先配置，然后启动 daemon
+# 终端一：首次运行先配置，然后仅启动 daemon
 npm run init
-npm start
+npm start -- --daemon-only --debug
 
 # 终端二：启动 Host
 npm --prefix packages/qwen-live-harness-host start
@@ -64,6 +77,9 @@ npm --prefix packages/qwen-live-harness-host start
 
 源码运行不需要先安装全局 CLI。正式 npm 包与命令统一为无 scope 的
 `qwen-live-harness`；Host 的私有开发包名为 `qwen-live-harness-host`。
+`--daemon-only` 是独立调试／测试入口，不会打开已安装的 Host；不带该参数的普通
+`npm start` 会打开已安装的应用。尚未发布配套签名 Host 时，初始化中跳过下载，并使用
+上述源码 Host。
 
 ## 发布
 
@@ -88,9 +104,9 @@ GitHub draft。draft 不发布 npm；稳定版先完成 Host 和公共 OSS 分�
 `https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/qwen-live-harness-host` 前缀由本仓库发布；
 bucket 名称表示现有基础设施归属，不是产品名，也不要求 qwen-code checkout。
 GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
-`qwen-live-harness-host-latest` feed。旧 prefix、tag 和产物不是 fallback；此次改名
-没有修改远端 feed 或重新发布产物。当前源码版本 0.3.0 使用 protocol v9，仍需以新
-应用身份完成配套签名发布和安装验证，版本号相同不代表旧名称产物可替代。
+`qwen-live-harness-host-latest` feed。旧 prefix、tag 和产物不是 fallback。当前源码版本
+0.4.0 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
+不代表旧名称产物可替代。
 
 管理员需要为新仓库配置以下发布凭据；仓库迁移不会复制或写入这些凭据：
 
@@ -122,6 +138,22 @@ Host 不会自行创建或强制启用 Login Item。需要开机启动时由用�
 Qwen Live Harness 启用后，daemon 会在 `~/.qwen-live-harness/run/daemon.json` 发布权限为 `0600` 的稳定
 locator。Host 只连接 loopback 地址并校验协议版本和 daemon nonce。record 可能包含
 bearer token，不要打印、复制或共享其内容。
+
+桌面启动登记位于同一 discovery base 的 `run/runtime.json`，权限为 `0600`；保存 Node
+和 CLI 绝对路径、版本、工作目录、数据／discovery 目录和 PATH，不复制 API key 或任意
+环境变量。初始化会先原子写入配置，再写登记。普通 CLI 启动也会刷新登记，因此 Finder
+启动应用不需要加载终端的 shell 配置。
+
+`QWEN_LIVE_HARNESS_DATA_DIR` 指定实际配置／数据目录，默认 discovery base 仍为
+`~/.qwen-live-harness`。`QWEN_LIVE_HARNESS_DISCOVERY_DIR` 可独立修改 daemon 的 discovery
+base；独立启动 Host 时相应设置 `QWEN_LIVE_HARNESS_DISCOVERY_FILE` 为完整的
+`run/daemon.json` 路径。由 CLI 打开的 Host 会自动接收本次 discovery 路径。
+
+Host 启动 daemon 时使用内部 `--daemon-only` 模式，避免循环打开 Host。启动日志保存在
+discovery base 的 `run/logs/daemon-startup-*.log`，最多保留最近 5 份，每份上限 1 MiB。
+缺少配置、登记路径失效、版本不兼容和启动失败会显示明确错误。启动期间只尝试补齐一次；
+已有连接断开时不会无限重启 daemon。正常 CLI 新建的 daemon 保持前台运行，`Ctrl+C`
+沿用正常关闭流程；复用已有 daemon 时，CLI 打开 Host 后即可结束。
 
 Live 被禁用、discovery 不存在或 daemon 断开时，Host 的全局快捷键、音频和 Appshot
 readiness 保持 dormant。只有 v9 daemon 完成 welcome 后这些服务才启动；断开时会立即

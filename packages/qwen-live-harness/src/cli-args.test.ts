@@ -13,10 +13,12 @@ describe('parseLiveCliArgs', () => {
     expect(parseLiveCliArgs(['--debug'])).toEqual({
       command: 'start',
       debug: true,
+      daemonOnly: false,
     });
     expect(parseLiveCliArgs(['init', '-d'])).toEqual({
       command: 'init',
       debug: true,
+      daemonOnly: false,
     });
   });
 
@@ -24,6 +26,7 @@ describe('parseLiveCliArgs', () => {
     expect(parseLiveCliArgs(['--help'])).toEqual({
       command: 'help',
       debug: false,
+      daemonOnly: false,
     });
     try {
       parseLiveCliArgs(['--verbose']);
@@ -33,5 +36,14 @@ describe('parseLiveCliArgs', () => {
         'Unknown qwen-live-harness argument: --verbose',
       );
     }
+  });
+
+  it('keeps the internal daemon entry separate from desktop launch and init', () => {
+    expect(parseLiveCliArgs(['--daemon-only', '--debug'])).toEqual({
+      command: 'start',
+      debug: true,
+      daemonOnly: true,
+    });
+    expect(() => parseLiveCliArgs(['init', '--daemon-only'])).toThrow();
   });
 });

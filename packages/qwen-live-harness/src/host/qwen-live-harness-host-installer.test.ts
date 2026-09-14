@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { LIVE_HOST_PROTOCOL_VERSION } from './types.js';
+import { PACKAGE_VERSION } from '../version.js';
 import { displayLiveMessage } from '../i18n/messages.js';
 import {
   downloadLiveHostRelease,
@@ -31,7 +32,7 @@ const sha = 'a'.repeat(64);
 function manifest() {
   return {
     schemaVersion: 1,
-    version: '0.1.0',
+    version: PACKAGE_VERSION,
     protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
     bundleId: 'com.alibaba.qwen-live-harness.host',
     assets: {
@@ -97,8 +98,8 @@ describe('LiveHostInstaller', () => {
   it('falls back with a matching GitHub manifest and asset pair', async () => {
     const ossBytes = Buffer.from('oss-archive');
     const githubBytes = Buffer.from('github-archive');
-    const ossManifest = manifestForBytes('0.1.0', ossBytes);
-    const githubManifest = manifestForBytes('0.2.0', githubBytes);
+    const ossManifest = manifestForBytes(PACKAGE_VERSION, ossBytes);
+    const githubManifest = manifestForBytes(PACKAGE_VERSION, githubBytes);
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(ossManifest))
@@ -144,8 +145,8 @@ describe('LiveHostInstaller', () => {
     const expectedOssBytes = Buffer.from('expected-oss-archive');
     const corruptOssBytes = Buffer.alloc(expectedOssBytes.byteLength, 0x78);
     const githubBytes = Buffer.from('github-archive');
-    const ossManifest = manifestForBytes('0.1.0', expectedOssBytes);
-    const githubManifest = manifestForBytes('0.2.0', githubBytes);
+    const ossManifest = manifestForBytes(PACKAGE_VERSION, expectedOssBytes);
+    const githubManifest = manifestForBytes(PACKAGE_VERSION, githubBytes);
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(ossManifest))
@@ -215,7 +216,7 @@ describe('LiveHostInstaller', () => {
 
   it('passes separate bounded signals to manifest and archive requests', async () => {
     const bytes = Buffer.from('signed-qwen-live-harness-host-archive');
-    const expected = manifestForBytes('0.1.0', bytes);
+    const expected = manifestForBytes(PACKAGE_VERSION, bytes);
     const manifestSignal = AbortSignal.abort('manifest');
     const downloadSignal = AbortSignal.abort('download');
     const timeout = vi
@@ -281,6 +282,17 @@ describe('LiveHostInstaller', () => {
     ).toThrow(/asset/);
   });
 
+  it.each(['0.3.0', '999.0.0'])(
+    'rejects a downloaded Host version that does not match the CLI (%s)',
+    (version) => {
+      expect(() =>
+        parseLiveHostReleaseManifest({ ...manifest(), version }),
+      ).toThrow(
+        `Host version ${version} does not match CLI version ${PACKAGE_VERSION}`,
+      );
+    },
+  );
+
   it('rejects retired bundle identities and archive names', () => {
     expect(() =>
       parseLiveHostReleaseManifest({
@@ -332,7 +344,7 @@ describe('LiveHostInstaller', () => {
 
   it('launches an existing verified installation without downloading', async () => {
     const inspectInstalled = vi.fn(async () => ({
-      version: '0.1.0',
+      version: PACKAGE_VERSION,
       protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
     }));
     const installLatest = vi.fn();
@@ -347,22 +359,75 @@ describe('LiveHostInstaller', () => {
 
     await expect(installer.ensureInstalled()).resolves.toEqual({
       state: 'installed',
-      version: '0.1.0',
+      version: PACKAGE_VERSION,
     });
     expect(installLatest).not.toHaveBeenCalled();
     expect(launch).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])(
+    'prepares a Host installation without launching during init (already installed: %s)',
+    async (alreadyInstalled) => {
+      const ready = {
+        version: PACKAGE_VERSION,
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      };
+      const installLatest = vi.fn(async () => ready);
+      const launch = vi.fn(async () => {});
+      const installer = new LiveHostInstaller({
+        platform: 'darwin',
+        architecture: 'arm64',
+        inspectInstalled: async () => (alreadyInstalled ? ready : undefined),
+        installLatest,
+        launch,
+      });
+
+      await expect(
+        installer.ensureInstalled(false, { launch: false }),
+      ).resolves.toEqual({
+        state: 'installed',
+        version: PACKAGE_VERSION,
+      });
+      expect(installLatest).toHaveBeenCalledTimes(alreadyInstalled ? 0 : 1);
+      expect(launch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes CLI discovery, debug and connection-only settings when opening a verified Host', async () => {
+    const launch = vi.fn(async () => {});
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      architecture: 'arm64',
+      inspectInstalled: async () => ({
+        version: PACKAGE_VERSION,
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      }),
+      launch,
+    });
+    const options = {
+      debug: true,
+      discoveryPath: '/tmp/custom-harness-discovery/run/daemon.json',
+      connectOnly: true,
+    };
+
+    await expect(installer.launch(options)).resolves.toEqual({
+      state: 'installed',
+      version: PACKAGE_VERSION,
+    });
+
+    expect(launch).toHaveBeenCalledExactlyOnceWith(options);
+  });
+
   it('replaces an installed Host with an incompatible protocol', async () => {
     const installLatest = vi.fn(async () => ({
-      version: '0.2.0',
+      version: PACKAGE_VERSION,
       protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
     }));
     const installer = new LiveHostInstaller({
       platform: 'darwin',
       architecture: 'arm64',
       inspectInstalled: async () => ({
-        version: '0.1.0',
+        version: PACKAGE_VERSION,
         protocolVersion: LIVE_HOST_PROTOCOL_VERSION - 1,
       }),
       installLatest,
@@ -371,10 +436,48 @@ describe('LiveHostInstaller', () => {
 
     await expect(installer.ensureInstalled()).resolves.toEqual({
       state: 'installed',
-      version: '0.2.0',
+      version: PACKAGE_VERSION,
     });
     expect(installLatest).toHaveBeenCalledOnce();
   });
+
+  it.each(['0.3.0', '999.0.0'])(
+    'offers replacement and refuses to launch an unpaired installed Host (%s)',
+    async (version) => {
+      const installLatest = vi.fn(async () => ({
+        version: PACKAGE_VERSION,
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      }));
+      const launch = vi.fn(async () => {});
+      const installer = new LiveHostInstaller({
+        platform: 'darwin',
+        architecture: 'arm64',
+        inspectInstalled: async () => ({
+          version,
+          protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+        }),
+        installLatest,
+        launch,
+      });
+
+      await expect(installer.refresh()).resolves.toEqual({ state: 'missing' });
+      const rejectedLaunch = await installer.launch();
+      expect(rejectedLaunch).toMatchObject({ state: 'error', retryable: true });
+      expect(displayLiveMessage('en', rejectedLaunch.message!)).toContain(
+        `Host version ${version} does not match CLI version ${PACKAGE_VERSION}`,
+      );
+      expect(launch).not.toHaveBeenCalled();
+
+      await expect(
+        installer.ensureInstalled(false, { launch: false }),
+      ).resolves.toEqual({
+        state: 'installed',
+        version: PACKAGE_VERSION,
+      });
+      expect(installLatest).toHaveBeenCalledOnce();
+      expect(launch).not.toHaveBeenCalled();
+    },
+  );
 
   it('coalesces concurrent installs and exposes progress', async () => {
     let finish:
@@ -411,7 +514,7 @@ describe('LiveHostInstaller', () => {
       });
     });
     finish?.({
-      version: '0.1.0',
+      version: PACKAGE_VERSION,
       protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
     });
     await expect(first).resolves.toMatchObject({ state: 'installed' });

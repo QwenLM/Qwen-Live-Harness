@@ -34,11 +34,12 @@ npm run typecheck:host
 npm run test:host
 ```
 
-The current source version is **0.3.0**, using Host protocol **v9**. The renamed
-package and signed Host must be published under their new identities before
-registry installation or automatic Host download can be used. Do not substitute
-an older differently named Host. See the [Host guide](packages/qwen-live-harness-host/README.md)
-for packaging and the release workflow for signing requirements.
+The daemon and Host use paired package versions and Host protocol **v9**.
+Automatic installation downloads the matching signed Host release. See the
+[Host guide](packages/qwen-live-harness-host/README.md) for packaging and the
+release workflow for signing requirements.
+An installed Host or download manifest with a different version is not accepted;
+upgrade the CLI and Host together, even when the protocol version is unchanged.
 
 ## Configure and run
 
@@ -47,19 +48,53 @@ npm run init
 npm start
 ```
 
-In a second terminal, start the matching source-built Host:
+The equivalent commands after installing the unscoped npm package globally are
+`qwen-live-harness init` and `qwen-live-harness`. Initialization saves your
+configuration, offers to download and install the macOS Host, and registers the
+current Node/CLI installation for desktop startup. It does not open the Host or
+start a call.
+
+After initialization, run `qwen-live-harness` (or `npm start` from this checkout)
+to start or reuse the daemon and open the installed Host. You can also open
+**Qwen Live Harness Host** from Applications or Launchpad: it connects to the
+existing daemon, or starts the registered daemon when needed. Opening either
+entry point again reuses the running application. Existing configured users can
+run the CLI once to register desktop startup without repeating the wizard.
+When the CLI starts a new daemon it stays in the foreground; `Ctrl+C` follows
+the normal shutdown path. When it reuses a daemon, it exits after opening Host.
+Closing the daemon during CLI startup does not make the opening Host restart it.
+
+Downloading only the Host does not install Node or the CLI. If these are absent,
+the Host shows setup instructions. Install Node.js and the CLI, then complete
+`qwen-live-harness init` once. Moving or removing the registered Node/CLI
+installation requires running the working CLI again to refresh registration.
+
+For development with a source-built Host, run the two components separately:
 
 ```sh
+# Terminal 1: run only the daemon, without opening the installed app
+npm start -- --daemon-only --debug
+
+# Terminal 2: run the source-built Host
 npm --prefix packages/qwen-live-harness-host start
 ```
 
-For foreground diagnostics, use `npm start -- --debug` for the daemon and
-`npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug` for the
-Host. These source commands do not require a globally installed CLI. The
-published npm package and CLI are both named `qwen-live-harness` (unscoped);
-an installed CLI uses `qwen-live-harness init` and `qwen-live-harness`.
-Until a new-name signed Host is available, decline the wizard's Host download
-offer and use the source-built Host above.
+The internal `--daemon-only` mode is intended for component development and
+automated tests. Host diagnostics use
+`npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug`.
+These source commands do not require a globally installed CLI. Before a signed
+Host release is available, skip the wizard's download offer and use this
+source-built setup.
+
+Desktop startup registration is stored with discovery in
+`~/.qwen-live-harness/run/runtime.json`; it records executable paths and the
+launch environment's PATH, not API keys. Bootstrap logs are saved under
+`~/.qwen-live-harness/run/logs/`, retaining five files of at most 1 MiB each.
+Startup failures show an error instead of repeatedly restarting the daemon.
+Use **Retry startup** in the menu bar to retry explicitly, or quit and reopen
+the Host. If the CLI was stopped while opening Host, merely activating that
+window does not recreate the stopped daemon.
+`End call` leaves the application running; `Quit Host` closes both components.
 
 The wizard detects supported agents already installed on your machine. Select
 an ACP backend such as `qwen --acp` or `qodercli --acp`; `qwen serve` is needed

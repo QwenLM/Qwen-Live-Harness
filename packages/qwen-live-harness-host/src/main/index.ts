@@ -5,6 +5,7 @@ import {
   isLiveLanguage,
   liveMessage,
   liveText,
+  startupErrorMessage,
   type LiveLanguage,
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
@@ -31,6 +32,8 @@ import {
 import { AppshotReadinessMonitor } from './appshot-readiness.ts';
 import { AppshotCaptureService } from './appshot-capture.ts';
 import { StartupInteraction } from './startup-interaction.ts';
+import { HostDaemonBootstrap } from './daemon-bootstrap.ts';
+import { resolveDiscoveryPath } from './discovery.ts';
 import { SubagentsWindows } from './subagents-windows.ts';
 import {
   OVERLAY_GEOMETRY,
@@ -117,6 +120,10 @@ let rendererEventsEnabled = false;
 let tray: Tray | undefined;
 let subagents: SubagentsWindows | undefined;
 let daemon: LiveDaemonConnection;
+let daemonBootstrap: HostDaemonBootstrap | undefined;
+let daemonDiscoveryPath: string | undefined;
+let startupInvocationError: string | undefined;
+let activationConnectOnly = false;
 let appshotReadiness: AppshotReadinessMonitor;
 let shortcut: LiveGlobalShortcut;
 let overlayRecovery: OverlayRecoveryController;
@@ -438,18 +445,34 @@ function applyPendingVisualSourceChange(): boolean {
 }
 
 function publicState(): HostPublicState {
+  const startup = daemonBootstrap?.snapshot;
+  const startupMessage =
+    startupInvocationError ||
+    (startup?.phase === 'failed'
+      ? startupErrorMessage(startup.error)
+      : startup?.phase === 'starting'
+        ? liveMessage('startup.connecting')
+        : undefined);
+  const status = effectiveLiveStatus();
   return {
     theme,
     resolvedTheme: resolvedTheme(),
     language,
-    connection: connection.phase,
+    connection:
+      startup?.phase === 'failed' && connection.phase !== 'ready'
+        ? 'error'
+        : startup?.phase === 'starting' && connection.phase !== 'ready'
+          ? 'connecting'
+          : connection.phase,
     canOpenConfig:
       connection.phase === 'ready' &&
       !quitState &&
       Boolean(daemon.getConfigFilePath()),
     ...(quitState ? { quitState } : {}),
     overlayOffset: { ...overlayOffset },
-    ...(connection.error ? { connectionError: connection.error } : {}),
+    ...(startupMessage || connection.error
+      ? { connectionError: startupMessage || connection.error }
+      : {}),
     ...(visualInput ? { visualInput: { ...visualInput } } : {}),
     screenDisplays,
     canSelectScreenDisplay: connection.displayCaptureV1 === true,
@@ -459,7 +482,7 @@ function publicState(): HostPublicState {
       : {}),
     ...(connection.memory ? { memory: connection.memory } : {}),
     ...(connection.subagentsV1 ? { subagentsV1: connection.subagentsV1 } : {}),
-    live: effectiveLiveStatus(),
+    live: startupMessage ? { ...status, message: startupMessage } : status,
     permissions: { ...permissions },
     selfChecks: { ...selfChecks },
     visualReady,
@@ -774,6 +797,7 @@ function quitHost(): Promise<void> {
   });
   quitOperation = (async () => {
     try {
+      if (daemonBootstrap) await daemonBootstrap.stop();
       await daemon?.requestQuit();
     } catch (error) {
       quitting = false;
@@ -2428,6 +2452,16 @@ function rebuildTrayMenu(): void {
     Menu.buildFromTemplate([
       { label: liveText(language, 'tray.show'), click: showOverlay },
       {
+        label: liveText(language, 'startup.retry'),
+        enabled:
+          Boolean(daemonBootstrap) &&
+          connection.phase !== 'ready' &&
+          daemonBootstrap?.snapshot.phase !== 'starting' &&
+          !quitting &&
+          !quitState,
+        click: retryDaemonStartup,
+      },
+      {
         label: liveText(language, 'tray.start'),
         enabled: effectiveLive.available && !isActiveLiveCall(live),
         click: toggleLive,
@@ -2478,7 +2512,70 @@ function createTray(): void {
   rebuildTrayMenu();
 }
 
-app.on('second-instance', showOverlay);
+function prepareDaemonLaunch(argv?: readonly string[]): {
+  startIfMissing: boolean;
+} {
+  if (argv) {
+    activationConnectOnly = argv.includes('--qwen-live-harness-connect-only');
+  }
+  return { startIfMissing: !activationConnectOnly };
+}
+
+function openHost(argv?: string[]): void {
+  if (quitting || quitState) return;
+  if (argv?.includes('--qwen-live-harness-connect-only')) {
+    activationConnectOnly = true;
+  }
+  if (argv && daemonDiscoveryPath) {
+    let requestedPath: string;
+    try {
+      requestedPath = resolveDiscoveryPath(process.env, argv);
+    } catch {
+      startupInvocationError = liveMessage('startup.invalidDiscoveryPath');
+      publishState();
+      showOverlay();
+      return;
+    }
+    if (requestedPath !== daemonDiscoveryPath) {
+      startupInvocationError = liveMessage('startup.profileMismatch');
+      writeLiveDiagnostic('daemon_launch_profile_mismatch');
+      publishState();
+      showOverlay();
+      return;
+    }
+  }
+  const launchOptions = prepareDaemonLaunch(argv);
+  if (daemonBootstrap) {
+    startupInvocationError = undefined;
+    if (connection.phase !== 'ready') {
+      void daemonBootstrap.start(launchOptions);
+    }
+  }
+  appshotReadiness?.refresh();
+  publishState();
+  showOverlay();
+}
+
+function activateHost(): void {
+  // macOS does not distinguish `open` activation from a Finder reopen. Keep
+  // the explicit launch mode until Retry startup or another explicit launch.
+  openHost();
+}
+
+function retryDaemonStartup(): void {
+  if (
+    quitting ||
+    quitState ||
+    !daemonBootstrap ||
+    daemonBootstrap.snapshot.phase === 'starting' ||
+    connection.phase === 'ready'
+  )
+    return;
+  activationConnectOnly = false;
+  openHost();
+}
+
+app.on('second-instance', (_event, argv) => openHost(argv));
 app.on('window-all-closed', () => {});
 app.on('before-quit', (event) => {
   if (!quitApproved) {
@@ -2568,143 +2665,177 @@ void app.whenReady().then(() => {
   appshotCapture = new AppshotCaptureService();
   refreshScreenDisplays();
 
-  daemon = new LiveDaemonConnection(app.getVersion(), {
-    onSubagents: (snapshot) => {
-      connection = { ...connection, subagentsV1: snapshot };
-      subagents?.update(
-        language,
-        connection.phase === 'ready',
-        snapshot,
-        connection.instanceId,
-        connection.subagentsControlV1 === true,
-      );
-    },
-    getReadiness: () => ({
-      permissions: { ...permissions },
-      selfChecks: { ...selfChecks },
-    }),
-    onSnapshot: (snapshot) => {
-      writeLiveDiagnostic('daemon_connection', {
-        phase: snapshot.phase,
-        ...(snapshot.error ? { error: snapshot.error } : {}),
-        ...(snapshot.visualInput
-          ? {
-              visualSource: snapshot.visualInput.source,
-              visualMode: snapshot.visualInput.mode,
-            }
-          : {}),
-      });
-      connection = snapshot;
-      if (
-        snapshot.phase === 'ready' &&
-        snapshot.uiLanguageV1 &&
-        language !== snapshot.uiLanguageV1.language
-      ) {
-        language = snapshot.uiLanguageV1.language;
-        try {
-          saveHostLanguage(
-            join(app.getPath('userData'), 'language.json'),
-            language,
-          );
-        } catch {
-          writeLiveDiagnostic('language_cache_save_failed');
+  try {
+    daemonDiscoveryPath = resolveDiscoveryPath();
+  } catch {
+    startupInvocationError = liveMessage('startup.invalidDiscoveryPath');
+    publishState();
+    return;
+  }
+
+  daemon = new LiveDaemonConnection(
+    app.getVersion(),
+    {
+      onSubagents: (snapshot) => {
+        connection = { ...connection, subagentsV1: snapshot };
+        subagents?.update(
+          language,
+          connection.phase === 'ready',
+          snapshot,
+          connection.instanceId,
+          connection.subagentsControlV1 === true,
+        );
+      },
+      getReadiness: () => ({
+        permissions: { ...permissions },
+        selfChecks: { ...selfChecks },
+      }),
+      onSnapshot: (snapshot) => {
+        writeLiveDiagnostic('daemon_connection', {
+          phase: snapshot.phase,
+          ...(snapshot.error ? { error: snapshot.error } : {}),
+          ...(snapshot.visualInput
+            ? {
+                visualSource: snapshot.visualInput.source,
+                visualMode: snapshot.visualInput.mode,
+              }
+            : {}),
+        });
+        connection = snapshot;
+        if (snapshot.phase === 'ready') daemonBootstrap?.markConnected();
+        if (
+          snapshot.phase === 'ready' &&
+          snapshot.uiLanguageV1 &&
+          language !== snapshot.uiLanguageV1.language
+        ) {
+          language = snapshot.uiLanguageV1.language;
+          try {
+            saveHostLanguage(
+              join(app.getPath('userData'), 'language.json'),
+              language,
+            );
+          } catch {
+            writeLiveDiagnostic('language_cache_save_failed');
+          }
         }
-      }
-      syncOutputAudioEndMarkerMode();
-      if (snapshot.phase === 'ready') {
-        if (!sameVisualInput(visualInput, snapshot.visualInput)) {
+        syncOutputAudioEndMarkerMode();
+        if (snapshot.phase === 'ready') {
+          if (!sameVisualInput(visualInput, snapshot.visualInput)) {
+            stopLocalVisual();
+          }
+          visualInput = snapshot.visualInput;
+          if (
+            pendingVisualSourceChange &&
+            snapshot.visualInput?.source === pendingVisualSourceChange.source
+          ) {
+            pendingVisualSourceChange = undefined;
+          }
+        }
+        if (snapshot.phase !== 'ready') {
+          resetOverlayInteraction();
+          pendingVisualSourceChange = undefined;
           stopLocalVisual();
         }
-        visualInput = snapshot.visualInput;
-        if (
-          pendingVisualSourceChange &&
-          snapshot.visualInput?.source === pendingVisualSourceChange.source
-        ) {
-          pendingVisualSourceChange = undefined;
+        if (shouldActivateNativeServices(snapshot.phase)) {
+          activateNativeServices();
         }
-      }
-      if (snapshot.phase !== 'ready') {
-        resetOverlayInteraction();
-        pendingVisualSourceChange = undefined;
-        stopLocalVisual();
-      }
-      if (shouldActivateNativeServices(snapshot.phase)) {
-        activateNativeServices();
-      }
-      if (shouldDeactivateNativeServices(snapshot.phase)) {
-        deactivateNativeServices();
-        live = {
-          ...live,
-          available: false,
-          state: 'unavailable',
-          blocker:
-            snapshot.phase === 'incompatible'
-              ? 'host_version'
-              : 'host_disconnected',
-        };
-      }
-      if (snapshot.status) applyLiveStatus(snapshot.status);
-      else publishState();
-    },
-    onOutputAudio: ({ audio, epoch, outputId }) => {
-      if (
-        nativeServicesActive &&
-        !live.outputMuted &&
-        epoch === daemon.getEpoch()
-      ) {
-        appendHostAudio(audio, epoch);
-        writeLiveDiagnostic('output_frame_received', {
+        if (shouldDeactivateNativeServices(snapshot.phase)) {
+          deactivateNativeServices();
+          live = {
+            ...live,
+            available: false,
+            state: 'unavailable',
+            blocker:
+              snapshot.phase === 'incompatible'
+                ? 'host_version'
+                : 'host_disconnected',
+          };
+        }
+        if (snapshot.status) applyLiveStatus(snapshot.status);
+        else publishState();
+      },
+      onOutputAudio: ({ audio, epoch, outputId }) => {
+        if (
+          nativeServicesActive &&
+          !live.outputMuted &&
+          epoch === daemon.getEpoch()
+        ) {
+          appendHostAudio(audio, epoch);
+          writeLiveDiagnostic('output_frame_received', {
+            epoch,
+            outputId,
+            bytes: audio.byteLength,
+          });
+          sendRendererCommand('live:audio:play', { audio, epoch, outputId });
+        }
+      },
+      onOutputAudioFinished: ({ epoch, outputId }) => {
+        if (
+          !nativeServicesActive ||
+          !isActiveLiveCall(live) ||
+          live.outputMuted ||
+          epoch !== daemon.getEpoch()
+        ) {
+          return;
+        }
+        writeLiveDiagnostic('output_audio_finished_received', {
           epoch,
           outputId,
-          bytes: audio.byteLength,
         });
-        sendRendererCommand('live:audio:play', { audio, epoch, outputId });
-      }
-    },
-    onOutputAudioFinished: ({ epoch, outputId }) => {
-      if (
-        !nativeServicesActive ||
-        !isActiveLiveCall(live) ||
-        live.outputMuted ||
-        epoch !== daemon.getEpoch()
-      ) {
-        return;
-      }
-      writeLiveDiagnostic('output_audio_finished_received', {
-        epoch,
-        outputId,
-      });
-      sendRendererCommand('live:audio:output-finished', { epoch, outputId });
-    },
-    onClearOutput: () => {
-      closeHostAudioCapture('clear_output');
-      writeLiveDiagnostic('clear_output_received', {
-        epoch: daemon.getEpoch(),
-      });
-      sendRendererCommand('live:audio:clear');
-    },
-    setShortcut: (accelerator) => {
-      if (!nativeServicesActive) {
+        sendRendererCommand('live:audio:output-finished', { epoch, outputId });
+      },
+      onClearOutput: () => {
+        closeHostAudioCapture('clear_output');
+        writeLiveDiagnostic('clear_output_received', {
+          epoch: daemon.getEpoch(),
+        });
+        sendRendererCommand('live:audio:clear');
+      },
+      setShortcut: (accelerator) => {
+        if (!nativeServicesActive) {
+          return {
+            success: false,
+            error: liveMessage('host.error.notReady'),
+          };
+        }
+        const state = shortcut.replace(accelerator);
         return {
-          success: false,
-          error: liveMessage('host.error.notReady'),
+          success: state.healthy,
+          ...(state.error ? { error: state.error } : {}),
         };
-      }
-      const state = shortcut.replace(accelerator);
-      return {
-        success: state.healthy,
-        ...(state.error ? { error: state.error } : {}),
-      };
+      },
+      captureVisual: captureOnDemandVisual,
     },
-    captureVisual: captureOnDemandVisual,
-  });
+    daemonDiscoveryPath,
+  );
 
-  daemon.start();
+  daemonBootstrap = new HostDaemonBootstrap(
+    {
+      discoveryPath: daemonDiscoveryPath,
+      expectedVersion: app.getVersion(),
+      debug: diagnosticsEnabled,
+    },
+    {
+      onReady: ({ record, started, logPath }) => {
+        daemon.rememberStartupTarget(record);
+        writeLiveDiagnostic('daemon_bootstrap_ready', {
+          started,
+          ...(logPath ? { logPath } : {}),
+        });
+        if (!quitting) daemon.start();
+      },
+      onChange: () => {
+        const startup = daemonBootstrap?.snapshot;
+        if (startup?.phase === 'failed') {
+          writeLiveDiagnostic('daemon_bootstrap_failed', {
+            error: startupErrorMessage(startup.error),
+          });
+        }
+        publishState();
+      },
+    },
+  );
+  void daemonBootstrap.start(prepareDaemonLaunch(process.argv));
 });
 
-app.on('activate', () => {
-  if (!quitting) {
-    appshotReadiness?.refresh();
-    showOverlay();
-  }
-});
+app.on('activate', activateHost);

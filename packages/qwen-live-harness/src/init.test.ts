@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   renameSync: vi.fn(),
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
+  refreshHost: vi.fn(),
+  installHost: vi.fn(),
+  registerCurrentRuntime: vi.fn(),
 }));
 
 vi.mock('prompts', () => ({ default: mocks.prompt }));
@@ -42,16 +45,40 @@ vi.mock('./agent-detector.js', () => ({
 }));
 vi.mock('./host/qwen-live-harness-host-installer.js', () => ({
   LiveHostInstaller: class {
-    refresh(): Promise<{ state: 'installed'; version: string }> {
-      return Promise.resolve({ state: 'installed', version: '0.0.6' });
+    refresh() {
+      return mocks.refreshHost();
+    }
+    ensureInstalled(...args: unknown[]) {
+      return mocks.installHost(...args);
     }
   },
+}));
+vi.mock('./startup-registration.js', () => ({
+  registerCurrentRuntime: mocks.registerCurrentRuntime,
 }));
 
 import { runInit } from './init.js';
 import { liveText } from './i18n/messages.js';
 
 const originalApiKey = process.env['DASHSCOPE_API_KEY'];
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
+function answerSetupPrompts(cwd = '/tmp/harness-init-project'): void {
+  mocks.prompt.mockImplementation(async (question: { message: string }) => {
+    const answers = new Map<string, unknown>([
+      [liveText('en', 'language.choose'), true],
+      [liveText('en', 'init.defaultAgent'), 'qwen'],
+      [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
+      [liveText('en', 'init.apiName'), 'qwen3.5-omni-plus-realtime'],
+      [liveText('en', 'init.memoryEnabled'), false],
+      [liveText('en', 'init.cwd'), cwd],
+      [liveText('en', 'init.hostInstall'), true],
+    ]);
+    if (!answers.has(question.message))
+      throw new Error(`Unexpected prompt: ${question.message}`);
+    return { value: answers.get(question.message) };
+  });
+}
 
 beforeEach(() => {
   mocks.prompt.mockReset();
@@ -60,7 +87,19 @@ beforeEach(() => {
   mocks.renameSync.mockReset();
   mocks.existsSync.mockReset().mockReturnValue(false);
   mocks.readFileSync.mockReset();
+  mocks.refreshHost
+    .mockReset()
+    .mockResolvedValue({ state: 'installed', version: '0.3.0' });
+  mocks.installHost
+    .mockReset()
+    .mockResolvedValue({ state: 'installed', version: '0.3.0' });
+  mocks.registerCurrentRuntime.mockReset().mockResolvedValue(undefined);
+  Object.defineProperty(process, 'platform', {
+    ...originalPlatform,
+    value: 'darwin',
+  });
   vi.stubEnv('QWEN_LIVE_HARNESS_DATA_DIR', '/synthetic/harness-init');
+  vi.stubEnv('QWEN_LIVE_HARNESS_DISCOVERY_DIR', undefined);
   process.env['DASHSCOPE_API_KEY'] = 'sk-test';
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
 });
@@ -68,11 +107,87 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  Object.defineProperty(process, 'platform', originalPlatform);
   if (originalApiKey === undefined) delete process.env['DASHSCOPE_API_KEY'];
   else process.env['DASHSCOPE_API_KEY'] = originalApiKey;
 });
 
 describe('runInit', () => {
+  it('installs without launching and registers desktop startup only after saving config', async () => {
+    answerSetupPrompts();
+    mocks.refreshHost.mockResolvedValue({ state: 'missing' });
+
+    await runInit();
+
+    expect(mocks.installHost).toHaveBeenCalledExactlyOnceWith(false, {
+      launch: false,
+    });
+    expect(mocks.registerCurrentRuntime).toHaveBeenCalledExactlyOnceWith({
+      dataDir: '/synthetic/harness-init',
+      discoveryDir: join(homedir(), '.qwen-live-harness'),
+      cwd: '/tmp/harness-init-project',
+    });
+    expect(mocks.renameSync.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.registerCurrentRuntime.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('registers the configured discovery directory independently of the data directory', async () => {
+    answerSetupPrompts();
+    vi.stubEnv('QWEN_LIVE_HARNESS_DISCOVERY_DIR', ' ~/harness-discovery ');
+
+    await runInit();
+
+    expect(mocks.registerCurrentRuntime).toHaveBeenCalledWith({
+      dataDir: '/synthetic/harness-init',
+      discoveryDir: join(homedir(), 'harness-discovery'),
+      cwd: '/tmp/harness-init-project',
+    });
+    expect(mocks.installHost).not.toHaveBeenCalled();
+  });
+
+  it('expands the selected working directory before saving config and desktop registration', async () => {
+    answerSetupPrompts(' ~/workspace/project ');
+
+    await runInit();
+
+    const expected = join(homedir(), 'workspace/project');
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])).defaultCwd,
+    ).toBe(expected);
+    expect(mocks.registerCurrentRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: expected }),
+    );
+  });
+
+  it('does not register a runtime when the atomic config save fails', async () => {
+    answerSetupPrompts();
+    mocks.renameSync.mockImplementation(() => {
+      throw new Error('rename failed');
+    });
+
+    await expect(runInit()).rejects.toThrow('rename failed');
+
+    expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    expect(console.log).not.toHaveBeenCalledWith(
+      `\n  ${liveText('en', 'init.run')}\n`,
+    );
+  });
+
+  it('does not report setup complete when runtime registration fails', async () => {
+    answerSetupPrompts();
+    mocks.registerCurrentRuntime.mockRejectedValue(
+      new Error('registration failed'),
+    );
+
+    await expect(runInit()).rejects.toThrow('registration failed');
+
+    expect(mocks.renameSync).toHaveBeenCalledOnce();
+    expect(console.log).not.toHaveBeenCalledWith(
+      `\n  ${liveText('en', 'init.run')}\n`,
+    );
+  });
+
   it('resolves the new data directory per invocation and ignores the legacy one', async () => {
     mocks.prompt.mockResolvedValue({});
     vi.stubEnv('QWEN_LIVE_DATA_DIR', '/synthetic/legacy-init');
@@ -301,6 +416,8 @@ describe('runInit', () => {
     });
     expect(mocks.writeFileSync).not.toHaveBeenCalled();
     expect(mocks.renameSync).not.toHaveBeenCalled();
+    expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    expect(mocks.refreshHost).not.toHaveBeenCalled();
   });
 
   it.each([0, 1, 2, 3, 4, 5, 6])(
@@ -322,6 +439,7 @@ describe('runInit', () => {
       });
       await runInit();
       expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
       expect(index).toBe(cancelAt + 1);
     },
   );

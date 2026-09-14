@@ -144,6 +144,8 @@ function fixture(minimumNativeY?: number, diagnosticsEnabled = false) {
     }
   }
   const context = {
+    daemonBootstrap: undefined,
+    startupInvocationError: undefined,
     isLiveLanguage,
     liveMessage,
     language: 'en',

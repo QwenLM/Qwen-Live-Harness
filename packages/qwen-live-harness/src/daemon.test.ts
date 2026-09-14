@@ -174,6 +174,31 @@ afterEach(async () => {
 });
 
 describe('LiveDaemon', () => {
+  it('does not publish a late daemon after shutdown during backend initialization', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    let finishPreflight: () => void = () => {};
+    const preflight = vi
+      .spyOn(ownedBackend(daemon), 'preflight')
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolvePreflight) => {
+            finishPreflight = resolvePreflight;
+          }),
+      );
+    const starting = daemon.start();
+    const rejected = expect(starting).rejects.toThrow(
+      'startup.startup_aborted',
+    );
+    await vi.waitFor(() => expect(preflight).toHaveBeenCalledOnce());
+    await daemon.stopForProcessExit();
+    finishPreflight();
+    await rejected;
+    await expect(
+      readDiscoveryRecord(config.discoveryDir),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it.each([false, true])(
     'keeps local startup available when memory is %s and its default endpoint cannot be derived',
     async (enabled) => {
@@ -261,6 +286,46 @@ describe('LiveDaemon', () => {
     });
     await daemon.stop();
     expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('proves daemon identity only to the authenticated local instance without opening a call', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    const { url } = await daemon.start();
+    const record = await readDiscoveryRecord(config.discoveryDir);
+    const request = (headers: Record<string, string>) =>
+      fetch(`${url}/live/instance`, { headers });
+    expect((await request({})).status).toBe(401);
+    expect(
+      (
+        await request({
+          ...hostHeaders(record),
+          origin: 'https://untrusted.invalid',
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await request({ authorization: `Bearer ${record.token}` })).status,
+    ).toBe(409);
+    expect(
+      (
+        await request({
+          ...hostHeaders(record),
+          'x-qwen-live-harness-nonce': 'stale-instance',
+        })
+      ).status,
+    ).toBe(409);
+    const response = await request(hostHeaders(record));
+    expect(response.status).toBe(200);
+    const identity = await response.json();
+    expect(identity).toMatchObject({
+      pid: process.pid,
+      instanceNonce: record.instanceNonce,
+      protocolVersion: 9,
+      version: expect.stringMatching(/^\d+\.\d+\.\d+/),
+    });
+    expect(identity).not.toHaveProperty('token');
+    expect(identity).not.toHaveProperty('configPath');
   });
 
   it('authenticates standalone subagent management by bearer and instance without an active call', async () => {

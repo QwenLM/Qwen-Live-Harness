@@ -140,6 +140,7 @@ describe('PR #11369 round 2 daemon runtime reproduction', () => {
       process.argv = [
         process.execPath,
         fileURLToPath(new URL('./index.ts', import.meta.url)),
+        '--daemon-only',
       ];
       try {
         await import('./index.js');

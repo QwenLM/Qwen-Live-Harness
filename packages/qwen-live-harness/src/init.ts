@@ -12,7 +12,8 @@
  * Qwen Live Harness Host app, and writes ~/.qwen-live-harness/config.json.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import {
   existsSync,
   mkdirSync,
@@ -25,7 +26,11 @@ import { detectAgents, type DetectedAgent } from './agent-detector.js';
 import { DEFAULT_PROACTIVE_CONFIG, type ProactiveConfig } from './config.js';
 import { LiveHostInstaller } from './host/qwen-live-harness-host-installer.js';
 import { initialMemoryConfig } from './memory/config.js';
-import { resolveLiveDataDirectory } from './paths.js';
+import {
+  resolveLiveDataDirectory,
+  resolveLiveDiscoveryDirectory,
+} from './paths.js';
+import { registerCurrentRuntime } from './startup-registration.js';
 import {
   displayLiveMessage,
   isLiveLanguage,
@@ -307,7 +312,14 @@ export async function runInit(): Promise<void> {
     console.log(`\n  ${t('init.cancelled')}\n`);
     return;
   }
-  const defaultCwd = cwdPrompt.value || process.cwd();
+  const selectedCwd = String(cwdPrompt.value).trim();
+  const defaultCwd = resolve(
+    selectedCwd === '~'
+      ? homedir()
+      : /^~[/\\]/u.test(selectedCwd)
+        ? join(homedir(), selectedCwd.slice(2))
+        : selectedCwd || process.cwd(),
+  );
 
   // 8. Host app (macOS only)
   let hostStatus = t('init.hostSkipped');
@@ -334,7 +346,9 @@ export async function runInit(): Promise<void> {
       }
       if (install.value) {
         console.log(`  ${t('init.hostInstalling')}`);
-        const result = await installer.ensureInstalled();
+        const result = await installer.ensureInstalled(false, {
+          launch: false,
+        });
         if (result.state === 'installed') {
           console.log(
             `  ✓ ${t('init.hostInstalled', { version: result.version! })}`,
@@ -386,6 +400,14 @@ export async function runInit(): Promise<void> {
     mode: 0o600,
   });
   renameSync(tmpPath, configPath);
+
+  // Desktop startup must only see this runtime after its config is complete.
+  // This registers the executable; it does not launch the Host or daemon.
+  await registerCurrentRuntime({
+    dataDir: configDirectory,
+    discoveryDir: resolveLiveDiscoveryDirectory(),
+    cwd: defaultCwd,
+  });
 
   // 10. Done
   console.log(`\n  ✓ ${t('init.saved', { path: configPath })}`);
