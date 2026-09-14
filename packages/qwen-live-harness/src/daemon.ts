@@ -69,6 +69,9 @@ function buildAdaptor(
     return new QwenCodeAdaptor({
       baseUrl: backend.baseUrl,
       ...(backend.token ? { token: backend.token } : {}),
+      ...(backend.peerDiscovery
+        ? { peerDiscovery: backend.peerDiscovery }
+        : {}),
       ...(fields.defaultCwd ? { defaultCwd: fields.defaultCwd } : {}),
       clientId: fields.clientId,
       name: backend.name,

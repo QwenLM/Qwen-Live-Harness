@@ -4,7 +4,14 @@ import globals from 'globals';
 import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
-  { ignores: ['**/node_modules/**', '**/dist/**', '**/release/**'] },
+  {
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/release/**',
+      'packages/qwen-live-harness/src/vendor/qwen-code-peer/*.ts',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { languageOptions: { globals: { ...globals.node, ...globals.browser } } },

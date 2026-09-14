@@ -82,6 +82,19 @@ export const MAX_SUBAGENT_TASKS = 32;
 export const MAX_SUBAGENT_PERMISSIONS = 8;
 export const MAX_SUBAGENTS_REQUEST_BYTES = 4 * 1024;
 export const MAX_SUBAGENTS_CONTROL_BYTES = 1024 * 1024;
+export const MAX_DISCOVERED_SESSIONS = 32;
+
+/** Session discovery is separate from tasks and does not imply execution. */
+export type DiscoveredSession = {
+  id: string;
+  backend: string;
+  sessionId: string;
+  title: string;
+  cwd?: string;
+  source: 'terminal';
+  status: 'unknown';
+  readOnly: true;
+};
 
 export type SubagentsPage = {
   snapshot: SubagentsSnapshot;
@@ -90,6 +103,8 @@ export type SubagentsPage = {
   selected?: SubagentTask;
   unassignedPermissions?: SubagentPermission[];
   unassignedPermissionsOmitted?: number;
+  discoveredSessions?: DiscoveredSession[];
+  discoveredSessionsOmitted?: number;
 };
 export type SubagentsControlRequest =
   | { action: 'list'; offset?: number; selectedId?: string }
@@ -175,6 +190,30 @@ function validPermissions(value: unknown): value is SubagentPermission[] {
         return false;
       decisions.add(choice['decision']);
     }
+  }
+  return true;
+}
+
+function validDiscoveredSessions(value: unknown): value is DiscoveredSession[] {
+  if (!Array.isArray(value) || value.length > MAX_DISCOVERED_SESSIONS)
+    return false;
+  const ids = new Set<string>();
+  for (const session of value) {
+    if (
+      !record(session) ||
+      !identifier(session['id']) ||
+      ids.has(session['id']) ||
+      !text(session['backend'], 256) ||
+      !text(session['sessionId'], 256) ||
+      !session['sessionId'] ||
+      !text(session['title'], 240) ||
+      (session['cwd'] !== undefined && !text(session['cwd'], 4096)) ||
+      session['source'] !== 'terminal' ||
+      session['status'] !== 'unknown' ||
+      session['readOnly'] !== true
+    )
+      return false;
+    ids.add(session['id']);
   }
   return true;
 }
@@ -346,7 +385,12 @@ export function parseSubagentsControlResult(
     (page['unassignedPermissions'] !== undefined &&
       !validPermissions(page['unassignedPermissions'])) ||
     (page['unassignedPermissionsOmitted'] !== undefined &&
-      !integer(page['unassignedPermissionsOmitted']))
+      !integer(page['unassignedPermissionsOmitted'])) ||
+    (page['discoveredSessions'] !== undefined &&
+      !validDiscoveredSessions(page['discoveredSessions'])) ||
+    (page['discoveredSessionsOmitted'] !== undefined &&
+      (!integer(page['discoveredSessionsOmitted']) ||
+        page['discoveredSessions'] === undefined))
   )
     return undefined;
   return value as SubagentsControlResult;

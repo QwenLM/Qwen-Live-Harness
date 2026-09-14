@@ -19,6 +19,8 @@ export interface BackendHandle {
   readonly id: string;
   /** Identifies the owning adaptor (e.g. 'qwen-code'). */
   readonly adaptor: string;
+  /** Discovery-only targets must never enter an execution/control path. */
+  readonly readOnly?: true;
 }
 
 export interface BackendCapabilities {
@@ -40,6 +42,8 @@ export interface SessionSummary {
   label?: string;
   cwd?: string;
   state: 'idle' | 'busy' | 'closed' | 'unknown';
+  /** Informational peer identity; never grants authority. */
+  discovery?: { source: 'terminal'; sessionId: string; address: string };
 }
 
 /** Receipt returned by prompt(): the task was accepted, not completed. */
@@ -126,6 +130,11 @@ export interface BackendAdaptor {
   }): Promise<BackendHandle>;
 
   listSessions(): Promise<SessionSummary[]>;
+
+  /** Optional discovery lifetime; ordinary ACP adaptors need no hooks. */
+  listDiscoveredSessions?(): Promise<SessionSummary[]>;
+  startDiscovery?(callId: string): Promise<void>;
+  stopDiscovery?(callId: string): Promise<void>;
 
   /**
    * Submit one turn. Resolves as soon as the backend admits the prompt.

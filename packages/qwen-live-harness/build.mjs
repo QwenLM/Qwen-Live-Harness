@@ -17,9 +17,14 @@ import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { build } from 'esbuild';
+import {
+  peerSourceDir,
+  verifyPeerSources,
+} from '../../scripts/qwen-code-peer-source.mjs';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
+await verifyPeerSources();
 cpSync(path.join(here, '../../LICENSE'), path.join(here, 'LICENSE'));
 
 rmSync(path.join(here, 'dist'), { recursive: true, force: true });
@@ -34,7 +39,8 @@ execFileSync(
 );
 
 // The SDK npm package bundles a CLI for its query() API. Only embed its
-// HTTP client here; a Live installation must not install that CLI.
+// HTTP client and the pinned, Node-only peer sources here; a Live installation
+// must not install that CLI.
 const bundled = await build({
   absWorkingDir: here,
   entryPoints: ['src/adaptor/qwen-code-adaptor.ts'],
@@ -55,7 +61,7 @@ for (const output of Object.values(bundled.metafile.outputs)) {
   for (const dependency of output.imports) {
     if (!isBuiltin(dependency.path) || /child_process/u.test(dependency.path)) {
       throw new Error(
-        `Unexpected HTTP adaptor runtime dependency: ${dependency.path}`,
+        `Unexpected Qwen adaptor runtime dependency: ${dependency.path}`,
       );
     }
   }
@@ -69,6 +75,11 @@ cpSync(
   ),
   path.join(notices, 'qwen-code-sdk-LICENSE'),
 );
+const peerNotices = path.join(notices, 'qwen-code-peer');
+mkdirSync(peerNotices, { recursive: true });
+for (const name of ['LICENSE', 'upstream.json', 'README.md']) {
+  cpSync(path.join(peerSourceDir, name), path.join(peerNotices, name));
+}
 
 for (const required of ['index.js', 'daemon.js']) {
   const emitted = path.join(here, 'dist', required);

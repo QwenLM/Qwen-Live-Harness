@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SUBAGENTS_CONTROL_BYTES,
+  MAX_DISCOVERED_SESSIONS,
   parseSubagentsSnapshot,
   parseSubagentsControlRequest,
   parseSubagentsControlResult,
@@ -57,6 +58,51 @@ describe('subagent snapshot identity and value validation', () => {
 });
 
 describe('subagent management contracts', () => {
+  it('keeps discovered sessions read-only, bounded and separate from task counts', () => {
+    const session = {
+      id: 'session:1',
+      backend: 'qwen',
+      sessionId: 'peer-1',
+      title: 'Terminal session',
+      cwd: '/project',
+      source: 'terminal',
+      status: 'unknown',
+      readOnly: true,
+    };
+    const response = (fields: object) => ({
+      type: 'page',
+      page: { snapshot, offset: 0, total: 1, ...fields },
+    });
+    expect(parseSubagentsControlResult(response({}))).toBeDefined();
+    const valid = response({
+      discoveredSessions: [session],
+      discoveredSessionsOmitted: 2,
+    });
+    expect(parseSubagentsControlResult(valid)).toEqual(valid);
+    expect(
+      parseSubagentsControlResult(response({ discoveredSessions: [] })),
+    ).toBeDefined();
+    for (const invalid of [
+      { discoveredSessions: [session, session] },
+      { discoveredSessions: [{ ...session, status: 'running' }] },
+      { discoveredSessions: [{ ...session, readOnly: false }] },
+      { discoveredSessions: [{ ...session, source: 'daemon' }] },
+      { discoveredSessions: [{ ...session, sessionId: '' }] },
+      { discoveredSessions: [{ ...session, id: 'x'.repeat(129) }] },
+      { discoveredSessions: [{ ...session, title: 'x'.repeat(241) }] },
+      { discoveredSessions: [{ ...session, cwd: 'x'.repeat(4097) }] },
+      {
+        discoveredSessions: Array.from(
+          { length: MAX_DISCOVERED_SESSIONS + 1 },
+          (_, index) => ({ ...session, id: `session:${index}` }),
+        ),
+      },
+      { discoveredSessions: [session], discoveredSessionsOmitted: -1 },
+      { discoveredSessionsOmitted: 1 },
+    ])
+      expect(parseSubagentsControlResult(response(invalid))).toBeUndefined();
+  });
+
   it('bounds approval descriptions and never offers Allow for incomplete descriptions', () => {
     const permission = {
       requestHandle: 'req:1',

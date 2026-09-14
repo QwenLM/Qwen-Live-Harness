@@ -42,6 +42,15 @@ retired injected speech tool are no longer available; public peer discovery,
 control and progress reporting belong to M3. Live's own Proactive monitors are
 unaffected.
 
+## M3 discovery follow-up
+
+After extraction, M3 stage 1 adds opt-in local terminal discovery to
+QwenCodeAdaptor. The entries are read-only; terminal handoff and peer report
+announcements remain later stages. The original migration boundaries above
+describe the extraction snapshot. See the
+[terminal discovery guide](../packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1)
+for current configuration and limits.
+
 ## Breaking naming change (2026-09-14)
 
 The original extraction preserved application identities. The subsequent naming

@@ -1426,3 +1426,126 @@ describe('QwenCodeAdaptor prompt image blocks', () => {
     ).toBe(false);
   });
 });
+
+describe('QwenCodeAdaptor peer discovery boundary', () => {
+  const peer = {
+    sessionId: SESSION_ID,
+    name: 'terminal',
+    ref: 'abcdef',
+    address: 'terminal [abcdef]',
+    cwd: '/terminal',
+    pid: 5000,
+    kind: 'tui',
+    startedAt: 1000,
+  };
+
+  it('is opt-in and does not bind a peer endpoint during ordinary preflight', async () => {
+    const open = vi.fn();
+    const adaptor = makeAdaptor(makeClient(), { peerEndpointFactory: open });
+    expect(adaptor.listDiscoveredSessions).toBeUndefined();
+    await adaptor.preflight();
+    await adaptor.startDiscovery('call');
+    await adaptor.listSessions();
+    await adaptor.close();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('retains each available catalog when the other transport fails', async () => {
+    const client = makeClient({
+      listWorkspaceSessions: vi.fn(async () => [{ sessionId: SESSION_ID }]),
+    });
+    const endpoint = {
+      list: vi.fn(async () => [peer]),
+      close: vi.fn(async () => {}),
+    };
+    const adaptor = makeAdaptor(client, {
+      peerDiscovery: { qwenHome: '/isolated/home' },
+      peerEndpointFactory: async () => endpoint,
+    });
+    await adaptor.startDiscovery('call');
+    vi.mocked(client.listWorkspaceSessions).mockRejectedValueOnce(
+      new Error('REST offline'),
+    );
+    expect(await adaptor.listSessions()).toMatchObject([
+      { handle: { readOnly: true }, discovery: { source: 'terminal' } },
+    ]);
+    endpoint.list.mockRejectedValueOnce(new Error('peer offline'));
+    expect(await adaptor.listSessions()).toMatchObject([
+      { handle: { id: SESSION_ID } },
+    ]);
+    vi.mocked(client.listWorkspaceSessions).mockRejectedValueOnce(
+      new Error('REST offline'),
+    );
+    endpoint.list.mockRejectedValueOnce(new Error('peer offline'));
+    await expect(adaptor.listSessions()).rejects.toThrow('Could not list Qwen');
+    await adaptor.close();
+  });
+
+  it('keeps terminal identity separate from a same-id REST session and never controls it', async () => {
+    const client = makeClient({
+      listWorkspaceSessions: vi.fn(async () => [
+        {
+          sessionId: SESSION_ID,
+          displayName: 'Managed',
+          hasActivePrompt: true,
+        },
+      ]),
+    });
+    const endpoint = {
+      list: vi.fn(async () => [peer, { ...peer, kind: 'serve' }]),
+      close: vi.fn(async () => {}),
+    };
+    const open = vi.fn(async () => endpoint);
+    const adaptor = makeAdaptor(client, {
+      peerDiscovery: { qwenHome: '/isolated/home' },
+      peerEndpointFactory: open,
+    });
+    await adaptor.preflight();
+    expect(open).not.toHaveBeenCalled();
+    await adaptor.startDiscovery('call');
+    const rows = await adaptor.listSessions();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      handle: { id: SESSION_ID },
+      label: 'Managed',
+      state: 'busy',
+    });
+    const terminal = rows[1]!.handle;
+    expect(terminal.id).not.toEqual(SESSION_ID);
+    expect(terminal.readOnly).toBe(true);
+    expect(
+      await adaptor.prompt(terminal, [
+        { type: 'text', text: 'run a command' },
+        { type: 'image', mimeType: 'image/png', data: new Uint8Array([1]) },
+      ]),
+    ).toMatchObject({ status: 'rejected' });
+    await expect(adaptor.cancel(terminal)).rejects.toThrow('read-only');
+    await expect(
+      adaptor.respondPermission(terminal, 'req', 'allow'),
+    ).rejects.toThrow('read-only');
+    expect(await adaptor.cancelJob(terminal, 'job')).toBe('not_found');
+    expect(await collect(adaptor, terminal)).toEqual([]);
+    for (const method of [
+      client.promptNonBlocking,
+      client.uploadSessionAttachment,
+      client.enqueueMidTurnMessage,
+      client.cancel,
+      client.removePendingPrompt,
+      client.respondToSessionPermission,
+      client.subscribeEvents,
+    ]) {
+      expect(method).not.toHaveBeenCalled();
+    }
+    // Even a stale caller losing optional metadata cannot route this id to REST.
+    expect(
+      await adaptor.prompt({ id: terminal.id, adaptor: terminal.adaptor }, []),
+    ).toMatchObject({ status: 'rejected' });
+    await adaptor.stopDiscovery('call');
+    expect(await adaptor.listSessions()).toHaveLength(1);
+    expect(await adaptor.prompt(terminal, [])).toMatchObject({
+      status: 'rejected',
+    });
+    await adaptor.close();
+    expect(endpoint.close).toHaveBeenCalledTimes(1);
+  });
+});

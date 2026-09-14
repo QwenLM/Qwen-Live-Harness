@@ -349,6 +349,61 @@ button:focus-visible,
 .subagent-row + .subagent-row {
   margin-top: 6px;
 }
+.discovered-sessions {
+  padding: 10px 2px 4px;
+}
+.discovered-sessions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.discovered-sessions-header h2 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.discovered-sessions-header button {
+  flex: 0 0 auto;
+}
+.discovered-sessions-description,
+.discovered-sessions-empty,
+.discovered-sessions-omitted {
+  margin: 7px 0;
+  color: var(--live-muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+.discovered-sessions-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.discovered-session {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--live-border);
+  border-radius: 9px;
+  background: var(--live-surface);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.discovered-session-title {
+  font-size: 12px;
+  line-height: 18px;
+}
+.discovered-session-origin,
+.discovered-session-cwd {
+  margin: 0;
+  color: var(--live-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+.subagent-status[data-status='unknown'] {
+  color: var(--live-muted);
+}
 .subagent-task {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 104px;

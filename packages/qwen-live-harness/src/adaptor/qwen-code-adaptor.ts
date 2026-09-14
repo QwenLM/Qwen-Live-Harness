@@ -29,6 +29,11 @@
 
 import { DaemonClient } from '@qwen-code/sdk/daemon';
 import { publicActivity } from './public-activity.js';
+import {
+  QwenPeerDiscovery,
+  type QwenPeerDiscoveryOptions,
+  type PeerEndpointFactory,
+} from './qwen-peer-discovery.js';
 import type {
   BackendAdaptor,
   BackendCapabilities,
@@ -145,6 +150,9 @@ export interface QwenCodeAdaptorOptions {
   name?: string;
   /** Injection seam for unit tests. */
   client?: DaemonClientLike;
+  peerDiscovery?: QwenPeerDiscoveryOptions;
+  /** Test seam for the official peer endpoint. */
+  peerEndpointFactory?: PeerEndpointFactory;
 }
 
 interface SessionState {
@@ -334,10 +342,21 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   /** Every cwd sessions were created in; listSessions unions across them. */
   private readonly sessionCwds = new Set<string>();
   private workspaceCwd: string | undefined;
+  private readonly peers?: QwenPeerDiscovery;
+  readonly listDiscoveredSessions?: () => Promise<SessionSummary[]>;
 
   constructor(options: QwenCodeAdaptorOptions) {
     this.options = options;
     this.name = options.name ?? ADAPTOR_NAME;
+    if (options.peerDiscovery) {
+      this.peers = new QwenPeerDiscovery(
+        options.peerDiscovery,
+        this.name,
+        options.peerEndpointFactory,
+      );
+      const peers = this.peers;
+      this.listDiscoveredSessions = () => peers.list();
+    }
     this.client =
       options.client ??
       (new DaemonClient({
@@ -432,7 +451,36 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     return { id: session.sessionId, adaptor: this.name };
   }
 
+  async startDiscovery(callId: string): Promise<void> {
+    await this.peers?.start(callId);
+  }
+
+  async stopDiscovery(callId: string): Promise<void> {
+    await this.peers?.stop(callId);
+  }
+
   async listSessions(): Promise<SessionSummary[]> {
+    if (!this.listDiscoveredSessions) return this.listManagedSessions();
+    // Either catalog can remain available when the other transport fails.
+    const [managed, peers] = await Promise.allSettled([
+      this.listManagedSessions(),
+      this.listDiscoveredSessions(),
+    ]);
+    if (managed.status === 'rejected' && peers.status === 'rejected') {
+      throw new AggregateError(
+        [managed.reason, peers.reason],
+        'Could not list Qwen managed or terminal sessions',
+      );
+    }
+    // A matching id alone cannot prove a remote daemon shares this local
+    // Qwen home. Serve/headless peers retain their authenticated REST route.
+    return [
+      ...(managed.status === 'fulfilled' ? managed.value : []),
+      ...(peers.status === 'fulfilled' ? peers.value : []),
+    ];
+  }
+
+  private async listManagedSessions(): Promise<SessionSummary[]> {
     const defaultCwd = this.options.defaultCwd ?? this.workspaceCwd;
     const cwds = new Set<string>();
     if (defaultCwd !== undefined) cwds.add(defaultCwd);
@@ -480,6 +528,12 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     blocks: readonly ContentBlock[],
     opts?: { steer?: boolean },
   ): Promise<PromptReceipt> {
+    if (this.isDiscoveryHandle(handle)) {
+      return {
+        status: 'rejected',
+        note: 'This terminal session is read-only; sending instructions is not available yet.',
+      };
+    }
     const state = this.trackSession(handle.id);
 
     if (opts?.steer && state.busy) {
@@ -577,6 +631,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     handle: BackendHandle,
     opts?: { signal?: AbortSignal },
   ): AsyncIterable<BackendEvent> {
+    if (this.isDiscoveryHandle(handle)) return;
     const state = this.trackSession(handle.id);
     const stream = this.client.subscribeEvents(handle.id, {
       ...(opts?.signal ? { signal: opts.signal } : {}),
@@ -592,10 +647,15 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   }
 
   isBusy(handle: BackendHandle): boolean {
+    if (this.isDiscoveryHandle(handle)) return false;
     return this.sessions.get(handle.id)?.busy === true;
   }
 
   async cancel(handle: BackendHandle): Promise<void> {
+    if (this.isDiscoveryHandle(handle))
+      throw new Error(
+        'This terminal session is read-only; stopping is not supported.',
+      );
     await this.client.cancel(handle.id, this.sessions.get(handle.id)?.clientId);
   }
 
@@ -603,6 +663,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     handle: BackendHandle,
     jobRef: string,
   ): Promise<CancelJobResult> {
+    if (this.isDiscoveryHandle(handle)) return 'not_found';
     const state = this.sessions.get(handle.id);
     if (handle.adaptor !== this.name || !state || state.closed)
       return 'not_found';
@@ -617,6 +678,10 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     requestId: string,
     decision: PermissionDecision,
   ): Promise<'delivered' | 'already_resolved'> {
+    if (this.isDiscoveryHandle(handle))
+      throw new Error(
+        'This terminal session is read-only; permission forwarding is not supported.',
+      );
     const state = this.trackSession(handle.id);
     const options = state.permissionOptions.get(requestId) ?? [];
     let response: Record<string, unknown>;
@@ -657,10 +722,15 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   }
 
   async close(): Promise<void> {
+    await this.peers?.close();
     this.sessions.clear();
   }
 
   // -- internals -----------------------------------------------------------
+
+  private isDiscoveryHandle(handle: BackendHandle): boolean {
+    return handle.readOnly === true || handle.id.startsWith('qwen-peer:');
+  }
 
   private trackSession(
     sessionId: string,

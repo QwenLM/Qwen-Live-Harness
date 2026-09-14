@@ -136,6 +136,14 @@ export class SubagentsView {
   private readonly stopReason = element('p', 'subagents-stop-reason');
   private readonly permissions = element('section', 'subagent-permissions');
   private readonly unassigned = element('li', 'subagent-unassigned');
+  private readonly discovered = element('li', 'discovered-sessions');
+  private readonly discoveredList = element('ul', 'discovered-sessions-list');
+  private readonly discoveredEmpty = element('p', 'discovered-sessions-empty');
+  private readonly discoveredOmitted = element(
+    'p',
+    'discovered-sessions-omitted',
+  );
+  private readonly refreshSessions = element('button', 'subagents-page-button');
   private readonly permissionRows = new Map<
     string,
     {
@@ -161,6 +169,16 @@ export class SubagentsView {
   private readonly output = element('pre', 'subagent-output');
   private readonly truncated = element('p', 'subagent-truncated');
   private readonly rows = new Map<string, TaskRow>();
+  private readonly sessionRows = new Map<
+    string,
+    {
+      element: HTMLLIElement;
+      title: HTMLElement;
+      status: HTMLElement;
+      origin: HTMLElement;
+      cwd: HTMLElement;
+    }
+  >();
   private readonly eventRows = new Map<
     string,
     { element: HTMLLIElement; label: HTMLElement; message: HTMLElement }
@@ -255,6 +273,24 @@ export class SubagentsView {
     this.previous.addEventListener('click', () => this.changePage(-1));
     this.next.addEventListener('click', () => this.changePage(1));
     this.retry.addEventListener('click', () => this.changePage(0));
+    this.refreshSessions.type = 'button';
+    uiText(this.refreshSessions, 'subagents.refreshSessions');
+    this.refreshSessions.addEventListener('click', () => this.changePage(0));
+    const sessionsHeader = element('div', 'discovered-sessions-header');
+    sessionsHeader.append(
+      uiText(element('h2', ''), 'subagents.terminalSessions'),
+      this.refreshSessions,
+    );
+    this.discovered.append(
+      sessionsHeader,
+      uiText(
+        element('p', 'discovered-sessions-description'),
+        'subagents.sessionsReadOnly',
+      ),
+      this.discoveredEmpty,
+      this.discoveredList,
+      this.discoveredOmitted,
+    );
     this.pagination.append(
       this.previous,
       this.pageLabel,
@@ -351,6 +387,8 @@ export class SubagentsView {
       this.feedbackKey = undefined;
       for (const row of this.rows.values()) row.element.remove();
       this.rows.clear();
+      for (const row of this.sessionRows.values()) row.element.remove();
+      this.sessionRows.clear();
       for (const row of this.permissionRows.values()) row.element.remove();
       this.permissionRows.clear();
     }
@@ -495,7 +533,8 @@ export class SubagentsView {
       this.renderList(state);
       this.empty.hidden = Boolean(
         (page?.snapshot ?? state.snapshot)?.tasks.length ||
-        page?.unassignedPermissions?.length,
+        page?.unassignedPermissions?.length ||
+        page?.discoveredSessions !== undefined,
       );
       text(
         this.empty,
@@ -602,6 +641,73 @@ export class SubagentsView {
       if (this.list.firstElementChild !== this.unassigned)
         this.list.prepend(this.unassigned);
     } else this.unassigned.remove();
+    this.renderDiscoveredSessions(state);
+  }
+
+  private renderDiscoveredSessions(state: SubagentsWindowState): void {
+    const sessions = state.page?.discoveredSessions;
+    if (sessions === undefined) {
+      this.discovered.remove();
+      this.discoveredList.replaceChildren();
+      this.sessionRows.clear();
+      return;
+    }
+    localizeUi(this.discovered, state.language);
+    this.refreshSessions.disabled =
+      this.pending ||
+      Boolean(state.loading) ||
+      !state.connected ||
+      !state.controlsAvailable ||
+      !state.instanceId;
+    this.discoveredEmpty.hidden = sessions.length > 0;
+    text(
+      this.discoveredEmpty,
+      liveText(state.language, 'subagents.noTerminalSessions'),
+    );
+    const omitted = state.page?.discoveredSessionsOmitted ?? 0;
+    this.discoveredOmitted.hidden = omitted === 0;
+    text(
+      this.discoveredOmitted,
+      liveText(state.language, 'subagents.sessionsOmitted', { count: omitted }),
+    );
+    const ids = new Set(sessions.map((session) => session.id));
+    for (const [id, row] of this.sessionRows) {
+      if (ids.has(id)) continue;
+      row.element.remove();
+      this.sessionRows.delete(id);
+    }
+    for (const [index, session] of sessions.entries()) {
+      let row = this.sessionRows.get(session.id);
+      if (!row) {
+        row = {
+          element: element('li', 'discovered-session'),
+          title: element('strong', 'discovered-session-title'),
+          status: element('span', 'subagent-status'),
+          origin: element('p', 'discovered-session-origin'),
+          cwd: element('p', 'discovered-session-cwd'),
+        };
+        row.element.dataset.sessionId = session.id;
+        row.status.dataset.status = 'unknown';
+        row.element.append(row.title, row.status, row.origin, row.cwd);
+        this.sessionRows.set(session.id, row);
+      }
+      text(row.title, session.title || session.sessionId);
+      text(row.status, liveText(state.language, 'subagents.executionUnknown'));
+      text(
+        row.origin,
+        liveText(state.language, 'subagents.terminalOrigin', {
+          backend: session.backend,
+          session: session.sessionId,
+        }),
+      );
+      text(row.cwd, session.cwd ?? '');
+      row.cwd.hidden = !session.cwd;
+      const atIndex = this.discoveredList.children[index];
+      if (atIndex !== row.element)
+        this.discoveredList.insertBefore(row.element, atIndex ?? null);
+    }
+    if (this.list.lastElementChild !== this.discovered)
+      this.list.append(this.discovered);
   }
 
   private renderDetail(state: SubagentsWindowState): void {

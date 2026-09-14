@@ -63,10 +63,12 @@ const SESSION_LIST_TOOL: RealtimeToolDefinition = {
   function: {
     name: SESSION_LIST_TOOL_NAME,
     description:
-      'List the coding sessions you can dispatch work to, with their short ' +
+      'List coding sessions and read-only terminal sessions, with their short ' +
       'handles, working directories, whether each is idle or busy, and the ' +
       'backend (coding agent) each runs on. Call this before referring to ' +
-      'any session you have not listed yet in this call.',
+      'any session you have not listed yet in this call. Entries marked ' +
+      'read_only cannot accept handoff, images, stop or permission actions; ' +
+      'unknown execution state does not mean idle.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
 };

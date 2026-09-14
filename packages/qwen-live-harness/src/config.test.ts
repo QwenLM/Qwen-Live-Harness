@@ -568,3 +568,62 @@ describe('loadConfig', () => {
     expect(config.discoveryDir).toBe(join(homedir(), '.qwen-live-harness'));
   });
 });
+
+describe('Qwen peer discovery configuration', () => {
+  it('accepts an explicit local Qwen home on a qwen-code backend', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [
+        {
+          name: 'qwen',
+          kind: 'qwen-code',
+          default: true,
+          peerDiscovery: { qwenHome: '~/isolated-qwen' },
+        },
+      ],
+    });
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).backends[0],
+    ).toMatchObject({
+      peerDiscovery: { qwenHome: '~/isolated-qwen' },
+    });
+  });
+  it.each([
+    true,
+    {},
+    { qwenHome: '' },
+    { qwenHome: 2 },
+    { qwenHome: '/tmp', controllerToken: 'never-accepted-here' },
+  ])(
+    'rejects invalid or authority-bearing discovery config %j',
+    async (peerDiscovery) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [
+          { name: 'qwen', kind: 'qwen-code', default: true, peerDiscovery },
+        ],
+      });
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        'Invalid peerDiscovery',
+      );
+    },
+  );
+  it('does not accept peer settings on an ACP backend', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [
+        {
+          name: 'acp',
+          kind: 'acp',
+          command: 'qwen',
+          args: ['--acp'],
+          default: true,
+          peerDiscovery: { qwenHome: '/tmp' },
+        },
+      ],
+    });
+    expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+      '"peerDiscovery" is not valid for kind acp',
+    );
+  });
+});
