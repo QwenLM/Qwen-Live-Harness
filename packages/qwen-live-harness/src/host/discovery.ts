@@ -11,8 +11,13 @@ import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type { LockOptions } from 'proper-lockfile';
-import { LIVE_HOST_PROTOCOL_VERSION } from './types.js';
+import {
+  LIVE_HOST_PROTOCOL_VERSION,
+  type LiveDiscoveryRecord,
+} from './types.js';
 import { defaultLiveDataDirectory } from '../paths.js';
+
+export type { LiveDiscoveryRecord } from './types.js';
 
 export const LIVE_DISCOVERY_RELATIVE_PATH = path.join('run', 'daemon.json');
 const MAX_DISCOVERY_BYTES = 16 * 1024;
@@ -30,15 +35,6 @@ const LOCK_OPTIONS: LockOptions = {
     randomize: true,
   },
 };
-
-export interface LiveDiscoveryRecord {
-  url: string;
-  token?: string;
-  configPath?: string;
-  protocolVersion: typeof LIVE_HOST_PROTOCOL_VERSION;
-  pid: number;
-  instanceNonce: string;
-}
 
 export interface LiveDiscoveryOwner {
   pid: number;

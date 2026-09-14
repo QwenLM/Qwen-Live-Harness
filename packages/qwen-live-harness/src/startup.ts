@@ -25,8 +25,10 @@ import {
   resolve,
 } from 'node:path';
 import { promisify } from 'node:util';
-import type { LiveDiscoveryRecord } from './host/discovery.js';
-import { LIVE_HOST_PROTOCOL_VERSION } from './host/types.js';
+import {
+  LIVE_HOST_PROTOCOL_VERSION,
+  type LiveDiscoveryRecord,
+} from './host/types.js';
 
 const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_LOG_BYTES = 1024 * 1024;
@@ -425,65 +427,15 @@ async function delay(
   });
 }
 
-/** Only a CLI daemon owner takes this lock; the Host never holds it over spawn. */
-export async function withDaemonStartupLock<T>(
-  discoveryPath: string,
-  callback: () => Promise<T>,
-  options: StartupOptions = {},
-): Promise<T> {
-  assertNotAborted(options.signal);
-  const directory = await prepareRunDirectory(discoveryPath);
-  const lockPath = join(directory, '.startup.lock');
-  const lockfile = (await import('proper-lockfile')).default;
-  const deadline = Date.now() + (options.timeoutMs ?? STARTUP_TIMEOUT_MS);
-  let release: (() => Promise<void>) | undefined;
-  let compromised: unknown;
-  while (!release) {
-    assertNotAborted(options.signal);
-    try {
-      const existing = await fs.lstat(lockPath).catch((error: unknown) => {
-        if (errorCode(error) === 'ENOENT') return undefined;
-        throw error;
-      });
-      if (
-        existing &&
-        (!existing.isDirectory() ||
-          existing.isSymbolicLink() ||
-          !isOwned(existing))
-      )
-        throw new StartupError('discovery_invalid');
-      // proper-lockfile indexes ownership by target, not lockfilePath. The
-      // discovery writer independently locks `directory`; sharing its target
-      // would overwrite this in-process owner and break release after publish.
-      release = await lockfile.lock(join(directory, '.startup-owner'), {
-        realpath: false,
-        lockfilePath: lockPath,
-        stale: 30_000,
-        update: 5_000,
-        retries: 0,
-        onCompromised: (error) => {
-          compromised = error;
-        },
-      });
-    } catch (error) {
-      if (errorCode(error) !== 'ELOCKED') throw error;
-      if (Date.now() >= deadline) throw new StartupError('startup_busy');
-      await delay(
-        Math.min(100, Math.max(1, deadline - Date.now())),
-        options.signal,
-      );
-    }
-  }
-  try {
-    assertNotAborted(options.signal);
-    const result = await callback();
-    if (compromised)
-      throw new StartupError('startup_busy', { cause: compromised });
-    return result;
-  } finally {
-    await release();
-  }
-}
+/** @internal Shared only with the CLI lock module; carries no lock dependency. */
+export const startupInternals = {
+  assertNotAborted,
+  prepareRunDirectory,
+  errorCode,
+  isOwned,
+  delay,
+  timeoutMs: STARTUP_TIMEOUT_MS,
+};
 
 async function validateRuntimePackage(
   registration: RuntimeRegistration,

@@ -11,7 +11,8 @@ import { getLiveDiscoveryPath } from './host/discovery.js';
 import { LiveHostInstaller } from './host/qwen-live-harness-host-installer.js';
 import { liveMessage, liveText } from './i18n/messages.js';
 import { LiveLogger } from './logger.js';
-import { probeDaemon, StartupError, withDaemonStartupLock } from './startup.js';
+import { probeDaemon, StartupError } from './startup.js';
+import { withDaemonStartupLock } from './startup-lock.js';
 import { registerCurrentRuntime } from './startup-registration.js';
 import { PACKAGE_VERSION } from './version.js';
 

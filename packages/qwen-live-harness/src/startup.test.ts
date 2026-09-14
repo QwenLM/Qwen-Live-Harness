@@ -18,9 +18,9 @@ import {
   launchRegisteredDaemon,
   probeDaemon,
   registerRuntime,
-  withDaemonStartupLock,
   type RuntimeRegistration,
 } from './startup.js';
+import { withDaemonStartupLock } from './startup-lock.js';
 
 let directory: string;
 let discoveryPath: string;

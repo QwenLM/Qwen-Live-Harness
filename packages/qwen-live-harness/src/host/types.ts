@@ -8,6 +8,16 @@ export const LIVE_HOST_PROTOCOL_VERSION = 9 as const;
 export const LIVE_HOST_BUNDLE_ID =
   'com.alibaba.qwen-live-harness.host' as const;
 
+/** Shared discovery data; importing it must not load daemon filesystem locks. */
+export interface LiveDiscoveryRecord {
+  url: string;
+  token?: string;
+  configPath?: string;
+  protocolVersion: typeof LIVE_HOST_PROTOCOL_VERSION;
+  pid: number;
+  instanceNonce: string;
+}
+
 export type LiveVisualSource = 'screen' | 'camera';
 export type LiveVisualMode = 'on-demand' | 'live-feed';
 
