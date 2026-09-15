@@ -26,6 +26,10 @@ export interface RegisteredBackend {
 }
 
 export type RegistryLog = (message: string) => void;
+export type RegistryProgress = (event: {
+  backend: string;
+  stage: 'starting' | 'ready' | 'unavailable';
+}) => void;
 
 export class BackendRegistry {
   private readonly entries: RegisteredBackend[];
@@ -88,16 +92,24 @@ export class BackendRegistry {
     return entry.adaptor;
   }
 
-  async preflight(log: RegistryLog): Promise<void> {
+  async preflight(
+    log: RegistryLog,
+    progress?: RegistryProgress,
+  ): Promise<void> {
     // Default first, and its failure aborts startup.
+    progress?.({ backend: this.defaultAdaptor.name, stage: 'starting' });
     await this.defaultAdaptor.preflight();
+    progress?.({ backend: this.defaultAdaptor.name, stage: 'ready' });
     const secondaries = this.entries.filter((entry) => !entry.isDefault);
     await Promise.allSettled(
       secondaries.map(async (entry) => {
         try {
+          progress?.({ backend: entry.adaptor.name, stage: 'starting' });
           await entry.adaptor.preflight();
+          progress?.({ backend: entry.adaptor.name, stage: 'ready' });
         } catch (error) {
           entry.status = 'unavailable';
+          progress?.({ backend: entry.adaptor.name, stage: 'unavailable' });
           entry.lastError =
             error instanceof Error ? error.message : String(error);
           log(

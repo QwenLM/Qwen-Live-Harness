@@ -21,7 +21,7 @@ export class HostDaemonBootstrap {
   constructor(
     private readonly options: Omit<LaunchOptions, 'signal' | 'startIfMissing'>,
     private readonly callbacks: {
-      onReady: (result: LaunchResult) => void;
+      onReady: (result: LaunchResult) => void | Promise<void>;
       onChange: () => void;
     },
     private readonly launch = launchRegisteredDaemon,
@@ -48,10 +48,10 @@ export class HostDaemonBootstrap {
     this.callbacks.onChange();
     const operation = Promise.resolve()
       .then(() => this.launch({ ...this.options, startIfMissing, signal }))
-      .then((result) => {
+      .then(async (result) => {
         // Register the authenticated target even if Quit raced with readiness.
         // The caller can then confirm shutdown before allowing the app to exit.
-        this.callbacks.onReady(result);
+        await this.callbacks.onReady(result);
         if (!signal.aborted) this.state = { phase: 'ready' };
       })
       .catch((error: unknown) => {

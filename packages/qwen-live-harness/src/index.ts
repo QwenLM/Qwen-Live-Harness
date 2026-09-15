@@ -38,6 +38,7 @@ export type {
 
 async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
   const logger = new LiveLogger(debug ? 'debug' : undefined);
+  logger.info(liveText(preferredLanguage(), 'cli.starting'));
   if (logger.debugEnabled) {
     logger.debug(liveText(preferredLanguage(), 'cli.debugNotice'));
   }
@@ -74,11 +75,14 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     startup.abort();
-    logger.info(`received ${signal}, shutting down`);
+    logger.info(liveText(preferredLanguage(), 'cli.stopping'));
+    logger.debug(`received ${signal}, shutting down`);
+    let exitCode = 0;
     startOperation
       .catch(() => undefined)
       .then(() => daemon?.stopForProcessExit())
       .catch((error: unknown) => {
+        exitCode = 1;
         logger.error(
           `shutdown failed: ${
             error instanceof Error ? error.message : String(error)
@@ -86,7 +90,7 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
         );
       })
       .finally(() => {
-        process.exit(0);
+        process.exit(exitCode);
       });
   };
   process.on('SIGINT', () => {
@@ -119,7 +123,7 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
             : String(error),
       ),
     );
-    await daemon?.stop().catch(() => undefined);
+    await daemon?.stopForProcessExit().catch(() => undefined);
     process.exitCode = 1;
   }
 }

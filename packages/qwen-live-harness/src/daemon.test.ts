@@ -16,6 +16,7 @@ import { BackendRegistry } from './adaptor/registry.js';
 import { DEFAULT_PROACTIVE_CONFIG, type LiveConfig } from './config.js';
 import { DEFAULT_MEMORY_CONFIG } from './memory/config.js';
 import { LiveDaemon } from './daemon.js';
+import { readDaemonStopMarker } from './lifecycle.js';
 import {
   getLiveDiscoveryPath,
   type LiveDiscoveryRecord,
@@ -174,6 +175,39 @@ afterEach(async () => {
 });
 
 describe('LiveDaemon', () => {
+  it('retains an instance-bound stop notice after process exit removes discovery', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    await daemon.start();
+    const identity = daemon.getInstanceIdentity();
+    const discoveryPath = getLiveDiscoveryPath(config.discoveryDir);
+    expect(await readDaemonStopMarker(discoveryPath, identity)).toBe(false);
+    await daemon.stopForProcessExit();
+    expect(await readDaemonStopMarker(discoveryPath, identity)).toBe(true);
+    expect(
+      await readDaemonStopMarker(discoveryPath, {
+        ...identity,
+        instanceNonce: 'different_instance_nonce_123',
+      }),
+    ).toBe(false);
+    await expect(
+      readDiscoveryRecord(config.discoveryDir),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not interpret ordinary resource disposal as a CLI process-exit notice', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    await daemon.start();
+    await daemon.stop();
+    expect(
+      await readDaemonStopMarker(
+        getLiveDiscoveryPath(config.discoveryDir),
+        daemon.getInstanceIdentity(),
+      ),
+    ).toBe(false);
+  });
+
   it('does not publish a late daemon after shutdown during backend initialization', async () => {
     const config = await testConfig();
     const daemon = startedDaemon(config);

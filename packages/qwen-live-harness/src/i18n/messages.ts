@@ -402,6 +402,30 @@ export const LIVE_MESSAGES = {
     en: 'Connected to the running Qwen Live Harness daemon.',
     'zh-CN': '已复用正在运行的 Qwen Live Harness 服务。',
   },
+  'cli.starting': {
+    en: 'Starting Qwen Live Harness…',
+    'zh-CN': '正在启动 Qwen Live Harness…',
+  },
+  'cli.stopping': {
+    en: 'Stopping Qwen Live Harness and Host…',
+    'zh-CN': '正在关闭 Qwen Live Harness 和 Host…',
+  },
+  'cli.checkingInstance': {
+    en: 'Checking for a running daemon…',
+    'zh-CN': '正在检查运行中的服务实例…',
+  },
+  'cli.backendStarting': {
+    en: 'Initializing coding agent: {name}…',
+    'zh-CN': '正在初始化编程代理：{name}…',
+  },
+  'cli.checkingHost': {
+    en: 'Checking Host version, signature and macOS approval…',
+    'zh-CN': '正在校验 Host 版本、签名和 macOS 公证状态…',
+  },
+  'cli.openingHost': {
+    en: 'Opening desktop Host…',
+    'zh-CN': '正在打开桌面 Host…',
+  },
   'cli.hostOpened': {
     en: 'Qwen Live Harness Host is opening.',
     'zh-CN': '正在打开 Qwen Live Harness Host。',
@@ -470,6 +494,14 @@ export const LIVE_MESSAGES = {
   'startup.invalidDiscoveryPath': {
     en: 'The desktop launch path is invalid. Run qwen-live-harness init again.',
     'zh-CN': '桌面启动路径无效，请重新运行 qwen-live-harness init。',
+  },
+  'startup.invalidOwner': {
+    en: 'Invalid desktop daemon identity. Restart Qwen Live Harness from the terminal.',
+    'zh-CN': '桌面启动的服务实例信息无效，请从终端重新启动 Qwen Live Harness。',
+  },
+  'startup.ownerMismatch': {
+    en: 'This Host is connected to a different daemon instance. Quit it before opening another instance.',
+    'zh-CN': '此 Host 已连接到另一个服务实例，请先退出再打开其他实例。',
   },
   'startup.profileMismatch': {
     en: 'Host is already using another configuration. Quit it before opening this one.',

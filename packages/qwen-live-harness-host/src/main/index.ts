@@ -33,7 +33,8 @@ import { AppshotReadinessMonitor } from './appshot-readiness.ts';
 import { AppshotCaptureService } from './appshot-capture.ts';
 import { StartupInteraction } from './startup-interaction.ts';
 import { HostDaemonBootstrap } from './daemon-bootstrap.ts';
-import { resolveDiscoveryPath } from './discovery.ts';
+import { HostDaemonLifecycle, parseDaemonOwner } from './daemon-lifecycle.ts';
+import { resolveDiscoveryPath, type LiveDiscoveryRecord } from './discovery.ts';
 import { SubagentsWindows } from './subagents-windows.ts';
 import {
   OVERLAY_GEOMETRY,
@@ -121,6 +122,9 @@ let tray: Tray | undefined;
 let subagents: SubagentsWindows | undefined;
 let daemon: LiveDaemonConnection;
 let daemonBootstrap: HostDaemonBootstrap | undefined;
+let daemonLifecycle: HostDaemonLifecycle | undefined;
+let activationGeneration = 0;
+let pendingActivationGeneration: number | undefined;
 let daemonDiscoveryPath: string | undefined;
 let startupInvocationError: string | undefined;
 let activationConnectOnly = false;
@@ -787,6 +791,7 @@ function resetOverlayInteraction(preserveSubagents = false): void {
 
 function quitHost(): Promise<void> {
   startupInteraction.cancel();
+  daemonLifecycle?.pause();
   if (quitOperation) return quitOperation;
   quitting = true;
   quitState = 'pending';
@@ -803,6 +808,7 @@ function quitHost(): Promise<void> {
       quitting = false;
       quitOperation = undefined;
       quitState = 'failed';
+      daemonLifecycle?.resume();
       const cause = error instanceof Error ? error.cause : undefined;
       writeLiveDiagnostic('host_quit_failed', {
         kind: error instanceof Error ? error.name : 'unknown',
@@ -823,6 +829,38 @@ function quitHost(): Promise<void> {
       publishState();
       showOverlay();
       throw new Error(liveMessage('ui.quitFailed'));
+    }
+    resetOverlayInteraction();
+    quitApproved = true;
+    app.quit();
+  })();
+  return quitOperation;
+}
+
+/** The daemon already owns shutdown; asking it to quit again can deadlock. */
+function quitFromDaemon(): Promise<void> {
+  // Keep a user-initiated Quit's authenticated acknowledgement / retry intact.
+  if (quitOperation || quitState === 'pending')
+    return quitOperation ?? Promise.resolve();
+  startupInteraction.cancel();
+  daemonLifecycle?.stop();
+  quitting = true;
+  quitState = 'pending';
+  deactivateNativeServices();
+  daemon?.stop();
+  publishState();
+  writeLiveDiagnostic('host_daemon_stopped');
+  quitOperation = (async () => {
+    try {
+      await daemonBootstrap?.stop();
+    } catch {
+      quitting = false;
+      quitOperation = undefined;
+      quitState = 'failed';
+      writeLiveDiagnostic('host_daemon_stop_cleanup_failed');
+      publishState();
+      showOverlay();
+      return;
     }
     resetOverlayInteraction();
     quitApproved = true;
@@ -2521,11 +2559,29 @@ function prepareDaemonLaunch(argv?: readonly string[]): {
   return { startIfMissing: !activationConnectOnly };
 }
 
+async function rememberDaemonStartup(
+  record: LiveDiscoveryRecord,
+): Promise<boolean> {
+  const current = await daemonLifecycle?.acceptAuthenticated(record, {
+    allowMissing: quitting,
+  });
+  if (current) daemon.rememberStartupTarget(record);
+  // A previous bootstrap can finish after a newer CLI activation. Read current
+  // discovery even when its result is stale, without reviving that old owner.
+  if (!quitting) daemon.start();
+  return current === true;
+}
+
 function openHost(argv?: string[]): void {
   if (quitting || quitState) return;
-  if (argv?.includes('--qwen-live-harness-connect-only')) {
-    activationConnectOnly = true;
+  // macOS can deliver a focus activation while a second-instance argument is
+  // still being checked. It must not bypass that check or start another daemon.
+  if (!argv && pendingActivationGeneration !== undefined) {
+    showOverlay();
+    return;
   }
+  const generation = ++activationGeneration;
+  pendingActivationGeneration = undefined;
   if (argv && daemonDiscoveryPath) {
     let requestedPath: string;
     try {
@@ -2544,6 +2600,46 @@ function openHost(argv?: string[]): void {
       return;
     }
   }
+  let owner: ReturnType<typeof parseDaemonOwner>;
+  try {
+    owner = argv ? parseDaemonOwner(argv) : undefined;
+  } catch {
+    startupInvocationError = liveMessage('startup.invalidOwner');
+    publishState();
+    showOverlay();
+    return;
+  }
+  if (owner && daemonLifecycle) {
+    pendingActivationGeneration = generation;
+    void daemonLifecycle.acceptActivation(owner).then(
+      (accepted) => {
+        if (pendingActivationGeneration === generation)
+          pendingActivationGeneration = undefined;
+        if (generation !== activationGeneration || quitting || quitState)
+          return;
+        if (accepted) finishHostActivation(argv);
+        else {
+          startupInvocationError = liveMessage('startup.ownerMismatch');
+          publishState();
+          showOverlay();
+        }
+      },
+      () => {
+        if (pendingActivationGeneration === generation)
+          pendingActivationGeneration = undefined;
+        if (generation !== activationGeneration || quitting || quitState)
+          return;
+        startupInvocationError = liveMessage('startup.invalidOwner');
+        publishState();
+        showOverlay();
+      },
+    );
+    return;
+  }
+  finishHostActivation(argv);
+}
+
+function finishHostActivation(argv?: string[]): void {
   const launchOptions = prepareDaemonLaunch(argv);
   if (daemonBootstrap) {
     startupInvocationError = undefined;
@@ -2587,6 +2683,7 @@ app.on('before-quit', (event) => {
   writeLiveDiagnostic('host_before_quit');
   overlayRecovery?.stop();
   deactivateNativeServices();
+  daemonLifecycle?.stop();
   daemon?.stop();
   appshotCapture?.dispose();
   subagents?.dispose();
@@ -2676,6 +2773,11 @@ void app.whenReady().then(() => {
   daemon = new LiveDaemonConnection(
     app.getVersion(),
     {
+      onDaemonIdentity: (record) => {
+        void daemonLifecycle
+          ?.acceptAuthenticated(record)
+          .catch(() => writeLiveDiagnostic('daemon_identity_check_failed'));
+      },
       onSubagents: (snapshot) => {
         connection = { ...connection, subagentsV1: snapshot };
         subagents?.update(
@@ -2816,13 +2918,13 @@ void app.whenReady().then(() => {
       debug: diagnosticsEnabled,
     },
     {
-      onReady: ({ record, started, logPath }) => {
-        daemon.rememberStartupTarget(record);
+      onReady: async ({ record, started, logPath }) => {
+        const current = await rememberDaemonStartup(record);
         writeLiveDiagnostic('daemon_bootstrap_ready', {
           started,
+          current,
           ...(logPath ? { logPath } : {}),
         });
-        if (!quitting) daemon.start();
       },
       onChange: () => {
         const startup = daemonBootstrap?.snapshot;
@@ -2835,6 +2937,18 @@ void app.whenReady().then(() => {
       },
     },
   );
+  daemonLifecycle = new HostDaemonLifecycle(daemonDiscoveryPath, {
+    onStopped: () => void quitFromDaemon(),
+    onError: () => writeLiveDiagnostic('daemon_stop_marker_invalid'),
+  });
+  try {
+    const owner = parseDaemonOwner(process.argv);
+    if (owner) daemonLifecycle.follow(owner);
+  } catch {
+    startupInvocationError = liveMessage('startup.invalidOwner');
+    publishState();
+    return;
+  }
   void daemonBootstrap.start(prepareDaemonLaunch(process.argv));
 });
 

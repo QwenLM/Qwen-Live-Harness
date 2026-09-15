@@ -145,6 +145,7 @@ function fixture(minimumNativeY?: number, diagnosticsEnabled = false) {
   }
   const context = {
     daemonBootstrap: undefined,
+    daemonLifecycle: undefined,
     startupInvocationError: undefined,
     isLiveLanguage,
     liveMessage,

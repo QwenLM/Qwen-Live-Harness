@@ -31,6 +31,10 @@ function fixture() {
       events.push('stop');
     }),
     stopForProcessExit: vi.fn(async () => {}),
+    getInstanceIdentity: () => ({
+      pid: 12345,
+      instanceNonce: 'owned_cli_instance_12345',
+    }),
   };
   const dependencies: CliStartupDependencies = {
     platform: 'darwin',
@@ -75,11 +79,15 @@ describe('one-command application startup', () => {
       startCliApplication(config, f.options, f.dependencies),
     ).resolves.toEqual({ reused: false });
     expect(f.events).toEqual(['lock', 'daemon', 'register', 'unlock', 'host']);
-    expect(f.dependencies.openHost).toHaveBeenCalledWith({
-      debug: true,
-      discoveryPath: '/synthetic/discovery/run/daemon.json',
-      connectOnly: true,
-    });
+    expect(f.dependencies.openHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        debug: true,
+        discoveryPath: '/synthetic/discovery/run/daemon.json',
+        connectOnly: true,
+        owner: f.daemon.getInstanceIdentity(),
+        onStage: expect.any(Function),
+      }),
+    );
     expect(f.daemon.stop).not.toHaveBeenCalled();
   });
 
@@ -160,7 +168,7 @@ describe('one-command application startup', () => {
       await expect(
         startCliApplication(config, f.options, f.dependencies),
       ).rejects.toMatchObject({ code: 'runtime_unavailable' });
-      expect(f.daemon.stop).toHaveBeenCalledOnce();
+      expect(f.daemon.stopForProcessExit).toHaveBeenCalledOnce();
     }
   });
 
@@ -211,6 +219,61 @@ describe('one-command application startup', () => {
       startCliApplication(config, f.options, f.dependencies),
     ).rejects.toThrow('synthetic launch failure');
     expect(f.daemon.stop).not.toHaveBeenCalled();
+    expect(f.daemon.stopForProcessExit).not.toHaveBeenCalled();
     expect(f.dependencies.createDaemon).not.toHaveBeenCalled();
+  });
+
+  it('forwards cancellation to a pending Host inspection and closes only its owned application', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    f.dependencies.openHost = vi.fn(async (options) => {
+      options?.onStage?.('checking');
+      await new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          'abort',
+          () => reject(options.signal?.reason),
+          { once: true },
+        );
+      });
+      throw new Error('The cancelled inspection must not proceed');
+    });
+    const operation = startCliApplication(
+      config,
+      { ...f.options, signal: controller.signal },
+      f.dependencies,
+    );
+    const rejected = expect(operation).rejects.toThrow();
+    await vi.waitFor(() =>
+      expect(f.dependencies.openHost).toHaveBeenCalledOnce(),
+    );
+    controller.abort();
+    await rejected;
+    expect(f.daemon.stopForProcessExit).toHaveBeenCalledOnce();
+    expect(f.dependencies.openHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signal: controller.signal,
+        owner: f.daemon.getInstanceIdentity(),
+      }),
+    );
+  });
+
+  it('reports long Host phases in normal logs and timings only in diagnostic logs', async () => {
+    const f = fixture();
+    const info = vi.spyOn(f.options.logger, 'info');
+    const debug = vi.spyOn(f.options.logger, 'debug');
+    f.dependencies.openHost = async (options) => {
+      options?.onStage?.('checking');
+      options?.onStage?.('opening');
+      return { state: 'installed', version: '0.4.0' };
+    };
+    await startCliApplication(config, f.options, f.dependencies);
+    expect(info).toHaveBeenCalledWith('Checking for a running daemon…');
+    expect(info).toHaveBeenCalledWith(
+      'Checking Host version, signature and macOS approval…',
+    );
+    expect(info).toHaveBeenCalledWith('Opening desktop Host…');
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining('startup.host_checked'),
+    );
   });
 });
