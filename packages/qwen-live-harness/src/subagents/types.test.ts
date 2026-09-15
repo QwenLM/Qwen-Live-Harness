@@ -9,6 +9,9 @@ import {
   MAX_DISCOVERED_SESSIONS,
   MAX_INSTRUCTION_DELIVERIES,
   INSTRUCTION_DELIVERY_STATUSES,
+  MAX_SESSION_REPORTS,
+  SESSION_REPORT_CATEGORIES,
+  SESSION_REPORT_ANNOUNCEMENTS,
   parseSubagentsSnapshot,
   parseSubagentsControlRequest,
   parseSubagentsControlResult,
@@ -40,7 +43,7 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
-  it('accepts optional independent delivery revisions without changing task counts', () => {
+  it('accepts independent delivery and report revisions without changing task counts', () => {
     expect(
       parseSubagentsSnapshot({ ...snapshot, deliveryRevision: 0 }),
     ).toBeDefined();
@@ -53,6 +56,22 @@ describe('subagent snapshot identity and value validation', () => {
     for (const deliveryRevision of [-1, 1.5, Infinity, '2'])
       expect(
         parseSubagentsSnapshot({ ...snapshot, deliveryRevision }),
+      ).toBeUndefined();
+    expect(
+      parseSubagentsSnapshot({
+        ...snapshot,
+        deliveryRevision: 2,
+        reportRevision: 10,
+      }),
+    ).toMatchObject({
+      revision: snapshot.revision,
+      counts: snapshot.counts,
+      deliveryRevision: 2,
+      reportRevision: 10,
+    });
+    for (const reportRevision of [-1, 0.5, Infinity, '1'])
+      expect(
+        parseSubagentsSnapshot({ ...snapshot, reportRevision }),
       ).toBeUndefined();
   });
   it('rejects coerced enums and duplicate task ids', () => {
@@ -75,6 +94,82 @@ describe('subagent snapshot identity and value validation', () => {
 });
 
 describe('subagent management contracts', () => {
+  it('bounds session reports and rejects internal identifiers and malformed source or announcement states', () => {
+    const report = {
+      id: 'report_1',
+      backend: 'qwen',
+      source: 'Terminal',
+      sourceStatus: 'matched',
+      session: 'session_1',
+      category: 'progress',
+      text: 'Tests are running.',
+      receivedAt: 100,
+      updatedAt: 200,
+      announcement: 'queued',
+      note: 'Waiting for a pause',
+    };
+    const response = (fields: object) => ({
+      type: 'page',
+      page: { snapshot, offset: 0, total: 1, ...fields },
+    });
+    for (const category of SESSION_REPORT_CATEGORIES)
+      for (const announcement of SESSION_REPORT_ANNOUNCEMENTS) {
+        const result = response({
+          sessionReports: [{ ...report, category, announcement }],
+        });
+        expect(parseSubagentsControlResult(result)).toEqual(result);
+      }
+    expect(
+      parseSubagentsControlResult(
+        response({
+          sessionReports: [
+            { ...report, sourceStatus: 'unconfirmed', session: undefined },
+          ],
+        }),
+      ),
+    ).toBeDefined();
+    expect(
+      parseSubagentsControlResult(
+        response({ sessionReports: [], sessionReportsOmitted: 3 }),
+      ),
+    ).toBeDefined();
+    const invalidRows = [
+      { ...report, id: '' },
+      { ...report, backend: 'x'.repeat(257) },
+      { ...report, source: 'x'.repeat(241) },
+      { ...report, sourceStatus: 'authenticated' },
+      { ...report, session: 'x'.repeat(129) },
+      { ...report, text: 'x'.repeat(2001) },
+      { ...report, category: ['progress'] },
+      { ...report, category: 'completed' },
+      { ...report, receivedAt: -1 },
+      { ...report, updatedAt: 99 },
+      { ...report, announcement: ['announced'] },
+      { ...report, announcement: 'delivered' },
+      { ...report, note: 'x'.repeat(1025) },
+      { ...report, msgId: 'transport-id' },
+      { ...report, token: 'secret' },
+      { ...report, socketPath: '/private/socket' },
+      { ...report, correlation: 'internal' },
+    ];
+    for (const value of invalidRows)
+      expect(
+        parseSubagentsControlResult(response({ sessionReports: [value] })),
+      ).toBeUndefined();
+    for (const fields of [
+      { sessionReports: [report, report] },
+      { sessionReportsOmitted: 1 },
+      { sessionReports: [], sessionReportsOmitted: -1 },
+      {
+        sessionReports: Array.from(
+          { length: MAX_SESSION_REPORTS + 1 },
+          (_, index) => ({ ...report, id: `report_${index}` }),
+        ),
+      },
+    ])
+      expect(parseSubagentsControlResult(response(fields))).toBeUndefined();
+  });
+
   it('keeps discovery bounded and explicitly distinguishes instruction authorization', () => {
     const session = {
       id: 'session:1',

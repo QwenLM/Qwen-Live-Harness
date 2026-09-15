@@ -140,7 +140,9 @@ export class SubagentsWindows {
       (!this.connected ||
         this.snapshot?.revision !== snapshot?.revision ||
         (this.snapshot?.deliveryRevision ?? 0) !==
-          (snapshot?.deliveryRevision ?? 0));
+          (snapshot?.deliveryRevision ?? 0) ||
+        (this.snapshot?.reportRevision ?? 0) !==
+          (snapshot?.reportRevision ?? 0));
     this.language = language;
     this.connected = connected;
     this.controlsAvailable =

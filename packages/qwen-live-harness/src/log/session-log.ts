@@ -39,6 +39,7 @@ export type SessionLogEventType =
   | 'tool.result'
   | 'backend.event'
   | 'instruction.delivery'
+  | 'session.report'
   | 'inject.context'
   | 'inject.speech'
   | 'permission.request'

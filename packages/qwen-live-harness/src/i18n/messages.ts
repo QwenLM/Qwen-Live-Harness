@@ -1283,6 +1283,52 @@ export const LIVE_MESSAGES = {
     en: 'Started {created} · Updated {updated}',
     'zh-CN': '发起于 {created} · 更新于 {updated}',
   },
+  'subagents.sessionReports': { en: 'Session reports', 'zh-CN': '会话汇报' },
+  'subagents.reportsAttribution': {
+    en: 'Reports describe what a session says. Linking a registered source does not verify identity or confirm task completion.',
+    'zh-CN':
+      '这里展示会话的自述信息。关联登记来源不代表身份认证，也不确认任务已完成。',
+  },
+  'subagents.noSessionReports': {
+    en: 'No session reports received in this call.',
+    'zh-CN': '本次通话尚未收到会话汇报。',
+  },
+  'subagents.reportsOmitted': {
+    en: '{count} older reports are not shown.',
+    'zh-CN': '另有 {count} 条较早的汇报未显示。',
+  },
+  'subagents.reportSourceMatched': {
+    en: 'Linked to a registered source',
+    'zh-CN': '已关联登记来源',
+  },
+  'subagents.reportSourceUnconfirmed': {
+    en: 'Source unconfirmed',
+    'zh-CN': '来源未确认',
+  },
+  'subagents.reportProgress': { en: 'Reported progress', 'zh-CN': '进展汇报' },
+  'subagents.reportBlocked': { en: 'Reported blocker', 'zh-CN': '阻塞汇报' },
+  'subagents.reportResult': { en: 'Reported result', 'zh-CN': '结果自述' },
+  'subagents.reportInfo': { en: 'Information', 'zh-CN': '信息' },
+  'subagents.reportQueued': { en: 'Waiting to announce', 'zh-CN': '等待播报' },
+  'subagents.reportSubmitted': {
+    en: 'Submitted for announcement',
+    'zh-CN': '已提交播报',
+  },
+  'subagents.reportSpeaking': { en: 'Announcing', 'zh-CN': '正在播报' },
+  'subagents.reportAnnounced': { en: 'Announced', 'zh-CN': '已播报' },
+  'subagents.reportInterrupted': {
+    en: 'Announcement interrupted',
+    'zh-CN': '播报被打断',
+  },
+  'subagents.reportUnspoken': { en: 'Not announced', 'zh-CN': '未播报' },
+  'subagents.reportSuppressed': {
+    en: 'Announcement skipped',
+    'zh-CN': '已跳过播报',
+  },
+  'subagents.reportTime': {
+    en: 'Received {received} · Updated {updated}',
+    'zh-CN': '收到于 {received} · 更新于 {updated}',
+  },
   'subagents.executionUnknown': {
     en: 'Execution status unknown',
     'zh-CN': '执行状态未知',

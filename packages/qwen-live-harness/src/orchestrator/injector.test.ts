@@ -13,9 +13,11 @@ const QUIET_GAP_MS = 800;
 class FakeSink implements InjectorSink {
   contextCalls: string[] = [];
   speechCalls: string[] = [];
+  peerReportCalls: string[] = [];
   injected: Array<{ item: InjectorItem; spoken: boolean }> = [];
   contextResult = true;
   speechResult = true;
+  peerReportResult = true;
 
   injectContext(text: string): boolean {
     this.contextCalls.push(text);
@@ -25,6 +27,11 @@ class FakeSink implements InjectorSink {
   injectSpeech(text: string): boolean {
     this.speechCalls.push(text);
     return this.speechResult;
+  }
+
+  injectPeerReport(text: string): boolean {
+    this.peerReportCalls.push(text);
+    return this.peerReportResult;
   }
 
   onInjected(item: InjectorItem, spoken: boolean): void {
@@ -67,6 +74,186 @@ beforeEach(() => {
 afterEach(() => {
   injector.dispose();
   vi.useRealTimers();
+});
+
+describe('Injector external peer reports', () => {
+  function report(id: string): InjectorItem {
+    return { kind: 'peer_report', reportId: id, context: `External ${id}` };
+  }
+
+  it('uses the report sink only, with no persistent context or ordinary speech', () => {
+    injector.enqueue(report('one'));
+    expect(sink.peerReportCalls).toEqual(['External one']);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+    expect(sink.injected).toEqual([{ item: report('one'), spoken: true }]);
+  });
+
+  it('keeps reports separate from ordinary and proactive items', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(complete('Before'));
+    injector.enqueue(report('one'));
+    injector.enqueue(complete('After'));
+    injector.enqueue({ kind: 'proactive', context: 'Scheduled' });
+    injector.noteInputCommitted();
+    expect(sink.contextCalls).toEqual(['Before']);
+    expect(sink.peerReportCalls).toEqual(['External one']);
+    expect(sink.speechCalls).toEqual([]);
+    injector.noteResponseCreated('peer_report');
+    injector.noteResponseDone('peer_report');
+    expect(sink.contextCalls).toEqual(['Before', 'After']);
+    expect(sink.speechCalls).toEqual(['Scheduled']);
+  });
+
+  it('holds through user input, direct response acknowledgement and Host playback', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(report('one'));
+    injector.noteInputCommitted(true);
+    expect(sink.peerReportCalls).toEqual([]);
+    injector.noteResponseCreated('direct');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('direct');
+    expect(sink.peerReportCalls).toEqual([]);
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS - 1);
+    expect(sink.peerReportCalls).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(sink.peerReportCalls).toEqual(['External one']);
+  });
+
+  it('waits for an ordinary speech request to be acknowledged', () => {
+    injector.enqueue(complete('Result', 'Result ready.'));
+    injector.enqueue(report('one'));
+    expect(sink.peerReportCalls).toEqual([]);
+    injector.noteResponseCreated('backend_speech');
+    injector.noteResponseDone('backend_speech');
+    expect(sink.peerReportCalls).toEqual(['External one']);
+  });
+
+  it.each(['response-first', 'playback-first'])(
+    'submits one report per response and waits for both receipts (%s)',
+    (order) => {
+      injector.enqueue(report('one'));
+      injector.enqueue(report('two'));
+      expect(sink.peerReportCalls).toEqual(['External one']);
+      injector.noteResponseCreated('peer_report');
+      injector.notePlaybackStarted();
+      if (order === 'response-first') {
+        injector.noteResponseDone('peer_report');
+        vi.advanceTimersByTime(2 * QUIET_GAP_MS);
+        expect(sink.peerReportCalls).toEqual(['External one']);
+        injector.notePlaybackCompleted();
+      } else {
+        injector.notePlaybackCompleted();
+        vi.advanceTimersByTime(2 * QUIET_GAP_MS);
+        expect(sink.peerReportCalls).toEqual(['External one']);
+        injector.noteResponseDone('peer_report');
+      }
+      vi.advanceTimersByTime(QUIET_GAP_MS);
+      expect(sink.peerReportCalls).toEqual(['External one', 'External two']);
+    },
+  );
+
+  it('retries refusal without acknowledging or falling back to another sink', () => {
+    sink.peerReportResult = false;
+    injector.enqueue(report('one'));
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.injected).toEqual([]);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+    sink.peerReportResult = true;
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(injector.pendingCount).toBe(0);
+    expect(sink.injected).toHaveLength(1);
+  });
+
+  it('fails closed when the specialized report sink is unavailable', () => {
+    injector.dispose();
+    injector = new Injector({
+      sink: {
+        injectContext: (text) => sink.injectContext(text),
+        injectSpeech: (text) => sink.injectSpeech(text),
+      },
+    });
+    injector.enqueue(report('one'));
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+  });
+
+  it('bounds only the report lane and deduplicates accepted report identities', () => {
+    injector.noteSpeechStarted();
+    for (let index = 0; index < 32; index += 1) {
+      expect(injector.enqueue(report(String(index)))).toBe(true);
+    }
+    expect(injector.enqueue(report('0'))).toBe(true);
+    expect(injector.enqueue(report('overflow'))).toBe(false);
+    expect(injector.enqueue(complete('Ordinary'))).toBe(true);
+    expect(injector.pendingCount).toBe(33);
+    injector.noteInputCommitted();
+    expect(injector.enqueue(report('0'))).toBe(true);
+    expect(injector.pendingCount).toBe(32);
+    expect(injector.enqueue(report('overflow'))).toBe(true);
+    expect(injector.pendingCount).toBe(33);
+    injector.noteResponseCreated('peer_report');
+    injector.noteResponseDone('peer_report');
+    expect(injector.enqueue(report('0'))).toBe(true);
+    expect(sink.peerReportCalls).toEqual(['External 0', 'External 1']);
+  });
+
+  it('releases silent or failed reports without a playback receipt', () => {
+    injector.enqueue(report('one'));
+    injector.enqueue(report('two'));
+    // response.created may never arrive when the request times out.
+    injector.noteResponseDone('peer_report');
+    expect(sink.peerReportCalls).toEqual(['External one', 'External two']);
+    injector.enqueue(report('three'));
+    injector.noteResponseCreated('peer_report');
+    injector.noteResponseDone('peer_report');
+    expect(sink.peerReportCalls).toEqual([
+      'External one',
+      'External two',
+      'External three',
+    ]);
+  });
+
+  it('drops an interrupted submitted report and preserves unsent reports', () => {
+    injector.enqueue(report('one'));
+    injector.enqueue(report('two'));
+    injector.noteResponseCreated('peer_report');
+    injector.notePlaybackStarted();
+    injector.noteSpeechStarted();
+    injector.noteOutputCleared();
+    injector.noteResponseDone('peer_report');
+    expect(sink.peerReportCalls).toEqual(['External one']);
+    injector.noteInputCommitted(true);
+    injector.noteResponseCreated('direct');
+    injector.noteResponseDone('direct');
+    expect(sink.peerReportCalls).toEqual(['External one', 'External two']);
+  });
+
+  it('releases suppressed output only after the report response finishes', () => {
+    injector.enqueue(report('one'));
+    injector.enqueue(report('two'));
+    injector.noteResponseCreated('peer_report');
+    injector.notePlaybackStarted();
+    injector.noteOutputSuppressed();
+    expect(sink.peerReportCalls).toEqual(['External one']);
+    injector.noteResponseDone('peer_report');
+    expect(sink.peerReportCalls).toEqual(['External one', 'External two']);
+  });
+
+  it('disposes queued reports without later callbacks', () => {
+    sink.peerReportResult = false;
+    injector.enqueue(report('one'));
+    injector.dispose();
+    sink.peerReportResult = true;
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(injector.pendingCount).toBe(0);
+    expect(sink.injected).toEqual([]);
+    expect(injector.enqueue(report('two'))).toBe(false);
+  });
 });
 
 describe('Injector window conditions', () => {

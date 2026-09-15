@@ -67,6 +67,8 @@ export type SubagentsSnapshot = {
   revision: number;
   /** Changes to instruction receipts do not change task revisions or counts. */
   deliveryRevision?: number;
+  /** Report and announcement changes do not imply task progress or delivery. */
+  reportRevision?: number;
   pendingUnassignedPermissions?: number;
   counts: {
     running: number;
@@ -108,6 +110,35 @@ export type InstructionDelivery = {
   updatedAt: number;
   note?: string;
 };
+export const MAX_SESSION_REPORTS = 100;
+export const SESSION_REPORT_CATEGORIES = [
+  'progress',
+  'blocked',
+  'result',
+  'info',
+] as const;
+export const SESSION_REPORT_ANNOUNCEMENTS = [
+  'queued',
+  'submitted',
+  'speaking',
+  'announced',
+  'interrupted',
+  'unspoken',
+  'suppressed',
+] as const;
+export type SessionReport = {
+  id: string;
+  backend: string;
+  source: string;
+  sourceStatus: 'matched' | 'unconfirmed';
+  session?: string;
+  category: (typeof SESSION_REPORT_CATEGORIES)[number];
+  text: string;
+  receivedAt: number;
+  updatedAt: number;
+  announcement: (typeof SESSION_REPORT_ANNOUNCEMENTS)[number];
+  note?: string;
+};
 
 /** Session discovery is separate from tasks and does not imply execution. */
 export type DiscoveredSession = {
@@ -132,6 +163,8 @@ export type SubagentsPage = {
   discoveredSessionsOmitted?: number;
   instructionDeliveries?: InstructionDelivery[];
   instructionDeliveriesOmitted?: number;
+  sessionReports?: SessionReport[];
+  sessionReportsOmitted?: number;
 };
 export type SubagentsControlRequest =
   | { action: 'list'; offset?: number; selectedId?: string }
@@ -284,6 +317,51 @@ function validInstructionDeliveries(
   return true;
 }
 
+function validSessionReports(value: unknown): value is SessionReport[] {
+  if (!Array.isArray(value) || value.length > MAX_SESSION_REPORTS) return false;
+  const ids = new Set<string>();
+  const keys = [
+    'id',
+    'backend',
+    'source',
+    'sourceStatus',
+    'session',
+    'category',
+    'text',
+    'receivedAt',
+    'updatedAt',
+    'announcement',
+    'note',
+  ];
+  for (const report of value) {
+    if (
+      !record(report) ||
+      !Object.keys(report).every((key) => keys.includes(key)) ||
+      !identifier(report['id']) ||
+      ids.has(report['id']) ||
+      !text(report['backend'], 256) ||
+      !text(report['source'], 240) ||
+      (report['sourceStatus'] !== 'matched' &&
+        report['sourceStatus'] !== 'unconfirmed') ||
+      (report['session'] !== undefined && !identifier(report['session'])) ||
+      !SESSION_REPORT_CATEGORIES.includes(
+        report['category'] as SessionReport['category'],
+      ) ||
+      !text(report['text'], 2000) ||
+      !number(report['receivedAt']) ||
+      !number(report['updatedAt']) ||
+      report['updatedAt'] < report['receivedAt'] ||
+      !SESSION_REPORT_ANNOUNCEMENTS.includes(
+        report['announcement'] as SessionReport['announcement'],
+      ) ||
+      (report['note'] !== undefined && !text(report['note'], 1024))
+    )
+      return false;
+    ids.add(report['id']);
+  }
+  return true;
+}
+
 function validTask(task: unknown): task is SubagentTask {
   if (
     !record(task) ||
@@ -356,6 +434,8 @@ export function parseSubagentsSnapshot(
     !integer(value['revision']) ||
     (value['deliveryRevision'] !== undefined &&
       !integer(value['deliveryRevision'])) ||
+    (value['reportRevision'] !== undefined &&
+      !integer(value['reportRevision'])) ||
     (value['pendingUnassignedPermissions'] !== undefined &&
       !integer(value['pendingUnassignedPermissions'])) ||
     !integer(value['omitted']) ||
@@ -463,7 +543,12 @@ export function parseSubagentsControlResult(
       !validInstructionDeliveries(page['instructionDeliveries'])) ||
     (page['instructionDeliveriesOmitted'] !== undefined &&
       (!integer(page['instructionDeliveriesOmitted']) ||
-        page['instructionDeliveries'] === undefined))
+        page['instructionDeliveries'] === undefined)) ||
+    (page['sessionReports'] !== undefined &&
+      !validSessionReports(page['sessionReports'])) ||
+    (page['sessionReportsOmitted'] !== undefined &&
+      (!integer(page['sessionReportsOmitted']) ||
+        page['sessionReports'] === undefined))
   )
     return undefined;
   return value as SubagentsControlResult;

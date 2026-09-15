@@ -14,21 +14,27 @@ import {
   qwenPeerHandleId,
   type QwenPeerControllerDependencies,
 } from './qwen-peer-controller.js';
+import { QwenPeerReports, peerReportLabel } from './qwen-peer-reports.js';
 import type {
   BackendHandle,
   InstructionDelivery,
   InstructionReceipt,
+  PeerReportContext,
+  PeerSessionReport,
   SessionSummary,
 } from './types.js';
 
 export interface PeerDiscoveryEndpoint {
+  readonly name?: string;
   list(): Promise<PeerSessionSummary[]>;
   close(): Promise<void>;
+  createReportContext?(target: BackendHandle): PeerReportContext | undefined;
 }
 
 export interface QwenPeerDiscoveryOptions {
   qwenHome: string;
   controllerToken?: string;
+  reports?: boolean;
 }
 
 export type PeerEndpointFactory = (options: {
@@ -36,23 +42,22 @@ export type PeerEndpointFactory = (options: {
   qwenHome: string;
 }) => Promise<PeerDiscoveryEndpoint>;
 
-// Display labels remain untrusted text; remove terminal/bidi control codes.
-function label(value: string, maxLength = 240): string {
-  return value
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
-    .trim()
-    .slice(0, maxLength)
-    .replace(/[\uD800-\uDBFF]$/u, '');
-}
-
 /** Call-scoped discovery with optional, separately tracked text instructions. */
 export class QwenPeerDiscovery {
   private readonly qwenHome: string;
   private readonly controllerToken?: string;
+  private readonly reportsEnabled: boolean;
   private requestedCall?: string;
-  private current?: { callId: string; endpoint: PeerDiscoveryEndpoint };
+  private current?: {
+    callId: string;
+    endpoint: PeerDiscoveryEndpoint;
+    owner: object;
+  };
   private controller?: QwenPeerController;
   private readonly listeners = new Set<() => void>();
+  private readonly reportListeners = new Set<
+    (report: PeerSessionReport) => boolean
+  >();
   private tail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -64,6 +69,7 @@ export class QwenPeerDiscovery {
   ) {
     this.qwenHome = resolveQwenHome(options.qwenHome);
     this.controllerToken = options.controllerToken;
+    this.reportsEnabled = options.reports ?? false;
   }
 
   start(callId: string): Promise<void> {
@@ -74,12 +80,40 @@ export class QwenPeerDiscovery {
       if (this.requestedCall !== callId) return;
       this.controller = undefined;
       this.notify();
-      // Omitting onMessage makes the SDK answer application messages refused.
-      const endpoint = await this.open({
-        name: `live-${this.adaptor}`,
-        qwenHome: this.qwenHome,
-      });
-      this.current = { callId, endpoint };
+      const owner = { ready: false };
+      const endpoint = this.reportsEnabled
+        ? await QwenPeerReports.start({
+            qwenHome: this.qwenHome,
+            adaptor: this.adaptor,
+            callId,
+            isActive: () =>
+              owner.ready &&
+              this.current?.owner === owner &&
+              this.requestedCall === callId,
+            hasSink: () => this.reportListeners.size > 0,
+            onReport: (report) => {
+              const projected =
+                report.sourceSession && this.controllerToken === undefined
+                  ? {
+                      ...report,
+                      sourceSession: {
+                        ...report.sourceSession,
+                        readOnly: true as const,
+                      },
+                    }
+                  : report;
+              for (const listener of this.reportListeners) {
+                if (listener(projected) === true) return true;
+              }
+              return false;
+            },
+          })
+        : // Omitting onMessage makes the SDK refuse reports unless opted in.
+          await this.open({
+            name: `live-${this.adaptor}`,
+            qwenHome: this.qwenHome,
+          });
+      this.current = { callId, endpoint, owner };
       if (this.requestedCall !== callId) {
         await this.closeCurrent();
         return;
@@ -90,7 +124,7 @@ export class QwenPeerDiscovery {
           {
             qwenHome: this.qwenHome,
             adaptor: this.adaptor,
-            name: `live-${this.adaptor}`,
+            name: endpoint.name ?? `live-${this.adaptor}`,
             controllerToken: this.controllerToken,
             isActive: () =>
               this.current === current && this.requestedCall === callId,
@@ -108,6 +142,8 @@ export class QwenPeerDiscovery {
         }
         if (this.requestedCall !== callId) await this.closeCurrent();
       }
+      owner.ready =
+        this.current?.owner === owner && this.requestedCall === callId;
     });
   }
 
@@ -142,6 +178,19 @@ export class QwenPeerDiscovery {
     return () => this.listeners.delete(listener);
   }
 
+  subscribeReports(
+    listener: (report: PeerSessionReport) => boolean,
+  ): () => void {
+    this.reportListeners.add(listener);
+    return () => this.reportListeners.delete(listener);
+  }
+
+  createReportContext(target: BackendHandle): PeerReportContext | undefined {
+    const current = this.current;
+    if (!current || current.callId !== this.requestedCall) return undefined;
+    return current.endpoint.createReportContext?.(target);
+  }
+
   async list(): Promise<SessionSummary[]> {
     const current = this.current;
     if (!current || this.requestedCall !== current.callId) return [];
@@ -164,13 +213,13 @@ export class QwenPeerDiscovery {
             ? { readOnly: true as const }
             : {}),
         },
-        label: label(peer.address),
-        cwd: label(peer.cwd, 4096),
+        label: peerReportLabel(peer.address),
+        cwd: peerReportLabel(peer.cwd, 4096),
         state: 'unknown',
         discovery: {
           source: 'terminal',
           sessionId: peer.sessionId,
-          address: label(peer.address),
+          address: peerReportLabel(peer.address),
         },
       });
     }

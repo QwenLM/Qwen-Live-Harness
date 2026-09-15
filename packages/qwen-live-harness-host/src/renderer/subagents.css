@@ -461,6 +461,68 @@ button:focus-visible,
 .instruction-delivery-unknown {
   color: var(--live-warning);
 }
+.session-reports {
+  margin-top: 12px;
+  padding: 10px 2px 4px;
+  border-top: 1px solid var(--live-divider);
+}
+.session-reports h2 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.session-reports-description,
+.session-reports-empty,
+.session-reports-omitted {
+  margin: 7px 0;
+  color: var(--live-muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+.session-reports-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.session-report {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--live-border);
+  border-radius: 9px;
+  background: var(--live-surface);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.session-report-source {
+  font-size: 12px;
+  line-height: 18px;
+}
+.session-report-category,
+.session-report-announcement {
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--live-text-secondary);
+}
+.session-report-source-status,
+.session-report-time,
+.session-report-note {
+  margin: 0;
+  color: var(--live-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+.session-report-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: pre-wrap;
+}
+.session-report-source-status[data-source-status='unconfirmed'],
+.session-report-announcement[data-announcement='interrupted'] {
+  color: var(--live-warning);
+}
 .subagent-status[data-status='unknown'] {
   color: var(--live-muted);
 }

@@ -4,12 +4,41 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   QwenPeerDiscovery,
   type PeerDiscoveryEndpoint,
 } from './qwen-peer-discovery.js';
-import type { PeerSessionSummary } from '../vendor/qwen-code-peer/index.js';
+import {
+  PeerEndpoint,
+  peerRef,
+  readLiveSessionRecords,
+  sessionRegistryDir,
+  type PeerSessionSummary,
+} from '../vendor/qwen-code-peer/index.js';
+import { QwenPeerReports } from './qwen-peer-reports.js';
+import { qwenPeerHandleId } from './qwen-peer-controller.js';
+import type { PeerSessionReport } from './types.js';
+
+const cleanups: Array<() => Promise<unknown>> = [];
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.restoreAllMocks();
+});
+
+async function sendReport(
+  sender: PeerEndpoint,
+  address: string,
+  content: string,
+) {
+  const sent = await sender.send({ to: address, content });
+  if (sent.kind !== 'sent') throw new Error('Report was not written');
+  return sender.awaitReceipt(sent.msgId, { timeoutMs: 2000 });
+}
 
 const terminal: PeerSessionSummary = {
   sessionId: 'terminal-session',
@@ -264,5 +293,148 @@ describe('Qwen peer discovery', () => {
       ),
     ).toMatchObject({ status: 'rejected' });
     await discovery.close();
+  });
+
+  it.each([undefined, `qpc_${'a'.repeat(64)}`])(
+    'receives call-scoped reports and preserves terminal control capabilities (token: %s)',
+    async (controllerToken) => {
+      const home = await mkdtemp(
+        path.join(tmpdir(), 'qwen-discovery-reports-'),
+      );
+      cleanups.push(() => rm(home, { recursive: true, force: true }));
+      const discovery = new QwenPeerDiscovery(
+        { qwenHome: home, reports: true, controllerToken },
+        'qwen',
+      );
+      cleanups.push(() => discovery.close());
+      const sender = await PeerEndpoint.start({
+        qwenHome: home,
+        name: 'terminal',
+        kind: 'tui',
+        keepAlive: false,
+      });
+      cleanups.push(() => sender.close());
+      const targetRecord = (
+        await readLiveSessionRecords(sessionRegistryDir(home))
+      ).find((entry) => entry.sessionId === sender.sessionId)!;
+      const target = {
+        id: qwenPeerHandleId(home, targetRecord),
+        adaptor: 'qwen',
+      };
+      expect(discovery.createReportContext(target)).toBeUndefined();
+      await discovery.start('call-one');
+      const context = discovery.createReportContext(target)!;
+      const registered = (await sender.list()).find(
+        (entry) => entry.kind === 'external',
+      )!;
+      const address = `${registered.name} [${registered.ref}]`;
+      expect(context.instruction).toContain(address);
+      expect(await sendReport(sender, address, 'No sink yet')).toMatchObject({
+        status: 'refused',
+      });
+      const received: PeerSessionReport[] = [];
+      const unsubscribe = discovery.subscribeReports((report) => {
+        received.push(report);
+        return true;
+      });
+      const content = JSON.stringify({
+        qwen_live_harness_report: 1,
+        correlation: context.id,
+        kind: 'result',
+        text: 'Result report',
+      });
+      expect(await sendReport(sender, address, content)).toMatchObject({
+        status: 'delivered',
+      });
+      expect(received[0]).toMatchObject({
+        callId: 'call-one',
+        sourceStatus: 'matched',
+        correlationId: context.id,
+        sourceSession: { ...target, instructionOnly: true },
+      });
+      expect(received[0]!.sourceSession?.readOnly).toBe(
+        controllerToken === undefined ? true : undefined,
+      );
+      expect((await discovery.list())[0]!.handle.readOnly).toBe(
+        controllerToken === undefined ? true : undefined,
+      );
+      await discovery.start('call-two');
+      await discovery.stop('call-one');
+      const next = (await sender.list()).find(
+        (entry) => entry.kind === 'external',
+      )!;
+      const nextAddress = `${next.name} [${next.ref}]`;
+      expect(nextAddress).not.toBe(address);
+      expect(
+        (await sender.list()).some(
+          (entry) => entry.sessionId === registered.sessionId,
+        ),
+      ).toBe(false);
+      expect(await sendReport(sender, nextAddress, content)).toMatchObject({
+        status: 'delivered',
+      });
+      expect(received[1]).toMatchObject({ callId: 'call-two' });
+      expect(received[1]).not.toHaveProperty('correlationId');
+      unsubscribe();
+      expect(await sendReport(sender, nextAddress, 'Sink gone')).toMatchObject({
+        status: 'refused',
+      });
+      await discovery.stop('call-two');
+      expect(discovery.createReportContext(target)).toBeUndefined();
+      expect(await discovery.list()).toEqual([]);
+    },
+  );
+
+  it('refuses reports during a late startup and removes that endpoint if its call stops before startup finishes', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'qwen-report-start-'));
+    cleanups.push(() => rm(home, { recursive: true, force: true }));
+    const sender = await PeerEndpoint.start({
+      qwenHome: home,
+      name: 'terminal',
+      kind: 'tui',
+      keepAlive: false,
+    });
+    cleanups.push(() => sender.close());
+    let registered!: () => void;
+    const hasRegistered = new Promise<void>((resolve) => {
+      registered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const originalStart = QwenPeerReports.start.bind(QwenPeerReports);
+    let late!: QwenPeerReports;
+    vi.spyOn(QwenPeerReports, 'start').mockImplementation(async (...args) => {
+      late = await originalStart(...args);
+      registered();
+      await gate;
+      return late;
+    });
+    const discovery = new QwenPeerDiscovery(
+      { qwenHome: home, reports: true },
+      'qwen',
+    );
+    cleanups.push(async () => {
+      release();
+      await discovery.close();
+    });
+    const received = vi.fn(() => true);
+    discovery.subscribeReports(received);
+    const starting = discovery.start('old-call');
+    await hasRegistered;
+    const address = `${late.name} [${peerRef(late.sessionId)}]`;
+    expect(await sendReport(sender, address, 'While starting')).toMatchObject({
+      status: 'refused',
+    });
+    const stopping = discovery.stop('old-call');
+    release();
+    await starting;
+    await stopping;
+    expect(received).not.toHaveBeenCalled();
+    expect(
+      (await sender.list()).some((entry) => entry.sessionId === late.sessionId),
+    ).toBe(false);
+    expect(await discovery.list()).toEqual([]);
   });
 });

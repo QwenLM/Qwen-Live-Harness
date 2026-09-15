@@ -7,6 +7,7 @@ import {
 } from 'qwen-live-harness/i18n';
 import type {
   InstructionDelivery,
+  SessionReport,
   SubagentActivity,
   SubagentPermission,
   SubagentStatus,
@@ -54,6 +55,21 @@ const DELIVERY_STATUS_KEYS = {
   unknown: 'subagents.deliveryUnknown',
   failed: 'subagents.deliveryFailed',
 } as const satisfies Record<InstructionDelivery['status'], LiveMessageKey>;
+const REPORT_CATEGORY_KEYS = {
+  progress: 'subagents.reportProgress',
+  blocked: 'subagents.reportBlocked',
+  result: 'subagents.reportResult',
+  info: 'subagents.reportInfo',
+} as const satisfies Record<SessionReport['category'], LiveMessageKey>;
+const REPORT_ANNOUNCEMENT_KEYS = {
+  queued: 'subagents.reportQueued',
+  submitted: 'subagents.reportSubmitted',
+  speaking: 'subagents.reportSpeaking',
+  announced: 'subagents.reportAnnounced',
+  interrupted: 'subagents.reportInterrupted',
+  unspoken: 'subagents.reportUnspoken',
+  suppressed: 'subagents.reportSuppressed',
+} as const satisfies Record<SessionReport['announcement'], LiveMessageKey>;
 
 const NOTIFICATION_KEYS = {
   queued: 'subagents.notificationQueued',
@@ -178,6 +194,23 @@ export class SubagentsView {
       timestamps: HTMLElement;
       note: HTMLElement;
       unknown: HTMLElement;
+    }
+  >();
+  private readonly reports = element('li', 'session-reports');
+  private readonly reportList = element('ul', 'session-reports-list');
+  private readonly reportsEmpty = element('p', 'session-reports-empty');
+  private readonly reportsOmitted = element('p', 'session-reports-omitted');
+  private readonly reportRows = new Map<
+    string,
+    {
+      element: HTMLLIElement;
+      source: HTMLElement;
+      sourceStatus: HTMLElement;
+      category: HTMLElement;
+      announcement: HTMLElement;
+      timestamps: HTMLElement;
+      content: HTMLElement;
+      note: HTMLElement;
     }
   >();
   private readonly permissionRows = new Map<
@@ -338,6 +371,16 @@ export class SubagentsView {
       this.deliveryList,
       this.deliveriesOmitted,
     );
+    this.reports.append(
+      uiText(element('h2', ''), 'subagents.sessionReports'),
+      uiText(
+        element('p', 'session-reports-description'),
+        'subagents.reportsAttribution',
+      ),
+      this.reportsEmpty,
+      this.reportList,
+      this.reportsOmitted,
+    );
     this.pagination.append(
       this.previous,
       this.pageLabel,
@@ -438,6 +481,8 @@ export class SubagentsView {
       this.sessionRows.clear();
       for (const row of this.deliveryRows.values()) row.element.remove();
       this.deliveryRows.clear();
+      for (const row of this.reportRows.values()) row.element.remove();
+      this.reportRows.clear();
       for (const row of this.permissionRows.values()) row.element.remove();
       this.permissionRows.clear();
     }
@@ -584,7 +629,8 @@ export class SubagentsView {
         (page?.snapshot ?? state.snapshot)?.tasks.length ||
         page?.unassignedPermissions?.length ||
         page?.discoveredSessions !== undefined ||
-        page?.instructionDeliveries !== undefined,
+        page?.instructionDeliveries !== undefined ||
+        page?.sessionReports !== undefined,
       );
       text(
         this.empty,
@@ -667,7 +713,9 @@ export class SubagentsView {
             ? this.discovered
             : this.deliveries.parentElement === this.list
               ? this.deliveries
-              : null,
+              : this.reports.parentElement === this.list
+                ? this.reports
+                : null,
         );
         this.rows.set(task.id, row);
       }
@@ -700,6 +748,7 @@ export class SubagentsView {
     } else this.unassigned.remove();
     this.renderDiscoveredSessions(state);
     this.renderInstructionDeliveries(state);
+    this.renderSessionReports(state);
   }
 
   private renderDiscoveredSessions(state: SubagentsWindowState): void {
@@ -781,7 +830,11 @@ export class SubagentsView {
         this.discoveredList.insertBefore(row.element, atIndex ?? null);
     }
     const nextSection =
-      this.deliveries.parentElement === this.list ? this.deliveries : null;
+      this.deliveries.parentElement === this.list
+        ? this.deliveries
+        : this.reports.parentElement === this.list
+          ? this.reports
+          : null;
     if (
       this.discovered.parentElement !== this.list ||
       this.discovered.nextElementSibling !== nextSection
@@ -881,8 +934,107 @@ export class SubagentsView {
       if (atIndex !== row.element)
         this.deliveryList.insertBefore(row.element, atIndex ?? null);
     }
-    if (this.list.lastElementChild !== this.deliveries)
-      this.list.append(this.deliveries);
+    const nextSection =
+      this.reports.parentElement === this.list ? this.reports : null;
+    if (
+      this.deliveries.parentElement !== this.list ||
+      this.deliveries.nextElementSibling !== nextSection
+    )
+      this.list.insertBefore(this.deliveries, nextSection);
+  }
+
+  private renderSessionReports(state: SubagentsWindowState): void {
+    const reports = state.page?.sessionReports;
+    if (reports === undefined) {
+      this.reports.remove();
+      this.reportList.replaceChildren();
+      this.reportRows.clear();
+      return;
+    }
+    localizeUi(this.reports, state.language);
+    this.reportsEmpty.hidden = reports.length > 0;
+    text(
+      this.reportsEmpty,
+      liveText(state.language, 'subagents.noSessionReports'),
+    );
+    const omitted = state.page?.sessionReportsOmitted ?? 0;
+    this.reportsOmitted.hidden = omitted === 0;
+    text(
+      this.reportsOmitted,
+      liveText(state.language, 'subagents.reportsOmitted', { count: omitted }),
+    );
+    const ids = new Set(reports.map((report) => report.id));
+    for (const [id, row] of this.reportRows) {
+      if (ids.has(id)) continue;
+      row.element.remove();
+      this.reportRows.delete(id);
+    }
+    for (const [index, report] of reports.entries()) {
+      let row = this.reportRows.get(report.id);
+      if (!row) {
+        row = {
+          element: element('li', 'session-report'),
+          source: element('strong', 'session-report-source'),
+          sourceStatus: element('p', 'session-report-source-status'),
+          category: element('span', 'session-report-category'),
+          announcement: element('span', 'session-report-announcement'),
+          timestamps: element('p', 'session-report-time'),
+          content: element('p', 'session-report-text'),
+          note: element('p', 'session-report-note'),
+        };
+        row.element.dataset.reportId = report.id;
+        row.element.append(
+          row.source,
+          row.sourceStatus,
+          row.category,
+          row.content,
+          row.announcement,
+          row.timestamps,
+          row.note,
+        );
+        this.reportRows.set(report.id, row);
+      }
+      text(
+        row.source,
+        [report.source, report.backend].filter(Boolean).join(' · '),
+      );
+      text(
+        row.sourceStatus,
+        liveText(
+          state.language,
+          report.sourceStatus === 'matched'
+            ? 'subagents.reportSourceMatched'
+            : 'subagents.reportSourceUnconfirmed',
+        ),
+      );
+      row.sourceStatus.dataset.sourceStatus = report.sourceStatus;
+      text(
+        row.category,
+        liveText(state.language, REPORT_CATEGORY_KEYS[report.category]),
+      );
+      row.category.dataset.category = report.category;
+      // Report text is external content, never an owned translation marker or markup.
+      text(row.content, report.text);
+      text(
+        row.announcement,
+        liveText(state.language, REPORT_ANNOUNCEMENT_KEYS[report.announcement]),
+      );
+      row.announcement.dataset.announcement = report.announcement;
+      text(
+        row.timestamps,
+        liveText(state.language, 'subagents.reportTime', {
+          received: time(state.language, report.receivedAt),
+          updated: time(state.language, report.updatedAt),
+        }),
+      );
+      text(row.note, displayLiveMessage(state.language, report.note ?? ''));
+      row.note.hidden = !report.note;
+      const atIndex = this.reportList.children[index];
+      if (atIndex !== row.element)
+        this.reportList.insertBefore(row.element, atIndex ?? null);
+    }
+    if (this.list.lastElementChild !== this.reports)
+      this.list.append(this.reports);
   }
 
   private renderDetail(state: SubagentsWindowState): void {
