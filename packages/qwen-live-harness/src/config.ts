@@ -42,6 +42,12 @@ export type BackendConfig =
       args: string[];
       env: Record<string, string>;
       cwd?: string;
+      /**
+       * Approval mode selected after `session/new` (ACP `session/set_mode`),
+       * e.g. `yolo`. Omitted → the advertised asking mode is forced so every
+       * action needs an explicit approval.
+       */
+      sessionMode?: string;
       isDefault: boolean;
     };
 
@@ -129,6 +135,8 @@ const MAX_LIVE_HEIGHT = 2160;
 const MAX_SNAPSHOT_HEIGHT = 4320;
 const DEFAULT_SERVE_URL = 'http://127.0.0.1:4170';
 const BACKEND_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/i;
+/** ACP mode ids are short tokens ("default", "auto-edit", "yolo"). */
+const SESSION_MODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   enabled: true,
   monitor: {
@@ -726,7 +734,7 @@ function parseBackend(
   }
   const kind = raw['kind'];
   if (kind === 'qwen-code') {
-    for (const banned of ['command', 'args', 'env', 'cwd']) {
+    for (const banned of ['command', 'args', 'env', 'cwd', 'sessionMode']) {
       if (raw[banned] !== undefined) {
         throw new Error(
           `"${banned}" is not valid for kind qwen-code (${where})`,
@@ -776,6 +784,19 @@ function parseBackend(
       }
     }
     const cwd = pathStr(raw['cwd']);
+    const sessionMode = str(raw['sessionMode']);
+    if (raw['sessionMode'] !== undefined && !sessionMode) {
+      throw new Error(
+        `Invalid acp backend "sessionMode" in ${where}: expected a non-empty string`,
+      );
+    }
+    if (sessionMode && !SESSION_MODE_PATTERN.test(sessionMode)) {
+      throw new Error(
+        `Invalid acp backend "sessionMode" in ${where}: ` +
+          `${JSON.stringify(sessionMode)} (expected up to 64 chars of letters, ` +
+          'digits, "_" or "-")',
+      );
+    }
     return {
       name,
       kind,
@@ -783,6 +804,7 @@ function parseBackend(
       args: rawArgs as string[],
       env: rawEnv as Record<string, string>,
       ...(cwd ? { cwd } : {}),
+      ...(sessionMode ? { sessionMode } : {}),
       isDefault: raw['default'] === true,
     };
   }

@@ -35,7 +35,23 @@ console.dir = console.error;
 /* eslint-enable no-undef */
 
 const mode = process.env['FAKE_ACP_MODE'] ?? 'echo';
+// Optional approval modes for session-mode tests (env FAKE_ACP_MODES, e.g.
+// "default,yolo"): when set the agent advertises them, honors
+// session/set_mode, and only raises session/request_permission while the
+// current mode is the first (asking) one — the shape a real agent has, so a
+// configured backend `sessionMode` is observable from the outside.
+const advertisedModes = (process.env['FAKE_ACP_MODES'] ?? '')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter(Boolean);
+const askingModeId = advertisedModes[0];
+let currentModeId = askingModeId;
 let sessionCounter = 0;
+
+/** No advertised modes (legacy fixture) always asks. */
+function asksForApproval() {
+  return advertisedModes.length === 0 || currentModeId === askingModeId;
+}
 
 new AgentSideConnection(
   (connection) => ({
@@ -63,7 +79,26 @@ new AgentSideConnection(
     },
 
     async newSession() {
-      return { sessionId: `fake-${++sessionCounter}` };
+      const sessionId = `fake-${++sessionCounter}`;
+      if (advertisedModes.length === 0) return { sessionId };
+      return {
+        sessionId,
+        modes: {
+          currentModeId,
+          availableModes: advertisedModes.map((id) => ({ id, name: id })),
+        },
+      };
+    },
+
+    async setSessionMode(params) {
+      if (!advertisedModes.includes(params.modeId)) {
+        throw RequestError.invalidParams(
+          undefined,
+          `unknown mode ${String(params.modeId)}`,
+        );
+      }
+      currentModeId = params.modeId;
+      return {};
     },
 
     async prompt(params) {
@@ -81,7 +116,7 @@ new AgentSideConnection(
         },
       });
 
-      if (text.includes('permission:')) {
+      if (text.includes('permission:') && asksForApproval()) {
         const response = await connection.requestPermission({
           sessionId,
           toolCall: {

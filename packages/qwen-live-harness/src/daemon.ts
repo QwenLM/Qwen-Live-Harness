@@ -82,6 +82,7 @@ function buildAdaptor(
     args: backend.args,
     env: backend.env,
     ...(backend.cwd ? { cwd: backend.cwd } : {}),
+    ...(backend.sessionMode ? { sessionMode: backend.sessionMode } : {}),
     ...(fields.defaultCwd ? { defaultCwd: fields.defaultCwd } : {}),
     logger: fields.logger,
   });

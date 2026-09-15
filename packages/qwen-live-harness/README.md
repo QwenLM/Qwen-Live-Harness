@@ -365,6 +365,18 @@ with environment variables (`DASHSCOPE_API_KEY`, `QWEN_LIVE_HARNESS_*`) as overr
 ```
 
 See `src/config.ts` for the full list of options and validation rules.
+
+Each ACP backend starts in manual-approval mode: after `session/new` the
+harness selects the backend's asking mode, so every action the agent wants to
+run needs an explicit approval from the call first. Add `"sessionMode"` to an
+ACP backend entry to select another advertised mode instead — `"yolo"` or
+`"auto-edit"` for Qwen Code, `"agent-full-access"` for Codex, `"dontAsk"` for
+Qoder CLI. The mode must appear in the backend's `availableModes`; an unknown
+or unavailable mode falls back to the asking mode instead of running
+unapproved, and logs a warning either way. Disabling per-action approval lets
+the agent change files and run commands on your machine with no confirmation
+step, so keep it to backends you trust with the checked-out directory.
+
 Visual input has two independent settings. `source` is `screen` or `camera`;
 `mode` is `on-demand` or `live-feed`. The defaults are Screen + On Demand,
 1 FPS, a 1280×720 camera stream, 1280×720 Live Feed frames, and
