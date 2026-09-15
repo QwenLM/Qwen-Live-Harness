@@ -6,6 +6,7 @@ import {
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 import type {
+  InstructionDelivery,
   SubagentActivity,
   SubagentPermission,
   SubagentStatus,
@@ -40,6 +41,19 @@ const EVENT_KEYS = {
   observation: 'subagents.eventObservation',
   notification: 'subagents.eventNotification',
 } as const satisfies Record<SubagentActivity['kind'], LiveMessageKey>;
+
+const DELIVERY_STATUS_KEYS = {
+  pending: 'subagents.deliveryPending',
+  held: 'subagents.deliveryHeld',
+  delivered: 'subagents.deliveryDelivered',
+  denied: 'subagents.deliveryDenied',
+  refused: 'subagents.deliveryRefused',
+  expired: 'subagents.deliveryExpired',
+  misaddressed: 'subagents.deliveryMisaddressed',
+  dropped: 'subagents.deliveryDropped',
+  unknown: 'subagents.deliveryUnknown',
+  failed: 'subagents.deliveryFailed',
+} as const satisfies Record<InstructionDelivery['status'], LiveMessageKey>;
 
 const NOTIFICATION_KEYS = {
   queued: 'subagents.notificationQueued',
@@ -144,6 +158,28 @@ export class SubagentsView {
     'discovered-sessions-omitted',
   );
   private readonly refreshSessions = element('button', 'subagents-page-button');
+  private readonly deliveries = element('li', 'instruction-deliveries');
+  private readonly deliveryList = element('ul', 'instruction-deliveries-list');
+  private readonly deliveriesEmpty = element(
+    'p',
+    'instruction-deliveries-empty',
+  );
+  private readonly deliveriesOmitted = element(
+    'p',
+    'instruction-deliveries-omitted',
+  );
+  private readonly deliveryRows = new Map<
+    string,
+    {
+      element: HTMLLIElement;
+      target: HTMLElement;
+      status: HTMLElement;
+      tracking: HTMLElement;
+      timestamps: HTMLElement;
+      note: HTMLElement;
+      unknown: HTMLElement;
+    }
+  >();
   private readonly permissionRows = new Map<
     string,
     {
@@ -177,6 +213,7 @@ export class SubagentsView {
       status: HTMLElement;
       origin: HTMLElement;
       cwd: HTMLElement;
+      instructions: HTMLElement;
     }
   >();
   private readonly eventRows = new Map<
@@ -285,11 +322,21 @@ export class SubagentsView {
       sessionsHeader,
       uiText(
         element('p', 'discovered-sessions-description'),
-        'subagents.sessionsReadOnly',
+        'subagents.sessionsInstructions',
       ),
       this.discoveredEmpty,
       this.discoveredList,
       this.discoveredOmitted,
+    );
+    this.deliveries.append(
+      uiText(element('h2', ''), 'subagents.instructionDeliveries'),
+      uiText(
+        element('p', 'instruction-deliveries-description'),
+        'subagents.deliveryNotCompletion',
+      ),
+      this.deliveriesEmpty,
+      this.deliveryList,
+      this.deliveriesOmitted,
     );
     this.pagination.append(
       this.previous,
@@ -389,6 +436,8 @@ export class SubagentsView {
       this.rows.clear();
       for (const row of this.sessionRows.values()) row.element.remove();
       this.sessionRows.clear();
+      for (const row of this.deliveryRows.values()) row.element.remove();
+      this.deliveryRows.clear();
       for (const row of this.permissionRows.values()) row.element.remove();
       this.permissionRows.clear();
     }
@@ -534,7 +583,8 @@ export class SubagentsView {
       this.empty.hidden = Boolean(
         (page?.snapshot ?? state.snapshot)?.tasks.length ||
         page?.unassignedPermissions?.length ||
-        page?.discoveredSessions !== undefined,
+        page?.discoveredSessions !== undefined ||
+        page?.instructionDeliveries !== undefined,
       );
       text(
         this.empty,
@@ -611,7 +661,14 @@ export class SubagentsView {
         );
         row.button.append(row.title, row.status, row.activity);
         row.element.append(row.button, row.stop);
-        this.list.append(row.element);
+        this.list.insertBefore(
+          row.element,
+          this.discovered.parentElement === this.list
+            ? this.discovered
+            : this.deliveries.parentElement === this.list
+              ? this.deliveries
+              : null,
+        );
         this.rows.set(task.id, row);
       }
       text(row.title, task.title);
@@ -642,6 +699,7 @@ export class SubagentsView {
         this.list.prepend(this.unassigned);
     } else this.unassigned.remove();
     this.renderDiscoveredSessions(state);
+    this.renderInstructionDeliveries(state);
   }
 
   private renderDiscoveredSessions(state: SubagentsWindowState): void {
@@ -685,10 +743,17 @@ export class SubagentsView {
           status: element('span', 'subagent-status'),
           origin: element('p', 'discovered-session-origin'),
           cwd: element('p', 'discovered-session-cwd'),
+          instructions: element('p', 'discovered-session-instructions'),
         };
         row.element.dataset.sessionId = session.id;
         row.status.dataset.status = 'unknown';
-        row.element.append(row.title, row.status, row.origin, row.cwd);
+        row.element.append(
+          row.title,
+          row.status,
+          row.origin,
+          row.cwd,
+          row.instructions,
+        );
         this.sessionRows.set(session.id, row);
       }
       text(row.title, session.title || session.sessionId);
@@ -702,12 +767,122 @@ export class SubagentsView {
       );
       text(row.cwd, session.cwd ?? '');
       row.cwd.hidden = !session.cwd;
+      text(
+        row.instructions,
+        liveText(
+          state.language,
+          session.readOnly
+            ? 'subagents.sessionsReadOnly'
+            : 'subagents.sessionsCanInstruct',
+        ),
+      );
       const atIndex = this.discoveredList.children[index];
       if (atIndex !== row.element)
         this.discoveredList.insertBefore(row.element, atIndex ?? null);
     }
-    if (this.list.lastElementChild !== this.discovered)
-      this.list.append(this.discovered);
+    const nextSection =
+      this.deliveries.parentElement === this.list ? this.deliveries : null;
+    if (
+      this.discovered.parentElement !== this.list ||
+      this.discovered.nextElementSibling !== nextSection
+    )
+      this.list.insertBefore(this.discovered, nextSection);
+  }
+
+  private renderInstructionDeliveries(state: SubagentsWindowState): void {
+    const deliveries = state.page?.instructionDeliveries;
+    if (deliveries === undefined) {
+      this.deliveries.remove();
+      this.deliveryList.replaceChildren();
+      this.deliveryRows.clear();
+      return;
+    }
+    localizeUi(this.deliveries, state.language);
+    this.deliveriesEmpty.hidden = deliveries.length > 0;
+    text(
+      this.deliveriesEmpty,
+      liveText(state.language, 'subagents.noInstructionDeliveries'),
+    );
+    const omitted = state.page?.instructionDeliveriesOmitted ?? 0;
+    this.deliveriesOmitted.hidden = omitted === 0;
+    text(
+      this.deliveriesOmitted,
+      liveText(state.language, 'subagents.deliveriesOmitted', {
+        count: omitted,
+      }),
+    );
+    const ids = new Set(deliveries.map((delivery) => delivery.id));
+    for (const [id, row] of this.deliveryRows) {
+      if (ids.has(id)) continue;
+      row.element.remove();
+      this.deliveryRows.delete(id);
+    }
+    for (const [index, delivery] of deliveries.entries()) {
+      let row = this.deliveryRows.get(delivery.id);
+      if (!row) {
+        row = {
+          element: element('li', 'instruction-delivery'),
+          target: element('strong', 'instruction-delivery-target'),
+          status: element('span', 'instruction-delivery-status'),
+          tracking: element('p', 'instruction-delivery-tracking'),
+          timestamps: element('p', 'instruction-delivery-time'),
+          note: element('p', 'instruction-delivery-note'),
+          unknown: element('p', 'instruction-delivery-unknown'),
+        };
+        row.element.dataset.deliveryId = delivery.id;
+        row.element.append(
+          row.target,
+          row.status,
+          row.timestamps,
+          row.tracking,
+          row.unknown,
+          row.note,
+        );
+        this.deliveryRows.set(delivery.id, row);
+      }
+      const session = state.page?.discoveredSessions?.find(
+        (entry) => entry.id === delivery.session,
+      );
+      text(
+        row.target,
+        [session?.title || delivery.session, delivery.backend]
+          .filter(Boolean)
+          .join(' · '),
+      );
+      text(
+        row.status,
+        liveText(state.language, DELIVERY_STATUS_KEYS[delivery.status]),
+      );
+      row.status.dataset.status = delivery.status;
+      text(
+        row.tracking,
+        liveText(
+          state.language,
+          delivery.tracking
+            ? 'subagents.deliveryTracking'
+            : 'subagents.deliveryTrackingEnded',
+        ),
+      );
+      text(
+        row.timestamps,
+        liveText(state.language, 'subagents.deliveryTime', {
+          created: time(state.language, delivery.createdAt),
+          updated: time(state.language, delivery.updatedAt),
+        }),
+      );
+      text(
+        row.unknown,
+        liveText(state.language, 'subagents.deliveryUnknownDetail'),
+      );
+      row.unknown.hidden = delivery.status !== 'unknown';
+      text(row.note, displayLiveMessage(state.language, delivery.note ?? ''));
+      row.note.hidden = !delivery.note;
+      const atIndex = this.deliveryList.children[index];
+      if (atIndex !== row.element)
+        this.deliveryList.insertBefore(row.element, atIndex ?? null);
+    }
+    if (this.list.lastElementChild !== this.deliveries)
+      this.list.append(this.deliveries);
   }
 
   private renderDetail(state: SubagentsWindowState): void {

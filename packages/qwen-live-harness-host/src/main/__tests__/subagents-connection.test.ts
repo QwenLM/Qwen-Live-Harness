@@ -119,6 +119,31 @@ it('publishes standalone task revisions without republishing media state and ign
     assert.equal(stateCount, before);
     assert.equal(updates.length, 1);
     assert.equal(connection.getSnapshot().subagentsV1?.revision, 1);
+    const flush = async () => {
+      const barrier = new Promise<void>((resolve) =>
+        peer.once('message', () => resolve()),
+      );
+      peer.send(
+        JSON.stringify({ type: 'host.ping', pingId: 'delivery-barrier' }),
+      );
+      await barrier;
+    };
+    peer.send(
+      JSON.stringify({
+        type: 'host.subagents',
+        subagentsV1: { ...snapshot(1), deliveryRevision: 1 },
+      }),
+    );
+    await flush();
+    assert.equal(updates.length, 2);
+    assert.equal(connection.getSnapshot().subagentsV1?.deliveryRevision, 1);
+    for (const next of [
+      snapshot(1),
+      { ...snapshot(1), deliveryRevision: 1 },
+      { ...snapshot(0), deliveryRevision: 2 },
+      { ...snapshot(2), deliveryRevision: 0 },
+    ])
+      peer.send(JSON.stringify({ type: 'host.subagents', subagentsV1: next }));
     peer.send(
       JSON.stringify({ type: 'host.subagents', subagentsV1: snapshot(0) }),
     );
@@ -127,8 +152,28 @@ it('publishes standalone task revisions without republishing media state and ign
     );
     peer.send(JSON.stringify({ type: 'host.ping', pingId: 'barrier' }));
     await barrier;
-    assert.equal(updates.length, 1);
+    assert.equal(updates.length, 2);
     assert.equal(stateCount, before);
+    peer.send(
+      JSON.stringify({
+        type: 'host.state',
+        epoch: 0,
+        status: { v: 1, available: true, state: 'idle', shortcut: 'Command+E' },
+        subagentsV1: snapshot(1),
+      }),
+    );
+    await flush();
+    assert.equal(connection.getSnapshot().subagentsV1?.deliveryRevision, 1);
+    peer.send(
+      JSON.stringify({
+        type: 'host.state',
+        epoch: 0,
+        status: { v: 1, available: true, state: 'idle', shortcut: 'Command+E' },
+        subagentsV1: { ...snapshot(1), deliveryRevision: 2 },
+      }),
+    );
+    await flush();
+    assert.equal(connection.getSnapshot().subagentsV1?.deliveryRevision, 2);
   } finally {
     connection?.stop();
     for (const peer of server.clients) peer.terminate();
@@ -146,6 +191,7 @@ it('validates standalone task messages and rejects unbounded or malformed snapsh
   );
   for (const bad of [
     { ...snapshot(1), revision: -1 },
+    { ...snapshot(1), deliveryRevision: -1 },
     { ...snapshot(1), counts: { running: '2' } },
     { ...snapshot(1), tasks: [{ id: 'unsafe' }] },
     { ...snapshot(1), extra: 'x'.repeat(260 * 1024) },

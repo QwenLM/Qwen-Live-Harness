@@ -395,11 +395,71 @@ button:focus-visible,
   line-height: 18px;
 }
 .discovered-session-origin,
-.discovered-session-cwd {
+.discovered-session-cwd,
+.discovered-session-instructions {
   margin: 0;
   color: var(--live-muted);
   font-size: 10px;
   line-height: 16px;
+}
+.instruction-deliveries {
+  margin-top: 12px;
+  padding: 10px 2px 4px;
+  border-top: 1px solid var(--live-divider);
+}
+.instruction-deliveries h2 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.instruction-deliveries-description,
+.instruction-deliveries-empty,
+.instruction-deliveries-omitted {
+  margin: 7px 0;
+  color: var(--live-muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+.instruction-deliveries-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.instruction-delivery {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--live-border);
+  border-radius: 9px;
+  background: var(--live-surface);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.instruction-delivery-target {
+  font-size: 12px;
+  line-height: 18px;
+}
+.instruction-delivery-status {
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--live-text-secondary);
+}
+.instruction-delivery-status[data-status='held'],
+.instruction-delivery-status[data-status='unknown'] {
+  color: var(--live-warning);
+}
+.instruction-delivery-time,
+.instruction-delivery-tracking,
+.instruction-delivery-unknown,
+.instruction-delivery-note {
+  margin: 0;
+  color: var(--live-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+.instruction-delivery-unknown {
+  color: var(--live-warning);
 }
 .subagent-status[data-status='unknown'] {
   color: var(--live-muted);

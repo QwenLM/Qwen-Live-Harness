@@ -33,8 +33,8 @@ export type BackendConfig =
       kind: 'qwen-code';
       baseUrl: string;
       token?: string;
-      /** Opt-in local terminal discovery; no controller grant. */
-      peerDiscovery?: { qwenHome: string };
+      /** Opt-in local terminals; an explicit controller grant enables text delivery. */
+      peerDiscovery?: { qwenHome: string; controllerToken?: string };
       isDefault: boolean;
     }
   | {
@@ -717,6 +717,7 @@ function parseBackend(
   raw: Record<string, unknown>,
   source: string,
   index: number,
+  env: Record<string, string | undefined>,
 ): BackendConfig {
   const where = `${source} entry #${index + 1}`;
   const name = str(raw['name']);
@@ -737,12 +738,18 @@ function parseBackend(
     }
     const baseUrl = str(raw['serveUrl'] ?? raw['baseUrl']) ?? DEFAULT_SERVE_URL;
     const token = str(raw['token']);
-    let peerDiscovery: { qwenHome: string } | undefined;
+    let peerDiscovery:
+      { qwenHome: string; controllerToken?: string } | undefined;
     if (raw['peerDiscovery'] !== undefined) {
       const peer = raw['peerDiscovery'];
       if (
         !isRecordLike(peer) ||
-        Object.keys(peer).some((key) => key !== 'qwenHome') ||
+        Object.keys(peer).some(
+          (key) =>
+            !['qwenHome', 'controllerToken', 'controllerTokenEnv'].includes(
+              key,
+            ),
+        ) ||
         typeof peer['qwenHome'] !== 'string' ||
         !peer['qwenHome'].trim()
       ) {
@@ -751,6 +758,43 @@ function parseBackend(
         );
       }
       peerDiscovery = { qwenHome: peer['qwenHome'].trim() };
+      if (
+        peer['controllerToken'] !== undefined &&
+        peer['controllerTokenEnv'] !== undefined
+      ) {
+        throw new Error(
+          `Invalid peerDiscovery in ${where}: choose controllerToken or controllerTokenEnv, not both`,
+        );
+      }
+      let controllerToken: unknown = peer['controllerToken'];
+      if (peer['controllerTokenEnv'] !== undefined) {
+        const key = peer['controllerTokenEnv'];
+        if (
+          typeof key !== 'string' ||
+          !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)
+        ) {
+          throw new Error(
+            `Invalid peerDiscovery in ${where}: controllerTokenEnv must name an environment variable`,
+          );
+        }
+        controllerToken = env[key];
+        if (controllerToken === undefined) {
+          throw new Error(
+            `Invalid peerDiscovery in ${where}: the controller token environment variable is unset`,
+          );
+        }
+      }
+      if (controllerToken !== undefined) {
+        if (
+          typeof controllerToken !== 'string' ||
+          !/^qpc_[0-9a-f]{64}$/.test(controllerToken)
+        ) {
+          throw new Error(
+            `Invalid peerDiscovery in ${where}: controller token must be minted by qwen sessions controllers add`,
+          );
+        }
+        peerDiscovery.controllerToken = controllerToken;
+      }
     }
     return {
       name,
@@ -863,7 +907,7 @@ function parseBackends(
     if (!isRecordLike(entry)) {
       throw new Error(`${source} entry #${index + 1} must be an object`);
     }
-    return parseBackend(entry, source, index);
+    return parseBackend(entry, source, index, env);
   });
   const names = new Set<string>();
   for (const backend of backends) {

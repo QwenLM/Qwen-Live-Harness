@@ -45,6 +45,8 @@ import type {
   PermissionOption,
   PermissionOptionKind,
   PromptReceipt,
+  InstructionReceipt,
+  InstructionDelivery,
   SessionSummary,
 } from './types.js';
 
@@ -344,6 +346,14 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   private workspaceCwd: string | undefined;
   private readonly peers?: QwenPeerDiscovery;
   readonly listDiscoveredSessions?: () => Promise<SessionSummary[]>;
+  readonly sendInstruction?: (
+    handle: BackendHandle,
+    text: string,
+  ) => Promise<InstructionReceipt>;
+  readonly listInstructionDeliveries?: () => InstructionDelivery[];
+  readonly subscribeInstructionDeliveries?: (
+    listener: () => void,
+  ) => () => void;
 
   constructor(options: QwenCodeAdaptorOptions) {
     this.options = options;
@@ -356,6 +366,10 @@ export class QwenCodeAdaptor implements BackendAdaptor {
       );
       const peers = this.peers;
       this.listDiscoveredSessions = () => peers.list();
+      this.sendInstruction = (handle, text) => peers.send(handle, text);
+      this.listInstructionDeliveries = () => peers.deliveries();
+      this.subscribeInstructionDeliveries = (listener) =>
+        peers.subscribe(listener);
     }
     this.client =
       options.client ??
@@ -531,7 +545,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     if (this.isDiscoveryHandle(handle)) {
       return {
         status: 'rejected',
-        note: 'This terminal session is read-only; sending instructions is not available yet.',
+        note: 'Terminal instructions use the text delivery channel; managed prompts are unavailable.',
       };
     }
     const state = this.trackSession(handle.id);
@@ -729,7 +743,11 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   // -- internals -----------------------------------------------------------
 
   private isDiscoveryHandle(handle: BackendHandle): boolean {
-    return handle.readOnly === true || handle.id.startsWith('qwen-peer:');
+    return (
+      handle.readOnly === true ||
+      handle.instructionOnly === true ||
+      handle.id.startsWith('qwen-peer:')
+    );
   }
 
   private trackSession(

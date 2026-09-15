@@ -182,4 +182,87 @@ describe('Qwen peer discovery', () => {
     await discovery.close();
     expect(peer.close).toHaveBeenCalledTimes(2);
   });
+
+  it('enables only text instructions with a grant and notifies when the next call clears deliveries', async () => {
+    const token = `qpc_${'a'.repeat(64)}`;
+    const readRecords = vi.fn(async () => [
+      {
+        ...terminal,
+        schemaVersion: 1,
+        procStart: null,
+        pidNs: null,
+        qwenVersion: null,
+        ipcPath: '/selected.sock',
+      },
+    ]);
+    const sendFrame = vi.fn(async () => {});
+    const open = vi.fn(async () => endpoint());
+    const discovery = new QwenPeerDiscovery(
+      { qwenHome: '/scope/a', controllerToken: token },
+      'qwen',
+      open,
+      {
+        readRecords,
+        sendFrame,
+        startInbox: async () => ({
+          socketPath: '/receipts.sock',
+          close: async () => {},
+          closeSync: () => {},
+        }),
+      },
+    );
+    const sizes: number[] = [];
+    const unsubscribe = discovery.subscribe(() =>
+      sizes.push(discovery.deliveries().length),
+    );
+    await discovery.start('first');
+    const target = (await discovery.list())[0]!.handle;
+    expect(target).toMatchObject({ instructionOnly: true });
+    expect(target).not.toHaveProperty('readOnly');
+    expect(await discovery.send(target, 'continue')).toMatchObject({
+      status: 'sent',
+    });
+    expect(discovery.deliveries()).toHaveLength(1);
+    await discovery.stop('first');
+    expect(discovery.deliveries()[0]).toMatchObject({
+      status: 'unknown',
+      tracking: false,
+    });
+    await discovery.start('second');
+    expect(discovery.deliveries()).toEqual([]);
+    expect(sizes.at(-1)).toBe(0);
+    expect(open).toHaveBeenCalledWith({
+      name: 'live-qwen',
+      qwenHome: '/scope/a',
+    });
+    unsubscribe();
+    await discovery.close();
+  });
+
+  it('rolls back discovery if the receipt inbox fails and hides its sensitive diagnostic', async () => {
+    const token = `qpc_${'a'.repeat(64)}`;
+    const peer = endpoint();
+    const discovery = new QwenPeerDiscovery(
+      { qwenHome: '/scope/a', controllerToken: token },
+      'qwen',
+      async () => peer,
+      {
+        startInbox: async () => {
+          throw new Error(`${token} /sensitive/path`);
+        },
+      },
+    );
+    await expect(discovery.start('call')).rejects.toThrow(
+      'Terminal instruction delivery could not be started.',
+    );
+    expect(peer.close).toHaveBeenCalledTimes(1);
+    expect(await discovery.list()).toEqual([]);
+    expect(
+      await discovery.send(
+        { id: 'qwen-peer:old', adaptor: 'qwen' },
+        'continue',
+      ),
+    ).toMatchObject({ status: 'rejected' });
+    await discovery.close();
+  });
 });

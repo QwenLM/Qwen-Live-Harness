@@ -674,6 +674,11 @@ export interface BootLiveStackOptions {
   makeOpenAIHandler: (info: { workspaceDir: string }) => FakeOpenAIHandler;
   /** Join only this fixture's isolated Qwen home for terminal discovery. */
   peerDiscovery?: boolean;
+  /** Mint a test controller in the isolated home before Live is spawned. */
+  preparePeerDiscovery?: (info: {
+    homeDir: string;
+    qwenHome: string;
+  }) => Promise<{ controllerToken: string }>;
 }
 
 export interface LiveStack {
@@ -781,6 +786,9 @@ export async function bootLiveStack(
     const fakeDash = await startFakeDashScopeServer();
     disposers.push(() => fakeDash.close());
 
+    const peerConfiguration = options.peerDiscovery
+      ? await options.preparePeerDiscovery?.({ homeDir, qwenHome })
+      : undefined;
     const live = await spawnQwenLiveHarness({
       serveUrl: serve.base,
       serveToken: SERVE_TOKEN,
@@ -793,7 +801,15 @@ export async function bootLiveStack(
                 default: true,
                 baseUrl: serve.base,
                 token: SERVE_TOKEN,
-                peerDiscovery: { qwenHome },
+                peerDiscovery: {
+                  qwenHome,
+                  ...(peerConfiguration
+                    ? {
+                        controllerTokenEnv:
+                          'QWEN_LIVE_HARNESS_TEST_CONTROLLER_TOKEN',
+                      }
+                    : {}),
+                },
               },
             ]),
           }
@@ -802,6 +818,14 @@ export async function bootLiveStack(
       dataDir,
       discoveryDir,
       cwd: workspaceDir,
+      ...(peerConfiguration
+        ? {
+            env: {
+              QWEN_LIVE_HARNESS_TEST_CONTROLLER_TOKEN:
+                peerConfiguration.controllerToken,
+            },
+          }
+        : {}),
     });
     disposers.push(() => live.dispose());
 

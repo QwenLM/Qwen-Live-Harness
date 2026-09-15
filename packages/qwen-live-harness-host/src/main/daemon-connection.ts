@@ -934,7 +934,9 @@ export class LiveDaemonConnection {
           if (
             message.subagentsV1 &&
             (!this.subagentsV1 ||
-              message.subagentsV1.revision >= this.subagentsV1.revision)
+              (message.subagentsV1.revision >= this.subagentsV1.revision &&
+                (message.subagentsV1.deliveryRevision ?? 0) >=
+                  (this.subagentsV1.deliveryRevision ?? 0)))
           )
             this.subagentsV1 = message.subagentsV1;
           if (message.visualInput) {
@@ -975,7 +977,12 @@ export class LiveDaemonConnection {
         case 'host.subagents': {
           if (
             !this.subagentsV1 ||
-            message.subagentsV1.revision <= this.subagentsV1.revision
+            message.subagentsV1.revision < this.subagentsV1.revision ||
+            (message.subagentsV1.deliveryRevision ?? 0) <
+              (this.subagentsV1.deliveryRevision ?? 0) ||
+            (message.subagentsV1.revision === this.subagentsV1.revision &&
+              (message.subagentsV1.deliveryRevision ?? 0) ===
+                (this.subagentsV1.deliveryRevision ?? 0))
           )
             break;
           this.subagentsV1 = message.subagentsV1;

@@ -51,6 +51,26 @@ describe('HandleRegistry sessions', () => {
   });
 });
 
+describe('HandleRegistry deliveries', () => {
+  it('scopes delivery ids by backend and retires old call handles without reusing them', () => {
+    const registry = new HandleRegistry();
+    const first = registry.delivery('first', 'message');
+    const second = registry.delivery('second', 'message');
+    expect(first).not.toBe(second);
+    registry.retainDeliveries([{ adaptor: 'second', id: 'message' }]);
+    expect(registry.resolveDelivery(first)).toBeUndefined();
+    expect(registry.delivery('second', 'message')).toBe(second);
+    expect(registry.delivery('first', 'message')).not.toBe(first);
+    const job = registry.createJob({
+      backend: backend('managed'),
+      sessionHandle: 'session_1',
+      task: 'Managed work',
+    });
+    expect(job.jobHandle).toBe('job_1');
+    expect(registry.resolveJob(second)).toBeUndefined();
+  });
+});
+
 describe('HandleRegistry jobs', () => {
   it.each(['accepted', 'interrupted'] as const)(
     'binds exact joined refs and retains promised aliases from %s without minting another job',

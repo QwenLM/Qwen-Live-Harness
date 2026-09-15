@@ -26,6 +26,7 @@ import type {
   BackendEvent,
   BackendHandle,
   ContentBlock,
+  InstructionDelivery,
 } from '../adaptor/types.js';
 import type { BackendRegistry } from '../adaptor/registry.js';
 import type { ProactiveConfig } from '../config.js';
@@ -473,6 +474,8 @@ export class LiveSession {
   private readonly controlReceipts = new Map<string, string>();
   private controlReceiptSeq = 0;
   private disposed = false;
+  private deliveryRevision = 0;
+  private readonly deliverySubscriptions: Array<() => void> = [];
   private active?: CallContext;
 
   constructor(private readonly options: LiveSessionOptions) {
@@ -493,6 +496,37 @@ export class LiveSession {
       adaptorFor: (backend) => this.adaptorFor(backend),
       log: (type, payload) => this.log.write(type, payload),
     });
+    for (const { adaptor } of this.registry.all()) {
+      let lastReceipts = new Map<string, string>();
+      const unsubscribe = adaptor.subscribeInstructionDeliveries?.(() => {
+        if (this.disposed) return;
+        this.deliveryRevision += 1;
+        this.handles.retainDeliveries(
+          this.registry.all().flatMap(({ adaptor: owner }) =>
+            (owner.listInstructionDeliveries?.() ?? []).map(({ id }) => ({
+              adaptor: owner.name,
+              id,
+            })),
+          ),
+        );
+        const current = new Map<string, string>();
+        for (const delivery of adaptor.listInstructionDeliveries?.() ?? []) {
+          const state = `${delivery.status}:${delivery.tracking}`;
+          current.set(delivery.id, state);
+          if (lastReceipts.get(delivery.id) === state) continue;
+          this.log.write('instruction.delivery', {
+            backend: adaptor.name,
+            delivery: this.handles.delivery(adaptor.name, delivery.id),
+            session: this.handles.session(delivery.target),
+            status: delivery.status,
+            tracking: delivery.tracking,
+          });
+        }
+        lastReceipts = current;
+        options.onSubagentsChanged?.(this.getSubagentsSnapshot());
+      });
+      if (unsubscribe) this.deliverySubscriptions.push(unsubscribe);
+    }
   }
 
   /** The adaptor that owns a backend handle (registry routing). */
@@ -942,6 +976,8 @@ export class LiveSession {
   }
 
   dispose(): void {
+    for (const unsubscribe of this.deliverySubscriptions.splice(0))
+      unsubscribe();
     this.disposed = true;
     this.closeActive();
     for (const abort of this.backendPumps.values()) abort.abort();
@@ -954,11 +990,46 @@ export class LiveSession {
     return this.withPendingPermissions(this.subagents.snapshot());
   }
 
+  private instructionDelivery(backend: string, delivery: InstructionDelivery) {
+    return {
+      id: this.handles.delivery(backend, delivery.id),
+      session: this.handles.session(delivery.target),
+      backend,
+      status: delivery.status,
+      tracking: delivery.tracking,
+      createdAt: delivery.createdAt,
+      updatedAt: delivery.updatedAt,
+      ...(delivery.note ? { note: delivery.note } : {}),
+    };
+  }
+
+  private instructionDeliveries() {
+    return this.registry
+      .all()
+      .flatMap(({ adaptor }) =>
+        (adaptor.listInstructionDeliveries?.() ?? []).map(
+          (delivery: InstructionDelivery) => ({ adaptor, delivery }),
+        ),
+      )
+      .sort(
+        (a, b) =>
+          b.delivery.createdAt - a.delivery.createdAt ||
+          b.delivery.id.localeCompare(a.delivery.id),
+      )
+      .slice(0, 100)
+      .map(({ adaptor, delivery }) =>
+        this.instructionDelivery(adaptor.name, delivery),
+      );
+  }
+
   private withPendingPermissions(
     snapshot: SubagentsSnapshot,
   ): SubagentsSnapshot {
     return {
       ...snapshot,
+      ...(this.deliverySubscriptions.length
+        ? { deliveryRevision: this.deliveryRevision }
+        : {}),
       pendingUnassignedPermissions: this.broker.pendingUserRequests.filter(
         (pending) => !this.permissionTaskId(pending),
       ).length,
@@ -1022,7 +1093,11 @@ export class LiveSession {
           discoveryEnabled = true;
           try {
             for (const summary of await adaptor.listDiscoveredSessions()) {
-              if (!summary.discovery || !summary.handle.readOnly) continue;
+              if (
+                !summary.discovery ||
+                (!summary.handle.readOnly && !summary.handle.instructionOnly)
+              )
+                continue;
               discovered.push({
                 id: this.handles.session(summary.handle),
                 backend: adaptor.name,
@@ -1031,7 +1106,7 @@ export class LiveSession {
                 ...(summary.cwd ? { cwd: summary.cwd } : {}),
                 source: 'terminal' as const,
                 status: 'unknown' as const,
-                readOnly: true as const,
+                readOnly: summary.handle.readOnly === true,
               });
             }
           } catch (error) {
@@ -1046,6 +1121,24 @@ export class LiveSession {
           page.discoveredSessions = discovered.slice(0, 32);
           page.discoveredSessionsOmitted = Math.max(0, discovered.length - 32);
         }
+      }
+      const deliveries = this.instructionDeliveries();
+      if (
+        this.registry
+          .all()
+          .some(({ adaptor }) => adaptor.listInstructionDeliveries)
+      ) {
+        page.instructionDeliveries = deliveries.slice(0, 100);
+        page.instructionDeliveriesOmitted = Math.max(
+          0,
+          this.registry
+            .all()
+            .reduce(
+              (total, { adaptor }) =>
+                total + (adaptor.listInstructionDeliveries?.().length ?? 0),
+              0,
+            ) - 100,
+        );
       }
       return { type: 'page', page };
     }
@@ -2350,6 +2443,7 @@ export class LiveSession {
           // as interrupted only when the backend also reports idle.
           if (
             !summary.handle.readOnly &&
+            !summary.handle.instructionOnly &&
             summary.state !== 'busy' &&
             !entry.adaptor.isBusy(summary.handle)
           ) {
@@ -2363,13 +2457,20 @@ export class LiveSession {
             ...(summary.cwd ? { cwd: summary.cwd } : {}),
             ...(summary.discovery ? { source: summary.discovery.source } : {}),
             ...(summary.handle.readOnly ? { read_only: true } : {}),
-            state: summary.handle.readOnly
-              ? 'unknown'
-              : pending
-                ? 'waiting_for_permission'
-                : entry.adaptor.isBusy(summary.handle)
-                  ? 'busy'
-                  : summary.state,
+            ...(summary.handle.instructionOnly
+              ? {
+                  instruction_only: true,
+                  text_instructions: !summary.handle.readOnly,
+                }
+              : {}),
+            state:
+              summary.handle.readOnly || summary.handle.instructionOnly
+                ? 'unknown'
+                : pending
+                  ? 'waiting_for_permission'
+                  : entry.adaptor.isBusy(summary.handle)
+                    ? 'busy'
+                    : summary.state,
             ...(pending
               ? {
                   pending_permission: {
@@ -2420,11 +2521,51 @@ export class LiveSession {
       const target = await this.resolveHandoffTarget(context, args['session']);
       if ('error' in target) return { status: 'error', note: target.error };
       const { handle, backend } = target;
+      if (backend.instructionOnly) {
+        if (
+          args['input_refs'] !== undefined &&
+          (!Array.isArray(args['input_refs']) || args['input_refs'].length > 0)
+        ) {
+          return {
+            status: 'rejected',
+            session: handle,
+            note: 'Terminal instructions accept text only; no attachments were sent.',
+          };
+        }
+        const adaptor = this.adaptorFor(backend);
+        if (this.active !== context || context.stopping) {
+          return {
+            status: 'rejected',
+            session: handle,
+            note: 'The call has ended; no instruction was sent.',
+          };
+        }
+        if (!adaptor.sendInstruction) {
+          return {
+            status: 'rejected',
+            session: handle,
+            note: 'Text instructions are unavailable for this terminal.',
+          };
+        }
+        const receipt = await adaptor.sendInstruction(backend, task);
+        if (receipt.status === 'rejected')
+          return { ...receipt, session: handle };
+        return {
+          status: receipt.status,
+          session: handle,
+          delivery: this.handles.delivery(adaptor.name, receipt.delivery.id),
+          delivery_status: receipt.delivery.status,
+          tracking: receipt.delivery.tracking,
+          note:
+            receipt.delivery.note ??
+            'This is a text delivery receipt. Execution and completion are not observed; do not resend automatically.',
+        };
+      }
       if (backend.readOnly) {
         return {
           status: 'rejected',
           session: handle,
-          note: 'This terminal session is read-only; sending instructions is not available yet.',
+          note: 'This terminal is read-only. Configure a Qwen controller grant to enable text instructions.',
         };
       }
 
@@ -2555,6 +2696,37 @@ export class LiveSession {
     });
 
     handlers.set(SESSION_MONITOR_TOOL_NAME, (args) => {
+      if (typeof args['delivery'] === 'string') {
+        if (args['session'] !== undefined || args['job'] !== undefined) {
+          return {
+            status: 'error',
+            note: 'Monitor a delivery separately from a session or job.',
+          };
+        }
+        const ref = this.handles.resolveDelivery(args['delivery']);
+        const receipt =
+          ref &&
+          this.registry
+            .byAdaptorName(ref.adaptor)
+            ?.adaptor.listInstructionDeliveries?.()
+            .find((entry) => entry.id === ref.id);
+        const delivery =
+          receipt && ref
+            ? this.instructionDelivery(ref.adaptor, receipt)
+            : undefined;
+        return delivery
+          ? {
+              ...delivery,
+              delivery: delivery.id,
+              status: 'ok',
+              delivery_status: delivery.status,
+              execution_state: 'unknown',
+            }
+          : {
+              status: 'error',
+              note: 'Unknown or no longer retained delivery; it may have executed. Do not resend automatically.',
+            };
+      }
       const job =
         typeof args['job'] === 'string'
           ? this.handles.resolveJob(args['job'])
@@ -2569,12 +2741,20 @@ export class LiveSession {
           note: 'unknown session; call session_list first.',
         };
       }
-      if (backend.readOnly) {
+      if (backend.readOnly || backend.instructionOnly) {
         return {
           status: 'ok',
           session: sessionHandle,
           state: 'unknown',
-          read_only: true,
+          ...(backend.readOnly ? { read_only: true } : {}),
+          ...(backend.instructionOnly
+            ? {
+                instruction_only: true,
+                deliveries: this.instructionDeliveries().filter(
+                  (delivery) => delivery.session === sessionHandle,
+                ),
+              }
+            : {}),
           note: 'Execution state is not observed for this terminal session.',
         };
       }
@@ -2653,7 +2833,7 @@ export class LiveSession {
           note: 'unknown session or job; call session_list first.',
         };
       }
-      if (backend.readOnly) {
+      if (backend.readOnly || backend.instructionOnly) {
         return {
           status: 'unsupported',
           session: sessionHandle,
@@ -2814,6 +2994,7 @@ export class LiveSession {
     if (
       this.disposed ||
       backend.readOnly ||
+      backend.instructionOnly ||
       this.backendPumps.has(sessionHandle)
     )
       return;

@@ -4,6 +4,7 @@ import { afterEach, describe, it } from 'node:test';
 import { JSDOM } from 'jsdom';
 import { liveMessage, liveText } from 'qwen-live-harness/i18n';
 import type {
+  InstructionDelivery,
   SubagentTask,
   SubagentsControlResult,
   SubagentsSnapshot,
@@ -175,7 +176,7 @@ describe('Subagents read-only surfaces', () => {
       '执行状态未知',
     );
     assert.match(
-      h.get('.discovered-sessions-description').textContent ?? '',
+      h.get('.discovered-session-instructions').textContent ?? '',
       /只读/,
     );
     assert.match(h.get('.discovered-sessions-omitted').textContent ?? '', /2/);
@@ -210,6 +211,161 @@ describe('Subagents read-only surfaces', () => {
     });
     assert.equal(h.app.querySelector('.discovered-sessions'), null);
     assert.equal(h.get('.subagents-empty').hidden, false);
+  });
+
+  it('renders terminal authorization and evolving delivery receipts without task actions or completion counts', () => {
+    const value = snapshot([]);
+    value.omitted = 0;
+    value.counts = {
+      running: 0,
+      completed: 0,
+      needsAttention: 0,
+      failed: 0,
+      cancelled: 0,
+      interrupted: 0,
+    };
+    const session = {
+      id: 'session_1',
+      backend: 'qwen',
+      sessionId: 'terminal-1',
+      title: 'Coding terminal',
+      source: 'terminal' as const,
+      status: 'unknown' as const,
+      readOnly: false,
+    };
+    const delivery: InstructionDelivery = {
+      id: 'delivery_1',
+      session: 'session_1',
+      backend: 'qwen',
+      status: 'held',
+      tracking: true,
+      createdAt: 1_788_790_000_000,
+      updatedAt: 1_788_790_001_000,
+      note: '<b>Review in terminal</b>',
+    };
+    const page = {
+      snapshot: value,
+      offset: 0,
+      total: 0,
+      discoveredSessions: [session],
+      instructionDeliveries: [delivery],
+    };
+    const h = setup(
+      {},
+      {
+        mode: 'list',
+        language: 'en',
+        snapshot: value,
+        page,
+        controlsAvailable: true,
+        instanceId: 'one',
+      },
+    );
+    assert.match(
+      h.get('.discovered-session-instructions').textContent ?? '',
+      /Text instructions enabled.*voice/,
+    );
+    assert.match(
+      h.get('.discovered-sessions-description').textContent ?? '',
+      /Stopping, approvals and images are unavailable/,
+    );
+    assert.equal(
+      h.get('.instruction-delivery-target').textContent,
+      'Coding terminal · qwen',
+    );
+    assert.equal(
+      h.get('.instruction-delivery-status').textContent,
+      'Awaiting terminal review',
+    );
+    assert.match(
+      h.get('.instruction-delivery-tracking').textContent ?? '',
+      /Watching/,
+    );
+    assert.equal(
+      h.get('.instruction-delivery-note').textContent,
+      delivery.note,
+    );
+    assert.equal(h.app.querySelector('.instruction-delivery-note b'), null);
+    assert.match(
+      h.get('.instruction-delivery-time').textContent ?? '',
+      /Started.*Updated/,
+    );
+    assert.match(
+      h.get('.instruction-deliveries-description').textContent ?? '',
+      /completion still needs/,
+    );
+    assert.equal(
+      h.app.querySelectorAll(
+        '.instruction-delivery button, .discovered-session button',
+      ).length,
+      0,
+    );
+    assert.equal(h.app.querySelectorAll('.subagent-row').length, 0);
+    const row = h.get('.instruction-delivery');
+    const refresh = h.get<HTMLButtonElement>(
+      '.discovered-sessions-header button',
+    );
+    refresh.focus();
+    for (const [status, label] of [
+      ['pending', '等待回执'],
+      ['delivered', '已送达'],
+      ['denied', '接收方已拒绝'],
+      ['refused', '终端不接受指令'],
+      ['expired', '投递已过期'],
+      ['misaddressed', '目标会话已变化'],
+      ['dropped', '终端未接收'],
+      ['unknown', '投递结果不明'],
+      ['failed', '发送失败'],
+    ] as const) {
+      h.update({
+        language: 'zh-CN',
+        page: {
+          ...page,
+          instructionDeliveries: [
+            {
+              ...delivery,
+              status,
+              tracking: false,
+              updatedAt: delivery.updatedAt + 1000,
+            },
+          ],
+        },
+      });
+      assert.equal(h.get('.instruction-delivery'), row);
+      assert.equal(h.dom.window.document.activeElement, refresh);
+      assert.equal(h.get('.instruction-delivery-status').textContent, label);
+      assert.equal(
+        h.get('.instruction-delivery-unknown').hidden,
+        status !== 'unknown',
+      );
+      assert.equal(
+        h.get('.subagents-panel [data-count="running"]').textContent,
+        '0',
+      );
+      assert.equal(
+        h.get('.subagents-panel [data-count="completed"]').textContent,
+        '0',
+      );
+    }
+    assert.equal(
+      h.get('.instruction-delivery-tracking').textContent,
+      '回执跟踪已结束',
+    );
+    h.update({
+      page: {
+        ...page,
+        instructionDeliveries: [],
+        instructionDeliveriesOmitted: 3,
+      },
+    });
+    assert.equal(h.app.querySelector('.instruction-delivery'), null);
+    assert.equal(h.get('.instruction-deliveries-empty').hidden, false);
+    assert.match(
+      h.get('.instruction-deliveries-omitted').textContent ?? '',
+      /3/,
+    );
+    h.update({ page: { snapshot: value, offset: 0, total: 0 } });
+    assert.equal(h.app.querySelector('.instruction-deliveries'), null);
   });
 
   it('marks an unassigned backend approval without inventing an active task', () => {

@@ -65,6 +65,8 @@ export type SubagentTask = {
 };
 export type SubagentsSnapshot = {
   revision: number;
+  /** Changes to instruction receipts do not change task revisions or counts. */
+  deliveryRevision?: number;
   pendingUnassignedPermissions?: number;
   counts: {
     running: number;
@@ -83,6 +85,29 @@ export const MAX_SUBAGENT_PERMISSIONS = 8;
 export const MAX_SUBAGENTS_REQUEST_BYTES = 4 * 1024;
 export const MAX_SUBAGENTS_CONTROL_BYTES = 1024 * 1024;
 export const MAX_DISCOVERED_SESSIONS = 32;
+export const MAX_INSTRUCTION_DELIVERIES = 100;
+export const INSTRUCTION_DELIVERY_STATUSES = [
+  'pending',
+  'held',
+  'delivered',
+  'denied',
+  'refused',
+  'expired',
+  'misaddressed',
+  'dropped',
+  'unknown',
+  'failed',
+] as const;
+export type InstructionDelivery = {
+  id: string;
+  session: string;
+  backend: string;
+  status: (typeof INSTRUCTION_DELIVERY_STATUSES)[number];
+  tracking: boolean;
+  createdAt: number;
+  updatedAt: number;
+  note?: string;
+};
 
 /** Session discovery is separate from tasks and does not imply execution. */
 export type DiscoveredSession = {
@@ -93,7 +118,7 @@ export type DiscoveredSession = {
   cwd?: string;
   source: 'terminal';
   status: 'unknown';
-  readOnly: true;
+  readOnly: boolean;
 };
 
 export type SubagentsPage = {
@@ -105,6 +130,8 @@ export type SubagentsPage = {
   unassignedPermissionsOmitted?: number;
   discoveredSessions?: DiscoveredSession[];
   discoveredSessionsOmitted?: number;
+  instructionDeliveries?: InstructionDelivery[];
+  instructionDeliveriesOmitted?: number;
 };
 export type SubagentsControlRequest =
   | { action: 'list'; offset?: number; selectedId?: string }
@@ -210,10 +237,49 @@ function validDiscoveredSessions(value: unknown): value is DiscoveredSession[] {
       (session['cwd'] !== undefined && !text(session['cwd'], 4096)) ||
       session['source'] !== 'terminal' ||
       session['status'] !== 'unknown' ||
-      session['readOnly'] !== true
+      typeof session['readOnly'] !== 'boolean'
     )
       return false;
     ids.add(session['id']);
+  }
+  return true;
+}
+
+function validInstructionDeliveries(
+  value: unknown,
+): value is InstructionDelivery[] {
+  if (!Array.isArray(value) || value.length > MAX_INSTRUCTION_DELIVERIES)
+    return false;
+  const ids = new Set<string>();
+  const keys = [
+    'id',
+    'session',
+    'backend',
+    'status',
+    'tracking',
+    'createdAt',
+    'updatedAt',
+    'note',
+  ];
+  for (const delivery of value) {
+    if (
+      !record(delivery) ||
+      !Object.keys(delivery).every((key) => keys.includes(key)) ||
+      !identifier(delivery['id']) ||
+      ids.has(delivery['id']) ||
+      !identifier(delivery['session']) ||
+      !text(delivery['backend'], 256) ||
+      !INSTRUCTION_DELIVERY_STATUSES.includes(
+        delivery['status'] as InstructionDelivery['status'],
+      ) ||
+      typeof delivery['tracking'] !== 'boolean' ||
+      !number(delivery['createdAt']) ||
+      !number(delivery['updatedAt']) ||
+      delivery['updatedAt'] < delivery['createdAt'] ||
+      (delivery['note'] !== undefined && !text(delivery['note'], 1024))
+    )
+      return false;
+    ids.add(delivery['id']);
   }
   return true;
 }
@@ -288,6 +354,8 @@ export function parseSubagentsSnapshot(
   if (
     !record(value) ||
     !integer(value['revision']) ||
+    (value['deliveryRevision'] !== undefined &&
+      !integer(value['deliveryRevision'])) ||
     (value['pendingUnassignedPermissions'] !== undefined &&
       !integer(value['pendingUnassignedPermissions'])) ||
     !integer(value['omitted']) ||
@@ -390,7 +458,12 @@ export function parseSubagentsControlResult(
       !validDiscoveredSessions(page['discoveredSessions'])) ||
     (page['discoveredSessionsOmitted'] !== undefined &&
       (!integer(page['discoveredSessionsOmitted']) ||
-        page['discoveredSessions'] === undefined))
+        page['discoveredSessions'] === undefined)) ||
+    (page['instructionDeliveries'] !== undefined &&
+      !validInstructionDeliveries(page['instructionDeliveries'])) ||
+    (page['instructionDeliveriesOmitted'] !== undefined &&
+      (!integer(page['instructionDeliveriesOmitted']) ||
+        page['instructionDeliveries'] === undefined))
   )
     return undefined;
   return value as SubagentsControlResult;

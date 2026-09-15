@@ -1443,6 +1443,8 @@ describe('QwenCodeAdaptor peer discovery boundary', () => {
     const open = vi.fn();
     const adaptor = makeAdaptor(makeClient(), { peerEndpointFactory: open });
     expect(adaptor.listDiscoveredSessions).toBeUndefined();
+    expect(adaptor.sendInstruction).toBeUndefined();
+    expect(adaptor.listInstructionDeliveries).toBeUndefined();
     await adaptor.preflight();
     await adaptor.startDiscovery('call');
     await adaptor.listSessions();
@@ -1513,6 +1515,10 @@ describe('QwenCodeAdaptor peer discovery boundary', () => {
     const terminal = rows[1]!.handle;
     expect(terminal.id).not.toEqual(SESSION_ID);
     expect(terminal.readOnly).toBe(true);
+    expect(await adaptor.sendInstruction!(terminal, 'continue')).toMatchObject({
+      status: 'rejected',
+      note: expect.stringContaining('controller token'),
+    });
     expect(
       await adaptor.prompt(terminal, [
         { type: 'text', text: 'run a command' },

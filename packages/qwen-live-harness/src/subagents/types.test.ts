@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_SUBAGENTS_CONTROL_BYTES,
   MAX_DISCOVERED_SESSIONS,
+  MAX_INSTRUCTION_DELIVERIES,
+  INSTRUCTION_DELIVERY_STATUSES,
   parseSubagentsSnapshot,
   parseSubagentsControlRequest,
   parseSubagentsControlResult,
@@ -38,6 +40,21 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
+  it('accepts optional independent delivery revisions without changing task counts', () => {
+    expect(
+      parseSubagentsSnapshot({ ...snapshot, deliveryRevision: 0 }),
+    ).toBeDefined();
+    expect(
+      parseSubagentsSnapshot({ ...snapshot, deliveryRevision: 20 }),
+    ).toMatchObject({
+      revision: snapshot.revision,
+      counts: snapshot.counts,
+    });
+    for (const deliveryRevision of [-1, 1.5, Infinity, '2'])
+      expect(
+        parseSubagentsSnapshot({ ...snapshot, deliveryRevision }),
+      ).toBeUndefined();
+  });
   it('rejects coerced enums and duplicate task ids', () => {
     expect(parseSubagentsSnapshot(snapshot)).toBeDefined();
     for (const invalid of [
@@ -58,7 +75,7 @@ describe('subagent snapshot identity and value validation', () => {
 });
 
 describe('subagent management contracts', () => {
-  it('keeps discovered sessions read-only, bounded and separate from task counts', () => {
+  it('keeps discovery bounded and explicitly distinguishes instruction authorization', () => {
     const session = {
       id: 'session:1',
       backend: 'qwen',
@@ -80,12 +97,17 @@ describe('subagent management contracts', () => {
     });
     expect(parseSubagentsControlResult(valid)).toEqual(valid);
     expect(
+      parseSubagentsControlResult(
+        response({ discoveredSessions: [{ ...session, readOnly: false }] }),
+      ),
+    ).toBeDefined();
+    expect(
       parseSubagentsControlResult(response({ discoveredSessions: [] })),
     ).toBeDefined();
     for (const invalid of [
       { discoveredSessions: [session, session] },
       { discoveredSessions: [{ ...session, status: 'running' }] },
-      { discoveredSessions: [{ ...session, readOnly: false }] },
+      { discoveredSessions: [{ ...session, readOnly: 'false' }] },
       { discoveredSessions: [{ ...session, source: 'daemon' }] },
       { discoveredSessions: [{ ...session, sessionId: '' }] },
       { discoveredSessions: [{ ...session, id: 'x'.repeat(129) }] },
@@ -101,6 +123,66 @@ describe('subagent management contracts', () => {
       { discoveredSessionsOmitted: 1 },
     ])
       expect(parseSubagentsControlResult(response(invalid))).toBeUndefined();
+  });
+
+  it('accepts bounded instruction receipts separately and rejects internal or malformed fields', () => {
+    const delivery = {
+      id: 'delivery_1',
+      session: 'session_1',
+      backend: 'qwen',
+      status: 'held',
+      tracking: true,
+      createdAt: 100,
+      updatedAt: 200,
+      note: 'Awaiting review',
+    };
+    const response = (fields: object) => ({
+      type: 'page',
+      page: { snapshot, offset: 0, total: 1, ...fields },
+    });
+    for (const status of INSTRUCTION_DELIVERY_STATUSES) {
+      const result = response({
+        instructionDeliveries: [{ ...delivery, status }],
+      });
+      expect(parseSubagentsControlResult(result)).toEqual(result);
+    }
+    expect(
+      parseSubagentsControlResult(
+        response({
+          instructionDeliveries: [],
+          instructionDeliveriesOmitted: 2,
+        }),
+      ),
+    ).toBeDefined();
+    const invalidRows = [
+      { ...delivery, id: '' },
+      { ...delivery, session: 'x'.repeat(129) },
+      { ...delivery, status: ['held'] },
+      { ...delivery, status: 'completed' },
+      { ...delivery, tracking: 'yes' },
+      { ...delivery, createdAt: -1 },
+      { ...delivery, updatedAt: 99 },
+      { ...delivery, backend: 'x'.repeat(257) },
+      { ...delivery, note: 'x'.repeat(1025) },
+      { ...delivery, msgId: 'private-transport-id' },
+      { ...delivery, token: 'controller-secret' },
+    ];
+    for (const row of invalidRows)
+      expect(
+        parseSubagentsControlResult(response({ instructionDeliveries: [row] })),
+      ).toBeUndefined();
+    for (const fields of [
+      { instructionDeliveries: [delivery, delivery] },
+      { instructionDeliveriesOmitted: 1 },
+      { instructionDeliveries: [], instructionDeliveriesOmitted: -1 },
+      {
+        instructionDeliveries: Array.from(
+          { length: MAX_INSTRUCTION_DELIVERIES + 1 },
+          (_, i) => ({ ...delivery, id: `delivery_${i}` }),
+        ),
+      },
+    ])
+      expect(parseSubagentsControlResult(response(fields))).toBeUndefined();
   });
 
   it('bounds approval descriptions and never offers Allow for incomplete descriptions', () => {
