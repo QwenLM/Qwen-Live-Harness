@@ -92,10 +92,19 @@ jobs:
           trap 'rm -rf "$extracted_asar"; rm -f "$packaged_entitlements"' EXIT
           npx --no-install asar extract "$app/Contents/Resources/app.asar" "$extracted_asar"
           test -d "$extracted_asar/dist"
-          if grep -RIEq 'openWebShellWindow|web-shell-security|host\.open_session|inputMonitoring|installUrl|loadURL\(|@modelcontextprotocol|node:child_process' "$extracted_asar/dist"; then
-            echo '::error::Packaged app contains a forbidden external backend, process launcher, WebShell window, or Input Monitoring path.'
+          if grep -RIEq 'openWebShellWindow|web-shell-security|host\.open_session|inputMonitoring|installUrl|loadURL\(|@modelcontextprotocol' "$extracted_asar/dist"; then
+            echo '::error::Packaged app contains a forbidden external backend, WebShell window, or Input Monitoring path.'
             exit 1
           fi
+
+          # The build guard allows process APIs only in the main bundle's
+          # registered daemon startup module. Preloads/renderers never get them.
+          while IFS= read -r -d '' packaged_file; do
+            if grep -Eq '(node:)?child_process' "$packaged_file"; then
+              echo "::error::Packaged process API outside the main bundle: $packaged_file"
+              exit 1
+            fi
+          done < <(find "$extracted_asar/dist" -type f ! -path "$extracted_asar/dist/main.cjs" -print0)
 
           info_plist="$app/Contents/Info.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")" = 'com.alibaba.qwen-live-harness.host'
