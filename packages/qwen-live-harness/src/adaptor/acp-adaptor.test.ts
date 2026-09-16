@@ -527,6 +527,72 @@ describe('AcpAdaptor sessions and receipts', () => {
     connection.settle();
   });
 
+  /**
+   * A steer receipt names a message the model has already told the user
+   * about. Dropping that message on cancel without ever reporting an owner
+   * strands the orchestrator's task at 'accepted' — it is waiting for a
+   * turn_joined that can no longer come.
+   */
+  it('attributes undelivered steering to the turn it dies with', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    await adaptor.prompt(handle, [{ type: 'text', text: 'first' }]);
+    connection.drain(handle.id);
+
+    const collector = eventCollector(adaptor, handle.id);
+    const receipt = await adaptor.prompt(
+      handle,
+      [{ type: 'text', text: 'also skip integration' }],
+      { steer: true },
+    );
+    await adaptor.cancel(handle);
+    connection.settle('cancelled');
+
+    const events = await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'turn_error'),
+    );
+    // Bound to the cancelled turn, and bound BEFORE its failure so the
+    // cancellation covers it.
+    const joinedAt = events.findIndex(
+      (event) =>
+        event.type === 'turn_joined' &&
+        event.messageId === receipt.joinedMessageId &&
+        event.jobRef === 'turn-1',
+    );
+    const erroredAt = events.findIndex((event) => event.type === 'turn_error');
+    expect(joinedAt).toBeGreaterThanOrEqual(0);
+    expect(joinedAt).toBeLessThan(erroredAt);
+  });
+
+  it('attributes undelivered steering when the agent process dies', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    await adaptor.preflight();
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    await adaptor.prompt(handle, [{ type: 'text', text: 'first' }]);
+    connection.drain(handle.id);
+
+    const collector = eventCollector(adaptor, handle.id);
+    const receipt = await adaptor.prompt(
+      handle,
+      [{ type: 'text', text: 'also skip integration' }],
+      { steer: true },
+    );
+    connection.onExit({ code: 1, signal: null });
+
+    const events = await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'session_closed'),
+    );
+    expect(events).toContainEqual({
+      type: 'turn_joined',
+      messageId: receipt.joinedMessageId,
+      jobRef: 'turn-1',
+    });
+  });
+
   it('maps stopReasons to turn_error semantics', async () => {
     const connection = new FakeConnection();
     const adaptor = makeAdaptor(connection);

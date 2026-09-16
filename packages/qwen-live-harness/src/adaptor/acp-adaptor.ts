@@ -397,8 +397,9 @@ export class AcpAdaptor implements BackendAdaptor {
     const conn = this.connection;
     if (!state || state.generation !== this.generation || !conn) return;
     // The instruction was addressed to the dying turn; queued prompts
-    // survive (same contract as the serve adaptor).
-    state.steerQueue = [];
+    // survive (same contract as the serve adaptor). Binding it to that turn
+    // before dropping it is what lets the cancellation reach it.
+    this.bindPendingSteers(state, state.activeJobRef);
     for (const [requestId, parked] of state.parkedPermissions) {
       parked.resolve({ outcome: { outcome: 'cancelled' } });
       state.parkedPermissions.delete(requestId);
@@ -687,6 +688,27 @@ export class AcpAdaptor implements BackendAdaptor {
     void this.sendPromptNow(state, jobRef, blocks);
   }
 
+  /**
+   * Report the owner of every steering message still waiting, then drop
+   * them. Each message was named in a receipt the model has already
+   * relayed, so it must be attributed to SOME turn: a message that never
+   * binds leaves the orchestrator holding a task stuck at 'accepted'
+   * forever. When the turn it was addressed to is dying, that turn is the
+   * honest owner — the instruction shares its fate, and the turn's own
+   * error or cancellation then covers it.
+   */
+  private bindPendingSteers(state: AcpSessionState, jobRef?: string): void {
+    const steers = state.steerQueue.splice(0);
+    if (jobRef === undefined) return;
+    for (const message of steers) {
+      state.queue.push({
+        type: 'turn_joined',
+        messageId: message.messageId,
+        jobRef,
+      });
+    }
+  }
+
   private sessionIdOf(state: AcpSessionState): string {
     for (const [id, candidate] of this.sessions) {
       if (candidate === state) return id;
@@ -904,6 +926,9 @@ export class AcpAdaptor implements BackendAdaptor {
       state.parkedPermissions.delete(requestId);
       state.queue.push({ type: 'permission_resolved', requestId, byUs: false });
     }
+    // Before the turn's own failure, so the error covers the steering that
+    // was riding on it rather than leaving those messages unattributed.
+    this.bindPendingSteers(state, state.activeJobRef);
     if (busyError && state.busy && state.activeJobRef) {
       state.queue.push({
         type: 'turn_error',
@@ -913,7 +938,6 @@ export class AcpAdaptor implements BackendAdaptor {
     }
     state.closed = true;
     state.busy = false;
-    state.steerQueue = [];
     state.pendingPrompts = [];
     state.queue.push({ type: 'session_closed' });
     state.queue.end();
