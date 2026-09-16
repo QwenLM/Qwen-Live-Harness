@@ -151,16 +151,17 @@ describe('PermissionBroker', () => {
     expect(broker.resolveHandle('req_2')).toBeDefined();
   });
 
-  it('translates allow_always to a one-shot allow and auto-answers identical repeats', async () => {
+  it('forwards allow_always to the backend as a persistent grant', async () => {
     const { adaptor, broker } = createBroker();
     await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
 
     await broker.respond('req_1', 'allow_always');
-    // The protocol vote never carries the standing grant.
+    // The backend models the real scope of the grant; the broker must not
+    // silently downgrade a deliberate "always" to a one-shot allow.
     expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
       BACKEND,
       'r1',
-      'allow',
+      'allow_always',
     );
 
     // Same session, same normalized title: the grant covers the repeat.
@@ -169,6 +170,7 @@ describe('PermissionBroker', () => {
       title: 'Bash:  rm  -rf /a ',
     });
     expect(ask.autoAnswered).toBe(true);
+    // The local fallback rule is a one-shot auto-answer, not another grant.
     expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
       BACKEND,
       'r2',
@@ -325,7 +327,7 @@ describe('PermissionBroker', () => {
     });
     expect(logEvents[1]?.payload).toMatchObject({
       requestHandle: 'req_1',
-      decision: 'allow',
+      decision: 'allow_always',
       auto: false,
       outcome: 'delivered',
     });

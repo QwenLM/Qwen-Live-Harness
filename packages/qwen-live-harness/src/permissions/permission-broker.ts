@@ -8,10 +8,17 @@
  * Voice-side permission handling.
  *
  * Design points carried over from the split design doc (§7):
- * - "allow always" never reaches the backend as a persistent grant. The
- *   protocol vote is always a one-shot allow; the standing rule lives here
- *   with a TTL and is applied by silently auto-answering similar requests.
  * - A request resolved elsewhere (WebShell) retracts the queued spoken ask.
+ *
+ * REVISED (see the always-allow fix): the design doc kept "allow always"
+ * off the wire and reimplemented it here as a TTL'd standing rule keyed on
+ * the request title. That key can only ever match the IDENTICAL action, so
+ * the rule never fires for the case users actually hit — approving one file
+ * edit and being asked again for the next one. Agents already model the
+ * real scope ("Allow All Edits", "Always Allow in project: <cmd>"), so a
+ * deliberate "allow always" is now forwarded as the backend's own
+ * persistent grant. The standing rule stays as the fallback for backends
+ * that offer no always-option, and an explicit "deny" still revokes it.
  */
 
 import type {
@@ -201,12 +208,7 @@ export class PermissionBroker {
           rule.sessionHandle !== pending.sessionHandle || rule.titleKey !== key,
       );
     }
-    return await this.deliver(
-      pending,
-      decision === 'deny' ? 'deny' : 'allow',
-      false,
-      note,
-    );
+    return await this.deliver(pending, decision, false, note);
   }
 
   /** A resolution arrived from the event stream (possibly our own vote). */
@@ -296,7 +298,7 @@ export class PermissionBroker {
 
   private async deliver(
     pending: PendingPermission,
-    decision: 'allow' | 'deny',
+    decision: 'allow' | 'allow_always' | 'deny',
     auto: boolean,
     note?: string,
   ): Promise<'delivered' | 'already_resolved'> {

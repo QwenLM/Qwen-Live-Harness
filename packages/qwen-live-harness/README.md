@@ -385,6 +385,17 @@ is actually in force. Disabling per-action approval lets
 the agent change files and run commands on your machine with no confirmation
 step, so keep it to backends you trust with the checked-out directory.
 
+Inside the asking mode, answering a spoken approval with "allow from now on"
+votes the backend's own persistent grant when it offers one, so the agent
+stops re-asking for that class of action — Qwen Code scopes those itself
+("Allow All Edits", "Always Allow in project: <command>"). A backend that
+offers no always-option, or that hides them for a particular request, falls
+back to a one-shot allow and never to a refusal; the harness then keeps its
+own 30-minute standing rule, which only covers repeats of the identical
+action. A later spoken "deny" revokes that standing rule, but a grant the
+backend recorded lives in the backend and has to be cleared there. A plain
+"allow" is always one-shot.
+
 Visual input has two independent settings. `source` is `screen` or `camera`;
 `mode` is `on-demand` or `live-feed`. The defaults are Screen + On Demand,
 1 FPS, a 1280×720 camera stream, 1280×720 Live Feed frames, and
