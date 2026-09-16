@@ -52,6 +52,8 @@ export interface FakeDashScopeFunctionCall {
 export interface FakeDashScopeConnection {
   readonly index: number;
   readonly socket: WebSocket;
+  /** Messages received on this connection, separate from the shared inbox. */
+  readonly inbox: JsonObject[];
   /** Raw upgrade-request URL (path + query). */
   readonly requestUrl: string;
   /** `model` query parameter from the upgrade URL. */
@@ -149,7 +151,11 @@ export function contextTextOf(message: JsonObject): string | undefined {
   return typeof first['text'] === 'string' ? first['text'] : undefined;
 }
 
-export async function startFakeDashScopeServer(): Promise<FakeDashScopeServer> {
+export async function startFakeDashScopeServer(
+  options: {
+    nativeSearchReply?: { answer: string; searchCount: number };
+  } = {},
+): Promise<FakeDashScopeServer> {
   const httpServer = createServer((_req, res) => {
     res.statusCode = 404;
     res.end();
@@ -268,10 +274,13 @@ export async function startFakeDashScopeServer(): Promise<FakeDashScopeServer> {
       });
     };
     let queuedFunctionCall: FakeDashScopeFunctionCall | undefined;
+    let nativeSearch = false;
+    const connectionInbox: JsonObject[] = [];
 
     const connection: FakeDashScopeConnection = {
       index: connections.length,
       socket,
+      inbox: connectionInbox,
       requestUrl,
       model: query.get('model') ?? undefined,
       authorization,
@@ -355,10 +364,65 @@ export async function startFakeDashScopeServer(): Promise<FakeDashScopeServer> {
       }
       if (!isRecord(parsed)) return;
       inbox.push(parsed);
+      connectionInbox.push(parsed);
       if (parsed['type'] === 'session.update') {
-        sendJson({ type: 'session.updated', session: { id: 'sess-1' } });
+        const session = isRecord(parsed['session']) ? parsed['session'] : {};
+        if (typeof session['enable_search'] === 'boolean')
+          nativeSearch = session['enable_search'];
+        if (
+          nativeSearch &&
+          Array.isArray(session['tools']) &&
+          session['tools'].length > 0
+        ) {
+          sendJson({
+            type: 'error',
+            error: {
+              message: 'tools and enable_search are incompatible',
+              type: 'invalid_request_error',
+            },
+          });
+          return;
+        }
+        sendJson({
+          type: 'session.updated',
+          session: {
+            id: 'sess-1',
+            ...(nativeSearch ? { enable_search: true } : {}),
+          },
+        });
       } else if (parsed['type'] === 'response.create') {
-        if (queuedFunctionCall) {
+        if (nativeSearch && options.nativeSearchReply) {
+          const responseId = beginResponse();
+          sendJson({
+            type: 'response.text.delta',
+            response_id: responseId,
+            item_id: 'search-answer',
+            content_index: 0,
+            delta: options.nativeSearchReply.answer,
+          });
+          sendJson({
+            type: 'response.text.done',
+            response_id: responseId,
+            item_id: 'search-answer',
+            content_index: 0,
+            text: options.nativeSearchReply.answer,
+          });
+          sendJson({
+            type: 'response.done',
+            response: {
+              id: responseId,
+              status: 'completed',
+              usage: {
+                plugins: {
+                  search: {
+                    count: options.nativeSearchReply.searchCount,
+                    strategy: 'agent',
+                  },
+                },
+              },
+            },
+          });
+        } else if (queuedFunctionCall) {
           const call = queuedFunctionCall;
           queuedFunctionCall = undefined;
           connection.functionCall(call);

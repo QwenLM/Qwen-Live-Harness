@@ -33,7 +33,10 @@ import { AppshotReadinessMonitor } from './appshot-readiness.ts';
 import { AppshotCaptureService } from './appshot-capture.ts';
 import { StartupInteraction } from './startup-interaction.ts';
 import { HostDaemonBootstrap } from './daemon-bootstrap.ts';
-import { resolveDiscoveryPath } from './discovery.ts';
+import { HostDaemonLifecycle, parseDaemonOwner } from './daemon-lifecycle.ts';
+import { CaptureReadinessDeadline } from './capture-readiness.ts';
+import { createHostDiagnosticsLogger } from './host-diagnostics.ts';
+import { resolveDiscoveryPath, type LiveDiscoveryRecord } from './discovery.ts';
 import { SubagentsWindows } from './subagents-windows.ts';
 import {
   OVERLAY_GEOMETRY,
@@ -121,6 +124,9 @@ let tray: Tray | undefined;
 let subagents: SubagentsWindows | undefined;
 let daemon: LiveDaemonConnection;
 let daemonBootstrap: HostDaemonBootstrap | undefined;
+let daemonLifecycle: HostDaemonLifecycle | undefined;
+let activationGeneration = 0;
+let pendingActivationGeneration: number | undefined;
 let daemonDiscoveryPath: string | undefined;
 let startupInvocationError: string | undefined;
 let activationConnectOnly = false;
@@ -135,6 +141,11 @@ let quitState: HostPublicState['quitState'];
 let nativeServicesActive = false;
 let nativeServiceGeneration = 0;
 let audioTransportFailed = false;
+let audioError: string | undefined;
+let audioRetryPending = false;
+let audioRetryChecked = false;
+let audioRetryTimer: NodeJS.Timeout | undefined;
+let hostDiagnostics: ReturnType<typeof createHostDiagnosticsLogger> | undefined;
 let readinessReconnectTimer: NodeJS.Timeout | undefined;
 let readinessReconnectReason: 'readiness' | 'visual' | undefined;
 let mediaPermissionTimer: NodeJS.Timeout | undefined;
@@ -157,6 +168,20 @@ const OVERLAY_WIDTH = OVERLAY_GEOMETRY.canvas.width;
 const OVERLAY_HEIGHT = OVERLAY_GEOMETRY.canvas.height;
 const startupInteraction = new StartupInteraction();
 let captureReadyEpoch: number | undefined;
+const captureReadiness = new CaptureReadinessDeadline(
+  (epoch) => {
+    if (epoch !== daemon?.getEpoch() || audioTransportFailed || audioError)
+      return;
+    captureReadyEpoch = epoch;
+    writeLiveDiagnostic('capture_ready_acknowledged', { epoch });
+    publishState();
+  },
+  (epoch) => {
+    if (epoch !== daemon?.getEpoch() || !nativeServicesActive || quitState)
+      return;
+    failRecoverableAudio('audio_capture_start_timeout', 'first_frame');
+  },
+);
 let liveStartPending = false;
 let visualInput: VisualInput | undefined;
 let screenDisplays: ScreenDisplay[] = [];
@@ -232,6 +257,7 @@ function writeLiveDiagnostic(
   event: string,
   details: Readonly<Record<string, unknown>> = {},
 ): void {
+  hostDiagnostics?.write(event, details);
   if (!diagnosticsEnabled) return;
   process.stderr.write(
     `${JSON.stringify({
@@ -372,6 +398,32 @@ function isHostReady(): boolean {
 
 function effectiveLiveStatus(): LiveStatus {
   const blocker = hostReadinessBlocker();
+  if (connection.phase === 'ready' && blocker?.endsWith('_permission')) {
+    const messages: Record<string, LiveMessageKey> = {
+      microphone_permission: 'runtime.microphonePermission',
+      camera_permission: 'runtime.cameraPermission',
+      accessibility_permission: 'runtime.accessibilityPermission',
+      screen_recording_permission: 'runtime.screenPermission',
+    };
+    return {
+      ...live,
+      available: false,
+      state: 'unavailable',
+      blocker,
+      message: liveMessage(messages[blocker]!),
+      statusText: undefined,
+    };
+  }
+  if (audioError && connection.phase === 'ready') {
+    return {
+      ...live,
+      state: audioRetryPending ? 'starting' : 'error',
+      message: audioRetryPending
+        ? liveMessage('host.audio.retrying')
+        : audioError,
+      statusText: undefined,
+    };
+  }
   if (live.available && blocker) {
     return { ...live, available: false, state: 'unavailable', blocker };
   }
@@ -454,6 +506,8 @@ function publicState(): HostPublicState {
         ? liveMessage('startup.connecting')
         : undefined);
   const status = effectiveLiveStatus();
+  const permissionBlocked =
+    status.state === 'unavailable' && status.blocker?.endsWith('_permission');
   return {
     theme,
     resolvedTheme: resolvedTheme(),
@@ -469,6 +523,8 @@ function publicState(): HostPublicState {
       !quitState &&
       Boolean(daemon.getConfigFilePath()),
     ...(quitState ? { quitState } : {}),
+    ...(audioError && !permissionBlocked ? { audioError } : {}),
+    ...(audioRetryPending && !permissionBlocked ? { audioRetrying: true } : {}),
     overlayOffset: { ...overlayOffset },
     ...(startupMessage || connection.error
       ? { connectionError: startupMessage || connection.error }
@@ -540,7 +596,10 @@ function maybeStartStartupInteraction(): void {
       connectionReady: connection.phase === 'ready',
       rendererReady: overlayReady && rendererEventsEnabled,
       hostReady:
-        isHostReady() && !audioTransportFailed && quitState === undefined,
+        isHostReady() &&
+        !audioTransportFailed &&
+        !audioError &&
+        quitState === undefined,
       startPending: liveStartPending,
       live: connection.status ?? live,
     })
@@ -787,6 +846,7 @@ function resetOverlayInteraction(preserveSubagents = false): void {
 
 function quitHost(): Promise<void> {
   startupInteraction.cancel();
+  daemonLifecycle?.pause();
   if (quitOperation) return quitOperation;
   quitting = true;
   quitState = 'pending';
@@ -803,6 +863,7 @@ function quitHost(): Promise<void> {
       quitting = false;
       quitOperation = undefined;
       quitState = 'failed';
+      daemonLifecycle?.resume();
       const cause = error instanceof Error ? error.cause : undefined;
       writeLiveDiagnostic('host_quit_failed', {
         kind: error instanceof Error ? error.name : 'unknown',
@@ -831,16 +892,60 @@ function quitHost(): Promise<void> {
   return quitOperation;
 }
 
+/** The daemon already owns shutdown; asking it to quit again can deadlock. */
+function quitFromDaemon(): Promise<void> {
+  // Keep a user-initiated Quit's authenticated acknowledgement / retry intact.
+  if (quitOperation || quitState === 'pending')
+    return quitOperation ?? Promise.resolve();
+  startupInteraction.cancel();
+  daemonLifecycle?.stop();
+  quitting = true;
+  quitState = 'pending';
+  deactivateNativeServices();
+  daemon?.stop();
+  publishState();
+  writeLiveDiagnostic('host_daemon_stopped');
+  quitOperation = (async () => {
+    try {
+      await daemonBootstrap?.stop();
+    } catch {
+      quitting = false;
+      quitOperation = undefined;
+      quitState = 'failed';
+      writeLiveDiagnostic('host_daemon_stop_cleanup_failed');
+      publishState();
+      showOverlay();
+      return;
+    }
+    resetOverlayInteraction();
+    quitApproved = true;
+    app.quit();
+  })();
+  return quitOperation;
+}
+
 function scheduleReadinessReconnect(
   reason: 'readiness' | 'visual' = 'readiness',
 ): void {
-  if (!nativeServicesActive) return;
+  if (
+    !nativeServicesActive ||
+    (audioError &&
+      !audioRetryPending &&
+      !hostReadinessBlocker()?.endsWith('_permission'))
+  )
+    return;
   if (readinessReconnectReason !== 'readiness')
     readinessReconnectReason = reason;
   if (readinessReconnectTimer) clearTimeout(readinessReconnectTimer);
   readinessReconnectTimer = setTimeout(() => {
     readinessReconnectTimer = undefined;
     readinessReconnectReason = undefined;
+    if (
+      audioError &&
+      !audioRetryPending &&
+      !hostReadinessBlocker()?.endsWith('_permission')
+    )
+      return;
     daemon.reconnectNow();
   }, READINESS_RECONNECT_DEBOUNCE_MS);
   readinessReconnectTimer.unref();
@@ -1121,6 +1226,7 @@ function syncVisualCapture(): void {
 }
 
 function stopLocalAudio(): void {
+  captureReadiness.cancel();
   captureReadyEpoch = undefined;
   sendRendererCommand('live:audio:clear');
   sendRendererCommand('live:audio:set-capture', {
@@ -1182,6 +1288,7 @@ function sendRequiredPlaybackReceipt(
 }
 
 function stopLive(): void {
+  cancelAudioRetry();
   startupInteraction.cancel();
   liveStartPending = false;
   stopLocalVisual();
@@ -1202,14 +1309,117 @@ function failClosedForReadinessLoss(): void {
 }
 
 function failAudioAndRecheck(reason: string): void {
-  if (!nativeServicesActive) return;
+  failRecoverableAudio(reason);
+}
+
+function cancelAudioRetry(): void {
+  audioRetryPending = false;
+  audioRetryChecked = false;
+  if (audioRetryTimer) clearTimeout(audioRetryTimer);
+  audioRetryTimer = undefined;
+}
+
+function handleAudioFailure(value: unknown, fallbackCode: string): void {
+  const record =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  if (
+    record.epoch !== undefined &&
+    (!Number.isSafeInteger(record.epoch) || record.epoch !== daemon.getEpoch())
+  )
+    return;
+  const code =
+    typeof record.code === 'string' && /^audio_[a-z_]{1,64}$/u.test(record.code)
+      ? record.code
+      : fallbackCode;
+  if (
+    !isActiveLiveCall(live) &&
+    !audioRetryPending &&
+    code !== 'audio_readiness_timeout' &&
+    code !== 'audio_readiness_failed'
+  )
+    return;
+  const stage =
+    typeof record.stage === 'string' &&
+    ['microphone', 'worklet', 'resume', 'readiness', 'first_frame'].includes(
+      record.stage,
+    )
+      ? record.stage
+      : undefined;
+  failRecoverableAudio(code, stage);
+}
+
+function failRecoverableAudio(code: string, stage?: string): void {
+  if (!nativeServicesActive || quitState || (audioError && !audioRetryPending))
+    return;
+  const timeout = code.endsWith('_timeout');
+  audioError = liveMessage(
+    timeout ? 'host.audio.timeout' : 'host.audio.failed',
+  );
+  cancelAudioRetry();
+  startupInteraction.cancel();
   audioTransportFailed = true;
-  selfChecks.audioInput = false;
-  selfChecks.audioOutput = false;
+  if (readinessReconnectTimer) clearTimeout(readinessReconnectTimer);
+  readinessReconnectTimer = undefined;
+  readinessReconnectReason = undefined;
+  writeLiveDiagnostic(
+    timeout ? 'audio_capture_timeout' : 'audio_capture_failed',
+    {
+      epoch: daemon.getEpoch(),
+      code,
+      ...(stage ? { stage } : {}),
+    },
+  );
+  // Device failure does not revoke system permissions or make the UI unusable.
   failClosedForReadinessLoss();
   publishState();
-  sendRendererCommand('live:audio:recheck', reason);
-  scheduleReadinessReconnect();
+}
+
+function retryAudio(): void {
+  if (
+    !audioError ||
+    audioRetryPending ||
+    !nativeServicesActive ||
+    connection.phase !== 'ready' ||
+    hostReadinessBlocker()?.endsWith('_permission') ||
+    quitState
+  )
+    return;
+  audioRetryPending = true;
+  audioRetryChecked = false;
+  audioRetryTimer = setTimeout(() => {
+    audioRetryTimer = undefined;
+    if (audioRetryPending)
+      failRecoverableAudio('audio_readiness_timeout', 'readiness');
+  }, 10_000);
+  audioRetryTimer.unref();
+  writeLiveDiagnostic('audio_capture_retry', { epoch: daemon.getEpoch() });
+  sendRendererCommand('live:audio:recheck', 'audio_manual_retry');
+  publishState();
+}
+
+function finishAudioRetryIfReady(): void {
+  if (
+    !audioRetryPending ||
+    !audioRetryChecked ||
+    !isHostReady() ||
+    connection.phase !== 'ready' ||
+    quitState
+  )
+    return;
+  if (!live.available) {
+    scheduleReadinessReconnect();
+    return;
+  }
+  if (isActiveLiveCall(live)) return;
+  cancelAudioRetry();
+  audioError = undefined;
+  audioTransportFailed = false;
+  writeLiveDiagnostic('audio_capture_retry_ready', {
+    epoch: daemon.getEpoch(),
+  });
+  toggleLive();
 }
 
 function applyLiveStatus(status: LiveStatus): void {
@@ -1237,12 +1447,16 @@ function applyLiveStatus(status: LiveStatus): void {
   const blocker = hostReadinessBlocker();
   const captureEnabled =
     !audioTransportFailed &&
+    !audioError &&
     shouldCaptureLiveAudio(
       status,
       nativeServicesActive && blocker === undefined,
     );
   const captureEpoch = daemon.getEpoch();
-  if (!captureEnabled || captureReadyEpoch !== captureEpoch) {
+  if (captureEnabled)
+    captureReadiness.arm(captureEpoch, status.inputMuted ?? false);
+  else captureReadiness.cancel();
+  if (!captureEnabled || !captureReadiness.isReady(captureEpoch)) {
     captureReadyEpoch = undefined;
   }
   writeLiveDiagnostic('status_applied', {
@@ -1268,6 +1482,7 @@ function applyLiveStatus(status: LiveStatus): void {
     sendRendererCommand('live:audio:clear');
   }
   showOverlay();
+  finishAudioRetryIfReady();
   publishState();
 }
 
@@ -1277,6 +1492,15 @@ function toggleLive(): void {
     epoch: daemon.getEpoch(),
     state: live.state,
   });
+  if (audioRetryPending) {
+    stopLive();
+    publishState();
+    return;
+  }
+  if (audioError) {
+    retryAudio();
+    return;
+  }
   if (shouldStopLiveOnToggle(live, liveStartPending)) {
     stopLive();
     return;
@@ -1295,6 +1519,7 @@ function toggleLive(): void {
 }
 
 function newConversation(): void {
+  if (audioError || audioRetryPending) return;
   startupInteraction.cancel();
   showOverlay();
   if (connection.phase !== 'ready' || !live.available || !isHostReady()) return;
@@ -1377,6 +1602,8 @@ function activateNativeServices(): void {
 }
 
 function deactivateNativeServices(): void {
+  cancelAudioRetry();
+  captureReadiness.cancel();
   resetOverlayInteraction();
   nativeServiceGeneration += 1;
   nativeServicesActive = false;
@@ -2024,6 +2251,8 @@ function registerIpc(): void {
       typeof record.epoch !== 'number' ||
       !Number.isSafeInteger(record.epoch) ||
       record.epoch < 0 ||
+      record.epoch !== daemon.getEpoch() ||
+      !shouldCaptureLiveAudio(live, isHostReady()) ||
       !ArrayBuffer.isView(record.pcm16)
     ) {
       return;
@@ -2038,7 +2267,7 @@ function registerIpc(): void {
       appendHostInputAudio(frame, record.epoch);
       if (!daemon.sendAudio(frame, record.epoch)) {
         failAudioAndRecheck('audio_transport_rejected');
-      }
+      } else captureReadiness.frame(record.epoch);
     }
   });
   ipcMain.on('live:camera:frame', (event, value: unknown) => {
@@ -2249,9 +2478,7 @@ function registerIpc(): void {
     ) {
       return;
     }
-    captureReadyEpoch = epoch;
-    writeLiveDiagnostic('capture_ready_acknowledged', { epoch });
-    publishState();
+    captureReadiness.acknowledge(epoch);
   });
   ipcMain.on('live:audio:self-check', (event, value: unknown) => {
     if (
@@ -2266,24 +2493,59 @@ function registerIpc(): void {
     const record = value as Record<string, unknown>;
     const nextInput = record.audioInput === true;
     const nextOutput = record.audioOutput === true;
+    const checking =
+      record.inputError === 'audio_initialize' ||
+      record.inputError === 'audio_manual_retry' ||
+      record.inputError === 'audio_device_changed';
+    const failureCode =
+      record.inputError === 'audio_readiness_timeout' ||
+      record.outputError === 'audio_output_start_timeout'
+        ? 'audio_readiness_timeout'
+        : 'audio_readiness_failed';
+    if (audioError) {
+      if (nextInput && nextOutput) {
+        selfChecks.audioInput = true;
+        selfChecks.audioOutput = true;
+        audioRetryChecked = true;
+        finishAudioRetryIfReady();
+      } else if (
+        audioRetryPending &&
+        !checking &&
+        (record.inputError || record.outputError)
+      ) {
+        failRecoverableAudio(failureCode, 'readiness');
+      }
+      publishState();
+      return;
+    }
     const changed =
       selfChecks.audioInput !== nextInput ||
       selfChecks.audioOutput !== nextOutput;
     selfChecks.audioInput = nextInput;
     selfChecks.audioOutput = nextOutput;
     if (nextInput && nextOutput) audioTransportFailed = false;
-    else failClosedForReadinessLoss();
+    else {
+      if (
+        !checking &&
+        permissions.microphone === 'granted' &&
+        (record.inputError || record.outputError)
+      ) {
+        failRecoverableAudio(failureCode, 'readiness');
+        return;
+      }
+      failClosedForReadinessLoss();
+    }
     publishState();
     if (changed) scheduleReadinessReconnect();
   });
-  ipcMain.on('live:audio:capture-error', (event) => {
+  ipcMain.on('live:audio:capture-error', (event, value: unknown) => {
     if (isTrustedSender(event) && rendererEventsEnabled) {
-      failAudioAndRecheck('audio_capture_error');
+      handleAudioFailure(value, 'audio_capture_error');
     }
   });
-  ipcMain.on('live:audio:output-error', (event) => {
+  ipcMain.on('live:audio:output-error', (event, value: unknown) => {
     if (isTrustedSender(event) && rendererEventsEnabled) {
-      failAudioAndRecheck('audio_output_error');
+      handleAudioFailure(value, 'audio_output_error');
     }
   });
   ipcMain.on('live:pointer-interactivity', (event, interactive: unknown) => {
@@ -2394,6 +2656,7 @@ function createOverlay(): BrowserWindow {
     handleFailure('renderer_process_gone');
   });
   window.webContents.on('unresponsive', () => {
+    writeLiveDiagnostic('renderer_unresponsive');
     handleFailure('renderer_unresponsive');
   });
   window.webContents.on('preload-error', (_event, _path, error) => {
@@ -2468,7 +2731,7 @@ function rebuildTrayMenu(): void {
       },
       {
         label: liveText(language, 'tray.new'),
-        enabled: effectiveLive.available,
+        enabled: effectiveLive.available && !audioError && !audioRetryPending,
         click: newConversation,
       },
       {
@@ -2521,11 +2784,29 @@ function prepareDaemonLaunch(argv?: readonly string[]): {
   return { startIfMissing: !activationConnectOnly };
 }
 
+async function rememberDaemonStartup(
+  record: LiveDiscoveryRecord,
+): Promise<boolean> {
+  const current = await daemonLifecycle?.acceptAuthenticated(record, {
+    allowMissing: quitting,
+  });
+  if (current) daemon.rememberStartupTarget(record);
+  // A previous bootstrap can finish after a newer CLI activation. Read current
+  // discovery even when its result is stale, without reviving that old owner.
+  if (!quitting) daemon.start();
+  return current === true;
+}
+
 function openHost(argv?: string[]): void {
   if (quitting || quitState) return;
-  if (argv?.includes('--qwen-live-harness-connect-only')) {
-    activationConnectOnly = true;
+  // macOS can deliver a focus activation while a second-instance argument is
+  // still being checked. It must not bypass that check or start another daemon.
+  if (!argv && pendingActivationGeneration !== undefined) {
+    showOverlay();
+    return;
   }
+  const generation = ++activationGeneration;
+  pendingActivationGeneration = undefined;
   if (argv && daemonDiscoveryPath) {
     let requestedPath: string;
     try {
@@ -2544,6 +2825,46 @@ function openHost(argv?: string[]): void {
       return;
     }
   }
+  let owner: ReturnType<typeof parseDaemonOwner>;
+  try {
+    owner = argv ? parseDaemonOwner(argv) : undefined;
+  } catch {
+    startupInvocationError = liveMessage('startup.invalidOwner');
+    publishState();
+    showOverlay();
+    return;
+  }
+  if (owner && daemonLifecycle) {
+    pendingActivationGeneration = generation;
+    void daemonLifecycle.acceptActivation(owner).then(
+      (accepted) => {
+        if (pendingActivationGeneration === generation)
+          pendingActivationGeneration = undefined;
+        if (generation !== activationGeneration || quitting || quitState)
+          return;
+        if (accepted) finishHostActivation(argv);
+        else {
+          startupInvocationError = liveMessage('startup.ownerMismatch');
+          publishState();
+          showOverlay();
+        }
+      },
+      () => {
+        if (pendingActivationGeneration === generation)
+          pendingActivationGeneration = undefined;
+        if (generation !== activationGeneration || quitting || quitState)
+          return;
+        startupInvocationError = liveMessage('startup.invalidOwner');
+        publishState();
+        showOverlay();
+      },
+    );
+    return;
+  }
+  finishHostActivation(argv);
+}
+
+function finishHostActivation(argv?: string[]): void {
   const launchOptions = prepareDaemonLaunch(argv);
   if (daemonBootstrap) {
     startupInvocationError = undefined;
@@ -2587,12 +2908,16 @@ app.on('before-quit', (event) => {
   writeLiveDiagnostic('host_before_quit');
   overlayRecovery?.stop();
   deactivateNativeServices();
+  daemonLifecycle?.stop();
   daemon?.stop();
   appshotCapture?.dispose();
   subagents?.dispose();
 });
 
 void app.whenReady().then(() => {
+  hostDiagnostics = createHostDiagnosticsLogger(
+    join(app.getPath('userData'), 'logs'),
+  );
   theme = readHostTheme(join(app.getPath('userData'), 'theme.json'));
   nativeTheme.themeSource = theme;
   nativeTheme.on('updated', () => {
@@ -2676,6 +3001,11 @@ void app.whenReady().then(() => {
   daemon = new LiveDaemonConnection(
     app.getVersion(),
     {
+      onDaemonIdentity: (record) => {
+        void daemonLifecycle
+          ?.acceptAuthenticated(record)
+          .catch(() => writeLiveDiagnostic('daemon_identity_check_failed'));
+      },
       onSubagents: (snapshot) => {
         connection = { ...connection, subagentsV1: snapshot };
         subagents?.update(
@@ -2816,13 +3146,13 @@ void app.whenReady().then(() => {
       debug: diagnosticsEnabled,
     },
     {
-      onReady: ({ record, started, logPath }) => {
-        daemon.rememberStartupTarget(record);
+      onReady: async ({ record, started, logPath }) => {
+        const current = await rememberDaemonStartup(record);
         writeLiveDiagnostic('daemon_bootstrap_ready', {
           started,
+          current,
           ...(logPath ? { logPath } : {}),
         });
-        if (!quitting) daemon.start();
       },
       onChange: () => {
         const startup = daemonBootstrap?.snapshot;
@@ -2835,6 +3165,18 @@ void app.whenReady().then(() => {
       },
     },
   );
+  daemonLifecycle = new HostDaemonLifecycle(daemonDiscoveryPath, {
+    onStopped: () => void quitFromDaemon(),
+    onError: () => writeLiveDiagnostic('daemon_stop_marker_invalid'),
+  });
+  try {
+    const owner = parseDaemonOwner(process.argv);
+    if (owner) daemonLifecycle.follow(owner);
+  } catch {
+    startupInvocationError = liveMessage('startup.invalidOwner');
+    publishState();
+    return;
+  }
   void daemonBootstrap.start(prepareDaemonLaunch(process.argv));
 });
 

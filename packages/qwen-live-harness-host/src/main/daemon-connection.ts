@@ -97,6 +97,7 @@ export function canSendHostControlMessage(
 
 type ConnectionCallbacks = {
   getReadiness: () => HostReadiness;
+  onDaemonIdentity?: (record: LiveDiscoveryRecord) => void;
   onSnapshot: (snapshot: ConnectionSnapshot) => void;
   onSubagents?: (snapshot: SubagentsSnapshot) => void;
   onOutputAudio: (frame: OutputAudioFrame) => void;
@@ -877,6 +878,7 @@ export class LiveDaemonConnection {
             return;
           }
           this.welcomed = true;
+          this.callbacks.onDaemonIdentity?.({ ...record });
           this.shutdownTarget = message.daemonShutdownV1
             ? { ...record }
             : undefined;

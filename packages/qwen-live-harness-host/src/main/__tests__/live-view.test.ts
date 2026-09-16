@@ -179,6 +179,70 @@ function setup(overrides: Partial<LiveHostApi> = {}) {
 }
 
 describe('persistent Live orb and Settings', () => {
+  it('keeps the orb, settings, input selection, dragging and Quit usable after an audio timeout', async () => {
+    const h = setup();
+    const state = h.state();
+    const orb = h.get('.voice-orb');
+    h.update({
+      ...state,
+      audioError: liveMessage('host.audio.timeout'),
+      selfChecks: { ...state.selfChecks, audioInput: false },
+      live: { ...state.live, state: 'error', available: false },
+    });
+    assert.equal(h.layouts.at(-1), 'orb');
+    assert.equal(h.get('.voice-orb'), orb);
+    assert(
+      h
+        .get('.voice-status-primary')
+        .textContent?.includes('Microphone startup timed out'),
+    );
+    h.pointer(orb, 'pointerdown', 100, 100);
+    h.pointer(orb, 'pointermove', 120, 125);
+    h.pointer(orb, 'pointerup', 120, 125);
+    assert(h.calls.some(([name]) => name === 'drag'));
+    h.click('Settings');
+    await settled();
+    assert(h.calls.some(([name]) => name === 'settings'));
+    const device = h.get<HTMLSelectElement>(
+      'select[aria-label="Audio Source"]',
+    );
+    device.value = 'mic-2';
+    device.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }));
+    await settled();
+    assert(h.calls.some(([name, id]) => name === 'device' && id === 'mic-2'));
+    h.click('Start call');
+    await settled();
+    assert(h.calls.some(([name]) => name === 'toggle'));
+    h.click('Quit Host');
+    await settled();
+    assert(h.calls.some(([name]) => name === 'quit'));
+  });
+
+  it('localizes recovery and retry status while keeping real permission failures visible', () => {
+    const h = setup();
+    const state = h.state();
+    const failed = {
+      ...state,
+      language: 'zh-CN' as const,
+      audioError: liveMessage('host.audio.timeout'),
+      live: { ...state.live, state: 'error' as const, available: false },
+    };
+    h.update(failed);
+    assert(
+      h.get('.voice-status-primary').textContent?.includes('麦克风启动超时'),
+    );
+    h.update({
+      ...failed,
+      audioRetrying: true,
+      live: { ...failed.live, state: 'starting' },
+    });
+    assert.equal(h.get('.voice-status-primary').textContent, '正在检查音频…');
+    h.update({
+      ...failed,
+      permissions: { ...failed.permissions, microphone: 'denied' },
+    });
+    assert.equal(h.layouts.at(-1), 'setup');
+  });
   it('does not ask Screen Live Feed users for accessibility but preserves the On Demand requirement', () => {
     const h = setup();
     const state = h.state();

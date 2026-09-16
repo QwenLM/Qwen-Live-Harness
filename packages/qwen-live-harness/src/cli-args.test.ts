@@ -9,6 +9,18 @@ import { parseLiveCliArgs } from './cli-args.js';
 import { displayLiveMessage } from './i18n/messages.js';
 
 describe('parseLiveCliArgs', () => {
+  it('allows source setup only for the initialization command', () => {
+    expect(parseLiveCliArgs(['init', '--source'])).toEqual({
+      command: 'init',
+      debug: false,
+      daemonOnly: false,
+      source: true,
+    });
+    expect(() => parseLiveCliArgs(['--source'])).toThrow();
+    expect(() =>
+      parseLiveCliArgs(['init', '--source', '--daemon-only']),
+    ).toThrow();
+  });
   it('enables debug logging for either debug spelling', () => {
     expect(parseLiveCliArgs(['--debug'])).toEqual({
       command: 'start',

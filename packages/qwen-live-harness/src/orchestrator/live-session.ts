@@ -29,7 +29,11 @@ import type {
 } from '../adaptor/types.js';
 import type { BackendRegistry } from '../adaptor/registry.js';
 import type { ProactiveConfig } from '../config.js';
-import { liveMessage, type LiveMessageKey } from '../i18n/messages.js';
+import {
+  liveMessage,
+  liveText,
+  type LiveMessageKey,
+} from '../i18n/messages.js';
 import type { MemoryService } from '../memory/service.js';
 import { renderWmReceipt, type MemorySession } from '../memory/session.js';
 import { MemoryDialogueCollector } from '../memory/dialogue.js';
@@ -45,6 +49,10 @@ import type {
   LiveVisualSource,
 } from '../host/types.js';
 import { buildLiveInstructions } from '../realtime/instructions.js';
+import {
+  searchQwenRealtime,
+  supportsQwenRealtimeSearch,
+} from '../realtime/web-search.js';
 import {
   openQwenRealtimeSession,
   MAX_REALTIME_INSTRUCTIONS_CHARS,
@@ -90,6 +98,7 @@ import {
 } from '../proactive/tool-repair.js';
 import {
   APPSHOT_TOOL_NAME,
+  BACKEND_TOOL_NAMES,
   buildLiveSessionTools,
   CANCEL_PROACTIVE_TASK_TOOL_NAME,
   CREATE_LIVE_NARRATION_TOOL_NAME,
@@ -103,6 +112,7 @@ import {
   SESSION_MONITOR_TOOL_NAME,
   SESSION_STOP_TOOL_NAME,
   UPDATE_PROACTIVE_TASK_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
 } from '../tools/definitions.js';
 import {
   ToolDispatcher,
@@ -130,6 +140,14 @@ const MAX_VOICE_CONTEXT_CHARS = 4_000;
 const MAX_SPOKEN_SUMMARY_CHARS = 200;
 const PERMISSION_REMINDER_DELAY_MS = 1_000;
 const PROACTIVE_CANCELLATION_GRACE_MS = 250;
+
+function noBackendReceipt(): Record<string, unknown> {
+  return {
+    status: 'error',
+    code: 'no_backend',
+    note: liveText('en', 'runtime.noBackends'),
+  };
+}
 
 const PROACTIVE_MUTATION_TOOL_NAMES = new Set([
   CREATE_PROACTIVE_MONITOR_TOOL_NAME,
@@ -278,6 +296,7 @@ export interface LiveSessionOptions {
   log: SessionLog;
   logger?: LiveLogger;
   openRealtime?: typeof openQwenRealtimeSession;
+  searchRealtime?: typeof searchQwenRealtime;
   proactive?: ProactiveConfig;
   monitorDebug?: MonitorDebugStore;
   memory?: MemoryService;
@@ -308,6 +327,7 @@ interface CallContext {
   memoryDialogue?: MemoryDialogueCollector;
   stopping: boolean;
   discoveryCleanup?: Promise<void>;
+  webSearch?: AbortController;
   speechInProgress: boolean;
   responseInFlight: boolean;
   visualInput: LiveVisualInput;
@@ -440,6 +460,7 @@ export class LiveSession {
   private readonly log: SessionLog;
   private readonly logger: LiveLogger;
   private readonly openRealtime: typeof openQwenRealtimeSession;
+  private readonly searchRealtime: typeof searchQwenRealtime;
   private readonly createProactiveScheduler: (
     options: ProactiveSchedulerOptions,
   ) => ProactiveSchedulerControl;
@@ -484,6 +505,7 @@ export class LiveSession {
     );
     this.logger = options.logger ?? new LiveLogger();
     this.openRealtime = options.openRealtime ?? openQwenRealtimeSession;
+    this.searchRealtime = options.searchRealtime ?? searchQwenRealtime;
     this.createProactiveScheduler =
       options.createProactiveScheduler ??
       ((schedulerOptions) => new ProactiveScheduler(schedulerOptions));
@@ -721,6 +743,7 @@ export class LiveSession {
     }
     context.stopping = true;
     this.stopDiscovery(context);
+    context.webSearch?.abort();
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
     context.proactive?.dispose();
     context.proactive = undefined;
@@ -1425,6 +1448,8 @@ export class LiveSession {
       context.visualInput,
       undefined,
       this.options.proactive?.enabled === true,
+      this.registry.hasBackends,
+      this.webSearchAvailable(),
     );
     return context.memory
       ? [
@@ -1439,6 +1464,8 @@ export class LiveSession {
   private sessionTools(context: CallContext) {
     const tools = buildLiveSessionTools(
       this.options.proactive?.enabled === true,
+      this.registry.hasBackends,
+      this.webSearchAvailable(),
     );
     return context.memory ? [...tools, ...MEMORY_TOOLS] : tools;
   }
@@ -1461,6 +1488,8 @@ export class LiveSession {
           context.visualInput,
           undefined,
           this.options.proactive?.enabled === true,
+          this.registry.hasBackends,
+          this.webSearchAvailable(),
         ).length -
         MEMORY_SYSTEM_PROMPT.length -
         1_000,
@@ -1971,19 +2000,42 @@ export class LiveSession {
     this.log.write('tool.call', {
       name: event.name,
       callId: event.callId,
-      ...(MEMORY_TOOL_NAMES.has(event.name)
+      ...(MEMORY_TOOL_NAMES.has(event.name) ||
+      event.name === WEB_SEARCH_TOOL_NAME
         ? { argumentChars: event.arguments.length }
         : { args: event.arguments.slice(0, 2_000) }),
     });
     const operation = proactiveReceiptOperation(event.name);
     let result: ToolDispatchResult;
-    if (MEMORY_TOOL_NAMES.has(event.name)) {
+    if (!this.registry.hasBackends && BACKEND_TOOL_NAMES.has(event.name)) {
+      result = {
+        ok: false,
+        receipt: JSON.stringify(noBackendReceipt()),
+      };
+    } else if (
+      event.name === WEB_SEARCH_TOOL_NAME &&
+      ['proactive', 'proactive_repair', 'backend_speech'].includes(
+        context.responseAuthorities.get(event.responseId) ?? '',
+      )
+    ) {
+      result = {
+        ok: false,
+        receipt: JSON.stringify({
+          status: 'error',
+          code: 'web_search_unavailable',
+          note: liveText('en', 'runtime.webSearchUnavailable'),
+        }),
+      };
+    } else if (MEMORY_TOOL_NAMES.has(event.name)) {
       result = await this.dispatchMemoryTool(context, event);
     } else if (operation) {
       result = this.dispatchProactiveTool(context, event, operation);
     } else {
       const dispatcher = new ToolDispatcher({
         handlers: this.toolHandlers(context),
+        ...(!this.registry.hasBackends
+          ? { timeoutNote: liveText('en', 'runtime.noBackendToolTimeout') }
+          : {}),
       });
       const ctx: ToolContext = { activeTranscript: event.activeTranscript };
       result = await dispatcher.dispatch(event.name, event.arguments, ctx);
@@ -2002,7 +2054,9 @@ export class LiveSession {
       name: event.name,
       callId: event.callId,
       ok: result.ok,
-      receipt: receipt.slice(0, 2_000),
+      ...(event.name === WEB_SEARCH_TOOL_NAME
+        ? { receiptChars: receipt.length }
+        : { receipt: receipt.slice(0, 2_000) }),
     });
     context.pendingToolCalls.delete(call);
     if (this.active !== context || !context.realtime) return;
@@ -2286,6 +2340,8 @@ export class LiveSession {
   private toolHandlers(context: CallContext): ReadonlyMap<string, ToolHandler> {
     const handlers = new Map<string, ToolHandler>();
 
+    handlers.set(WEB_SEARCH_TOOL_NAME, (args) => this.webSearch(context, args));
+
     handlers.set(APPSHOT_TOOL_NAME, async () => {
       if (context.visualInput.mode !== 'on-demand') {
         throw new Error(
@@ -2327,6 +2383,12 @@ export class LiveSession {
         ...(asset ? { asset: asset.assetHandle } : {}),
       };
     });
+
+    if (!this.registry.hasBackends) {
+      for (const name of BACKEND_TOOL_NAMES)
+        handlers.set(name, noBackendReceipt);
+      return handlers;
+    }
 
     handlers.set(SESSION_LIST_TOOL_NAME, async () => {
       const rows: Array<Record<string, unknown>> = [];
@@ -2418,7 +2480,12 @@ export class LiveSession {
         return { status: 'error', note: 'handoff needs a task.' };
       }
       const target = await this.resolveHandoffTarget(context, args['session']);
-      if ('error' in target) return { status: 'error', note: target.error };
+      if ('error' in target)
+        return {
+          status: 'error',
+          ...(target.code ? { code: target.code } : {}),
+          note: target.error,
+        };
       const { handle, backend } = target;
       if (backend.readOnly) {
         return {
@@ -2752,7 +2819,16 @@ export class LiveSession {
   private async resolveHandoffTarget(
     context: CallContext,
     sessionArg: unknown,
-  ): Promise<{ handle: string; backend: BackendHandle } | { error: string }> {
+  ): Promise<
+    | { handle: string; backend: BackendHandle }
+    | { error: string; code?: string }
+  > {
+    if (!this.registry.hasBackends) {
+      return {
+        error: liveText('en', 'runtime.noBackends'),
+        code: 'no_backend',
+      };
+    }
     if (typeof sessionArg === 'string' && sessionArg.trim()) {
       const backend = this.handles.resolveSession(sessionArg);
       if (!backend) {
@@ -3869,6 +3945,8 @@ export class LiveSession {
 
   private cleanupContext(context: CallContext): void {
     this.stopDiscovery(context);
+    context.webSearch?.abort();
+    context.webSearch = undefined;
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
     this.detachMemory(context);
     if (this.active === context) {
@@ -3912,5 +3990,101 @@ export class LiveSession {
     const context = this.active;
     if (!context) return;
     this.cleanupContext(context);
+  }
+
+  private webSearchAvailable(): boolean {
+    return (
+      !this.registry.hasBackends &&
+      supportsQwenRealtimeSearch(this.options.realtime.model)
+    );
+  }
+
+  private async webSearch(
+    context: CallContext,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const failed = (code: string, key: LiveMessageKey) => ({
+      status: 'error',
+      code,
+      note: liveText('en', key),
+    });
+    if (!this.webSearchAvailable())
+      return failed('web_search_unavailable', 'runtime.webSearchUnavailable');
+    if (this.active !== context || context.stopping)
+      return failed('web_search_aborted', 'runtime.webSearchCancelled');
+    const query = typeof args['query'] === 'string' ? args['query'].trim() : '';
+    if (
+      !query ||
+      query.length > 4096 ||
+      /\p{Cc}/u.test(query.replace(/[\n\r\t]/gu, '')) ||
+      Object.keys(args).some((key) => key !== 'query')
+    )
+      return failed(
+        'web_search_invalid_query',
+        'runtime.webSearchInvalidQuery',
+      );
+    if (context.webSearch)
+      return failed('web_search_busy', 'runtime.webSearchBusy');
+    const controller = new AbortController();
+    context.webSearch = controller;
+    const startedAt = Date.now();
+    this.debug('web_search.started', {
+      epoch: context.epoch,
+      queryChars: query.length,
+    });
+    try {
+      const result = await this.searchRealtime({
+        endpoint: this.options.realtime.endpoint,
+        ...(this.options.realtime.apiKey
+          ? { apiKey: this.options.realtime.apiKey }
+          : {}),
+        model: this.options.realtime.model,
+        query,
+        signal: controller.signal,
+      });
+      if (
+        controller.signal.aborted ||
+        this.active !== context ||
+        context.stopping
+      )
+        return failed('web_search_aborted', 'runtime.webSearchCancelled');
+      this.debug('web_search.completed', {
+        epoch: context.epoch,
+        durationMs: Date.now() - startedAt,
+        answerChars: result.answer.length,
+        searchStatus: result.searchStatus,
+      });
+      return {
+        status: 'ok',
+        answer: result.answer,
+        searchStatus: result.searchStatus,
+        note: liveText('en', 'runtime.webSearchResult'),
+      };
+    } catch (error) {
+      const code =
+        controller.signal.aborted ||
+        (error instanceof QwenRealtimeError &&
+          error.code === 'web_search_aborted')
+          ? 'web_search_aborted'
+          : error instanceof QwenRealtimeError &&
+              error.code === 'web_search_timeout'
+            ? 'web_search_timeout'
+            : 'web_search_failed';
+      this.debug('web_search.failed', {
+        epoch: context.epoch,
+        code,
+        durationMs: Date.now() - startedAt,
+      });
+      return failed(
+        code,
+        code === 'web_search_aborted'
+          ? 'runtime.webSearchCancelled'
+          : code === 'web_search_timeout'
+            ? 'runtime.webSearchTimeout'
+            : 'runtime.webSearchFailed',
+      );
+    } finally {
+      if (context.webSearch === controller) context.webSearch = undefined;
+    }
   }
 }

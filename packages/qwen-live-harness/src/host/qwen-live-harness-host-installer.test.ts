@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIVE_HOST_PROTOCOL_VERSION } from './types.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { displayLiveMessage } from '../i18n/messages.js';
@@ -27,7 +27,55 @@ import {
   resolveLiveHostManifestUrls,
 } from './qwen-live-harness-host-installer.js';
 
+const executeFile = vi.hoisted(() =>
+  vi.fn<
+    (
+      file: string,
+      args: string[],
+      options: { signal?: AbortSignal },
+    ) => Promise<{ stdout: string; stderr: string }>
+  >(),
+);
+
+vi.mock('node:child_process', async () => {
+  const { promisify } = await import('node:util');
+  return {
+    execFile: Object.assign(vi.fn(), { [promisify.custom]: executeFile }),
+  };
+});
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
+
 const sha = 'a'.repeat(64);
+
+beforeEach(() => executeFile.mockReset());
+afterEach(() => vi.restoreAllMocks());
+
+function mockVerifiedApp() {
+  vi.spyOn(fsp, 'lstat').mockResolvedValue({
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+  } as Awaited<ReturnType<typeof fsp.lstat>>);
+  executeFile.mockImplementation(async (file, args) => {
+    let stdout = '';
+    let stderr = '';
+    if (file === '/usr/bin/plutil') {
+      stdout =
+        {
+          CFBundleIdentifier: LIVE_HOST_BUNDLE_ID,
+          CFBundleShortVersionString: PACKAGE_VERSION,
+          QwenLiveHarnessProtocolVersion: String(LIVE_HOST_PROTOCOL_VERSION),
+        }[args[1]] ?? '';
+    } else if (file === '/usr/bin/codesign' && args[0] === '-dv') {
+      stderr =
+        'Authority=Developer ID Application: Qwen\nTeamIdentifier=NF4574S59H';
+    }
+    return { stdout, stderr };
+  });
+}
 
 function manifest() {
   return {
@@ -416,6 +464,199 @@ describe('LiveHostInstaller', () => {
     });
 
     expect(launch).toHaveBeenCalledExactlyOnceWith(options);
+  });
+
+  it('does no inspection or opening when launch is already cancelled', async () => {
+    const inspectInstalled = vi.fn();
+    const launch = vi.fn();
+    const onStage = vi.fn();
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled,
+      launch,
+    });
+    const reason = new Error('cancelled before launch');
+    await expect(
+      installer.launch({ signal: AbortSignal.abort(reason), onStage }),
+    ).rejects.toBe(reason);
+    expect(inspectInstalled).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(onStage).not.toHaveBeenCalled();
+  });
+
+  it('cancels a slow inspection immediately and never opens after it finishes', async () => {
+    let finish: (value: {
+      version: string;
+      protocolVersion: number;
+    }) => void = () => {};
+    const inspectInstalled = vi.fn(
+      () =>
+        new Promise<{ version: string; protocolVersion: number }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const launch = vi.fn();
+    const onStage = vi.fn();
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled,
+      launch,
+    });
+    const controller = new AbortController();
+    const operation = installer.launch({ signal: controller.signal, onStage });
+    const reason = new Error('cancelled during inspection');
+    const assertion = expect(operation).rejects.toBe(reason);
+    controller.abort(reason);
+    await assertion;
+    finish({
+      version: PACKAGE_VERSION,
+      protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+    });
+    await Promise.resolve();
+    expect(inspectInstalled).toHaveBeenCalledExactlyOnceWith(controller.signal);
+    expect(launch).not.toHaveBeenCalled();
+    expect(onStage.mock.calls).toEqual([['checking']]);
+    expect(installer.getStatus().state).not.toBe('installed');
+  });
+
+  it('checks cancellation after the opening-stage callback', async () => {
+    const controller = new AbortController();
+    const reason = new Error('cancelled before opening');
+    const launch = vi.fn();
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled: async () => ({
+        version: PACKAGE_VERSION,
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      }),
+      launch,
+    });
+    await expect(
+      installer.launch({
+        signal: controller.signal,
+        onStage: (stage) => {
+          if (stage === 'opening') controller.abort(reason);
+        },
+      }),
+    ).rejects.toBe(reason);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('does not report success when cancellation wins during opening', async () => {
+    let finish: () => void = () => {};
+    const launch = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled: async () => ({
+        version: PACKAGE_VERSION,
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      }),
+      launch,
+    });
+    const controller = new AbortController();
+    const reason = new Error('cancelled while opening');
+    const operation = installer.launch({ signal: controller.signal });
+    const assertion = expect(operation).rejects.toBe(reason);
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
+    controller.abort(reason);
+    await assertion;
+    finish();
+    await Promise.resolve();
+    expect(installer.getStatus().state).not.toBe('installed');
+  });
+
+  it('passes the same cancellation signal through every validation command and open, with its CLI owner', async () => {
+    mockVerifiedApp();
+    const controller = new AbortController();
+    const onStage = vi.fn();
+    const installer = new LiveHostInstaller({ platform: 'darwin' });
+    await expect(
+      installer.launch({
+        signal: controller.signal,
+        owner: { pid: 4321, instanceNonce: 'abcdefghijklmnop' },
+        discoveryPath: '/tmp/harness-launch/run/daemon.json',
+        debug: true,
+        connectOnly: true,
+        onStage,
+      }),
+    ).resolves.toEqual({ state: 'installed', version: PACKAGE_VERSION });
+    expect(executeFile.mock.calls.map(([file]) => file)).toEqual([
+      '/usr/bin/plutil',
+      '/usr/bin/plutil',
+      '/usr/bin/plutil',
+      '/usr/bin/codesign',
+      '/usr/bin/codesign',
+      '/usr/sbin/spctl',
+      '/usr/bin/open',
+    ]);
+    expect(
+      executeFile.mock.calls.map(([, , options]) => options.signal),
+    ).toEqual(Array(7).fill(controller.signal));
+    expect(executeFile).toHaveBeenLastCalledWith(
+      '/usr/bin/open',
+      [
+        LIVE_HOST_APP_PATH,
+        '--args',
+        '--live-harness-debug',
+        '--qwen-live-harness-connect-only',
+        '--qwen-live-harness-discovery-file=/tmp/harness-launch/run/daemon.json',
+        '--qwen-live-harness-owner=4321:abcdefghijklmnop',
+      ],
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(onStage.mock.calls).toEqual([['checking'], ['opening']]);
+  });
+
+  it.each([
+    ['protocol', '/usr/bin/plutil', 'QwenLiveHarnessProtocolVersion'],
+    ['signature verification', '/usr/bin/codesign', '--verify'],
+    ['signature identity', '/usr/bin/codesign', '-dv'],
+    ['Gatekeeper', '/usr/sbin/spctl', '-a'],
+  ])(
+    'does not continue after cancellation during %s',
+    async (_name, file, arg) => {
+      mockVerifiedApp();
+      const inspect = executeFile.getMockImplementation()!;
+      const controller = new AbortController();
+      const reason = new Error('cancelled while verifying Host');
+      executeFile.mockImplementation(async (command, args, options) => {
+        if (command === file && args.includes(arg)) {
+          controller.abort(reason);
+          throw reason;
+        }
+        return inspect(command, args, options);
+      });
+      const installer = new LiveHostInstaller({ platform: 'darwin' });
+      await expect(
+        installer.launch({ signal: controller.signal }),
+      ).rejects.toBe(reason);
+      expect(executeFile.mock.calls.at(-1)?.[0]).toBe(file);
+      expect(
+        executeFile.mock.calls.some(([command]) => command === '/usr/bin/open'),
+      ).toBe(false);
+    },
+  );
+
+  it('retains a retryable inspection error without opening the application', async () => {
+    const launch = vi.fn();
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled: async () => {
+        throw new Error('signature verification failed');
+      },
+      launch,
+    });
+    await expect(installer.launch()).resolves.toEqual({
+      state: 'error',
+      message: 'signature verification failed',
+      retryable: true,
+    });
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('replaces an installed Host with an incompatible protocol', async () => {

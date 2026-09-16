@@ -15,10 +15,11 @@ import { probeDaemon, StartupError } from './startup.js';
 import { withDaemonStartupLock } from './startup-lock.js';
 import { registerCurrentRuntime } from './startup-registration.js';
 import { PACKAGE_VERSION } from './version.js';
+import type { DaemonIdentity } from './lifecycle.js';
 
 export type ManagedDaemon = Pick<
   LiveDaemon,
-  'start' | 'stop' | 'stopForProcessExit'
+  'start' | 'stop' | 'stopForProcessExit' | 'getInstanceIdentity'
 >;
 
 export interface CliStartupOptions {
@@ -60,9 +61,10 @@ export async function startCliApplication(
     options.logger ?? new LiveLogger(options.debug ? 'debug' : undefined);
   const discoveryPath = getLiveDiscoveryPath(resolve(config.discoveryDir));
   let owned: ManagedDaemon | undefined;
+  let owner: DaemonIdentity | undefined;
   let reused = false;
   let abortCleanup: Promise<void> | undefined;
-  const stopStartingDaemon = () => {
+  const closeOwnedApplication = () => {
     if (owned && !abortCleanup) {
       abortCleanup = owned.stopForProcessExit().catch(() => {
         logger.error(
@@ -70,11 +72,17 @@ export async function startCliApplication(
         );
       });
     }
+    return abortCleanup ?? Promise.resolve();
+  };
+  const stopStartingDaemon = () => {
+    void closeOwnedApplication();
   };
   const checkCancelled = () => {
     if (options.signal?.aborted) throw new StartupError('startup_aborted');
   };
   try {
+    logger.info(liveText(config.language ?? 'en', 'cli.checkingInstance'));
+    const startedAt = Date.now();
     await dependencies.lock(
       discoveryPath,
       async () => {
@@ -89,6 +97,10 @@ export async function startCliApplication(
             resolve(config.dataDir, 'config.json')
           )
             throw new StartupError('daemon_mismatch');
+          owner = {
+            pid: existing.record.pid,
+            instanceNonce: existing.record.instanceNonce,
+          };
           reused = true;
         } else {
           checkCancelled();
@@ -100,6 +112,7 @@ export async function startCliApplication(
           checkCancelled();
           await owned.start();
           checkCancelled();
+          owner = owned.getInstanceIdentity();
         }
         if (!options.daemonOnly) {
           await dependencies.register({
@@ -111,13 +124,33 @@ export async function startCliApplication(
       },
       { signal: options.signal },
     );
+    logger.debug(
+      `startup.daemon_ready ${JSON.stringify({ reused, durationMs: Date.now() - startedAt })}`,
+    );
     checkCancelled();
     if (reused) logger.info(liveText(config.language ?? 'en', 'cli.reused'));
     if (!options.daemonOnly && dependencies.platform === 'darwin') {
+      let stageStartedAt = Date.now();
       const status = await dependencies.openHost({
         debug: options.debug,
         discoveryPath,
         connectOnly: true,
+        owner,
+        signal: options.signal,
+        onStage: (stage) => {
+          if (stage === 'opening') {
+            logger.debug(
+              `startup.host_checked ${JSON.stringify({ durationMs: Date.now() - stageStartedAt })}`,
+            );
+            stageStartedAt = Date.now();
+          }
+          logger.info(
+            liveText(
+              config.language ?? 'en',
+              stage === 'checking' ? 'cli.checkingHost' : 'cli.openingHost',
+            ),
+          );
+        },
       });
       checkCancelled();
       if (status.state !== 'installed')
@@ -125,12 +158,15 @@ export async function startCliApplication(
           status.message ?? liveMessage('installer.notInstalled'),
         );
       logger.info(liveText(config.language ?? 'en', 'cli.hostOpened'));
+      logger.debug(
+        `startup.host_opened ${JSON.stringify({ durationMs: Date.now() - stageStartedAt })}`,
+      );
     }
     return { reused };
   } catch (error) {
     // A launch failure can only tear down the daemon created by this invocation.
     // Existing sessions belong to the already running application.
-    if (owned) await owned.stop().catch(() => undefined);
+    await closeOwnedApplication();
     throw error;
   } finally {
     options.signal?.removeEventListener('abort', stopStartingDaemon);

@@ -8,6 +8,7 @@
     "moduleResolution": "bundler",
     "paths": {
       "qwen-live-harness/startup": ["../qwen-live-harness/src/startup.ts"],
+      "qwen-live-harness/lifecycle": ["../qwen-live-harness/src/lifecycle.ts"],
       "qwen-live-harness/i18n": ["../qwen-live-harness/src/i18n/messages.ts"],
       "qwen-live-harness/subagents": [
         "../qwen-live-harness/src/subagents/types.ts"

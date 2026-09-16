@@ -1,0 +1,74 @@
+name: 'Bug Report'
+description: 'Report a bug to help us improve Qwen-Live-Harness'
+labels: ['bug']
+body:
+  - type: 'markdown'
+    attributes:
+      value: |-
+        > [!IMPORTANT]
+        > Thanks for taking the time to fill out this bug report!
+        >
+        > Please search **[existing issues](https://github.com/QwenLM/Qwen-Live-Harness/issues)** to see if an issue already exists for the bug you encountered.
+        >
+        > Share only relevant, redacted information. Do not include API keys, tokens, private configuration, Memory contents, or raw audio/video and visual Monitor debug archives.
+
+  - type: 'textarea'
+    id: 'problem'
+    attributes:
+      label: 'What happened?'
+      description: 'Describe the bug and the steps to reproduce it. Include the exact command or Host action, and whether it happens every time.'
+    validations:
+      required: true
+
+  - type: 'textarea'
+    id: 'expected'
+    attributes:
+      label: 'What did you expect to happen?'
+    validations:
+      required: true
+
+  - type: 'textarea'
+    id: 'info'
+    attributes:
+      label: 'Client information'
+      description: 'Include the versions and launch method below. For a source checkout, include the commit instead of the global npm package version. The desktop Host currently supports macOS.'
+      value: |
+        <details>
+        <summary>Client Information</summary>
+
+        - OS and version:
+        - Architecture (arm64 / x64):
+        - Installation method (npm / source):
+        - Launch method (exact command or double-clicked Host):
+        - Qwen-Live-Harness CLI version or source commit:
+        - Qwen Live Harness Host version (from Finder Get Info or startup logs):
+        - Realtime model:
+        - Background Harness and version (or none):
+        - Video Source / Capture Mode:
+        - Input and output devices, if relevant (built-in / Bluetooth / USB):
+
+        For an npm installation, paste the output of:
+
+        ```console
+        node --version
+        npm --version
+        npm ls -g qwen-live-harness --depth=0
+        ```
+
+        For a source checkout, also include `git rev-parse --short HEAD`.
+
+        </details>
+    validations:
+      required: true
+
+  - type: 'textarea'
+    id: 'connection-info'
+    attributes:
+      label: 'Connection configuration'
+      description: 'If relevant, describe the DashScope region or endpoint hostname, and whether Memory or Proactive is enabled. Do not paste API keys, tokens, or your full config.json.'
+
+  - type: 'textarea'
+    id: 'additional-context'
+    attributes:
+      label: 'Anything else we need to know?'
+      description: 'Add relevant redacted error messages, logs, or screenshots. For Host failures, include the relevant lines from ~/Library/Application Support/qwen-live-harness-host/logs/host-errors.log when available.'

@@ -6,7 +6,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { PROACTIVE_SESSION_TOOLS } from '../tools/definitions.js';
+import {
+  buildLiveSessionTools,
+  PROACTIVE_SESSION_TOOLS,
+} from '../tools/definitions.js';
 import {
   deriveQwenOmniRealtimeUrl,
   openQwenRealtimeSession,
@@ -228,6 +231,51 @@ async function connect(
 }
 
 describe('realtime-session', () => {
+  it.each([
+    'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+    'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime',
+  ])('preserves region and semantic VAD for %s', async (endpoint) => {
+    const socket = new FakeSocket();
+    const createWebSocket = vi.fn(() => socket);
+    const opening = openQwenRealtimeSession(
+      {
+        endpoint,
+        apiKey: 'synthetic-region-key',
+        model: 'qwen3.5-omni-plus-realtime',
+        callEpoch: 7,
+        instructions: 'initial instructions',
+        tools: [APPSHOT_TOOL],
+      },
+      {},
+      { createWebSocket },
+    );
+    socket.message({ type: 'session.created' });
+    sessionUpdated(socket, 'region-ready');
+    const session = await opening;
+    try {
+      expect(createWebSocket).toHaveBeenCalledWith(
+        `${endpoint}?model=qwen3.5-omni-plus-realtime`,
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer synthetic-region-key' },
+        }),
+      );
+      const initial = sentJson(socket, 0)['session'] as Record<string, unknown>;
+      expect(initial['turn_detection']).toEqual({
+        type: 'semantic_vad',
+        create_response: false,
+        interrupt_response: true,
+      });
+      session.configure({ instructions: 'memory updated', tools: [LIST_TOOL] });
+      const update = sentJson(socket, 1)['session'] as Record<string, unknown>;
+      expect(update).not.toHaveProperty('turn_detection');
+      expect({ ...initial, ...update }['turn_detection']).toEqual(
+        initial['turn_detection'],
+      );
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
   it('R1-9 rejects a dispatched result after nonfatal response failure while keeping transport usable', async () => {
     const socket = new FakeSocket();
     const callbacks = {
@@ -1220,6 +1268,101 @@ describe('realtime-session', () => {
       session.close({ discardPendingInput: true });
     }
   });
+
+  it.each(['proactive', 'backend_speech', 'proactive_repair'] as const)(
+    'rejects an advertised web search on the real %s wire path, including repair continuation',
+    async (authority) => {
+      const socket = new FakeSocket();
+      const callbacks = { onFunctionCall: vi.fn() };
+      const session = await connect(
+        socket,
+        callbacks,
+        {},
+        buildLiveSessionTools(true, false, true),
+      );
+      try {
+        if (authority === 'proactive_repair') {
+          expect(
+            session.requestProactiveRepair('Create one monitor.', [
+              'create_proactive_monitor',
+            ]),
+          ).toBe(true);
+          responseCreated(socket, 'repair-search-parent');
+          functionCall(
+            socket,
+            'repair-search-parent',
+            'repair-search-call',
+            'create_proactive_monitor',
+            '{}',
+          );
+          responseDone(socket, 'repair-search-parent');
+          expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
+          expect(
+            session.submitFunctionOutput(
+              { callEpoch: 7, callId: 'repair-search-call' },
+              '{"status":"ok"}',
+            ),
+          ).toBe(true);
+        } else if (authority === 'proactive') {
+          expect(session.respondToProactiveEvent('A monitored event.')).toBe(
+            true,
+          );
+        } else {
+          expect(session.speakToUser('A queued notification.')).toBe(true);
+        }
+        const responseId = `response-search-${authority}`;
+        responseCreated(socket, responseId);
+        callbacks.onFunctionCall.mockClear();
+        const before = sentTypes(socket).filter(
+          (type) => type === 'response.create',
+        ).length;
+        const callId = `forbidden-search-${authority}`;
+        functionCall(
+          socket,
+          responseId,
+          callId,
+          'web_search',
+          '{"query":"must not search"}',
+        );
+        responseDone(socket, responseId);
+        await Promise.resolve();
+        expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
+        const rejection = socket.sent
+          .map(sentJsonEntry)
+          .map((entry) => entry['item'] as Record<string, unknown> | undefined)
+          .find((item) => item?.['call_id'] === callId);
+        expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
+          status: 'error',
+        });
+        expect(
+          sentTypes(socket).filter((type) => type === 'response.create'),
+        ).toHaveLength(before);
+
+        commitFinalInput(
+          socket,
+          `real-input-${authority}`,
+          'Search the current public weather.',
+        );
+        const directId = `direct-search-${authority}`;
+        responseCreated(socket, directId);
+        functionCall(
+          socket,
+          directId,
+          `allowed-search-${authority}`,
+          'web_search',
+          '{"query":"current public weather"}',
+        );
+        expect(callbacks.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            name: 'web_search',
+            activeTranscript: [],
+          }),
+        );
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
 
   it.each([
     ['list_proactive_tasks', 'cancel_proactive_task', '{"status":"ok"}'],

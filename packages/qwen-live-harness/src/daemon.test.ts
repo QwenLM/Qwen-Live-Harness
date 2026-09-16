@@ -16,6 +16,7 @@ import { BackendRegistry } from './adaptor/registry.js';
 import { DEFAULT_PROACTIVE_CONFIG, type LiveConfig } from './config.js';
 import { DEFAULT_MEMORY_CONFIG } from './memory/config.js';
 import { LiveDaemon } from './daemon.js';
+import { readDaemonStopMarker } from './lifecycle.js';
 import {
   getLiveDiscoveryPath,
   type LiveDiscoveryRecord,
@@ -26,6 +27,7 @@ import { LiveSession } from './orchestrator/live-session.js';
 import { MemoryService } from './memory/service.js';
 import { SessionLog } from './log/session-log.js';
 import { MonitorDebugStore } from './proactive/monitor-debug-store.js';
+import { liveText } from './i18n/messages.js';
 import {
   MAX_SUBAGENTS_REQUEST_BYTES,
   parseSubagentsSnapshot,
@@ -174,6 +176,72 @@ afterEach(async () => {
 });
 
 describe('LiveDaemon', () => {
+  it.each([false, true])(
+    'starts an explicit empty backend configuration with memory enabled=%s',
+    async (memoryEnabled) => {
+      const config = await testConfig();
+      config.backends = [];
+      config.memory.enabled = memoryEnabled;
+      const logger = new LiveLogger('error');
+      const info = vi.spyOn(logger, 'info');
+      // Exercise the actual empty registry construction, not a fake adaptor.
+      const daemon = new LiveDaemon(config, { logger });
+      daemons.push(daemon);
+      await expect(daemon.start()).resolves.toMatchObject({
+        port: expect.any(Number),
+      });
+      const registry = (daemon as unknown as { registry: BackendRegistry })
+        .registry;
+      expect(registry.hasBackends).toBe(false);
+      expect(registry.names()).toEqual([]);
+      expect(info).toHaveBeenCalledWith(liveText('en', 'cli.noBackends'));
+      await expect(
+        readDiscoveryRecord(config.discoveryDir),
+      ).resolves.toMatchObject({
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      });
+      await daemon.stop();
+      await expect(
+        readDiscoveryRecord(config.discoveryDir),
+      ).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    },
+  );
+
+  it('retains an instance-bound stop notice after process exit removes discovery', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    await daemon.start();
+    const identity = daemon.getInstanceIdentity();
+    const discoveryPath = getLiveDiscoveryPath(config.discoveryDir);
+    expect(await readDaemonStopMarker(discoveryPath, identity)).toBe(false);
+    await daemon.stopForProcessExit();
+    expect(await readDaemonStopMarker(discoveryPath, identity)).toBe(true);
+    expect(
+      await readDaemonStopMarker(discoveryPath, {
+        ...identity,
+        instanceNonce: 'different_instance_nonce_123',
+      }),
+    ).toBe(false);
+    await expect(
+      readDiscoveryRecord(config.discoveryDir),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not interpret ordinary resource disposal as a CLI process-exit notice', async () => {
+    const config = await testConfig();
+    const daemon = startedDaemon(config);
+    await daemon.start();
+    await daemon.stop();
+    expect(
+      await readDaemonStopMarker(
+        getLiveDiscoveryPath(config.discoveryDir),
+        daemon.getInstanceIdentity(),
+      ),
+    ).toBe(false);
+  });
+
   it('does not publish a late daemon after shutdown during backend initialization', async () => {
     const config = await testConfig();
     const daemon = startedDaemon(config);

@@ -93,12 +93,17 @@ export interface LiveHostLaunchOptions {
   debug?: boolean;
   discoveryPath?: string;
   connectOnly?: boolean;
+  signal?: AbortSignal;
+  owner?: { pid: number; instanceNonce: string };
+  onStage?: (stage: 'checking' | 'opening') => void;
 }
 
 export interface LiveHostInstallerDeps {
   platform?: NodeJS.Platform;
   architecture?: string;
-  inspectInstalled?: () => Promise<InstalledLiveHost | undefined>;
+  inspectInstalled?: (
+    signal?: AbortSignal,
+  ) => Promise<InstalledLiveHost | undefined>;
   installLatest?: (
     architecture: LiveHostArchitecture,
     onStatus: (status: LiveHostInstallStatus) => void,
@@ -182,51 +187,77 @@ export function parseLiveHostReleaseManifest(
   };
 }
 
-async function run(file: string, args: string[]): Promise<string> {
+async function run(
+  file: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
   const { stdout } = await execFileAsync(file, args, {
     encoding: 'utf8',
     timeout: COMMAND_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
+    signal,
   });
+  signal?.throwIfAborted();
   return stdout.trim();
 }
 
-async function readBundleValue(appPath: string, key: string): Promise<string> {
-  return await run('/usr/bin/plutil', [
-    '-extract',
-    key,
-    'raw',
-    '-o',
-    '-',
-    path.join(appPath, 'Contents', 'Info.plist'),
-  ]);
+async function readBundleValue(
+  appPath: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return await run(
+    '/usr/bin/plutil',
+    [
+      '-extract',
+      key,
+      'raw',
+      '-o',
+      '-',
+      path.join(appPath, 'Contents', 'Info.plist'),
+    ],
+    signal,
+  );
 }
 
-async function inspectApp(appPath: string): Promise<InstalledLiveHost> {
+async function inspectApp(
+  appPath: string,
+  signal?: AbortSignal,
+): Promise<InstalledLiveHost> {
+  signal?.throwIfAborted();
   const stat = await fsp.lstat(appPath);
+  signal?.throwIfAborted();
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new InstallerError('installer.bundleInvalid');
   }
-  const bundleId = await readBundleValue(appPath, 'CFBundleIdentifier');
+  const bundleId = await readBundleValue(appPath, 'CFBundleIdentifier', signal);
   if (bundleId !== LIVE_HOST_BUNDLE_ID) {
     throw new InstallerError('installer.identityInvalid');
   }
-  const version = await readBundleValue(appPath, 'CFBundleShortVersionString');
+  const version = await readBundleValue(
+    appPath,
+    'CFBundleShortVersionString',
+    signal,
+  );
   if (!VERSION_PATTERN.test(version)) {
     throw new InstallerError('installer.versionInvalid');
   }
   const rawProtocolVersion = await readBundleValue(
     appPath,
     'QwenLiveHarnessProtocolVersion',
-  ).catch(() => '0');
+    signal,
+  ).catch(() => {
+    signal?.throwIfAborted();
+    return '0';
+  });
   const protocolVersion = Number(rawProtocolVersion);
-  await run('/usr/bin/codesign', [
-    '--verify',
-    '--deep',
-    '--strict',
-    '--verbose=2',
-    appPath,
-  ]);
+  await run(
+    '/usr/bin/codesign',
+    ['--verify', '--deep', '--strict', '--verbose=2', appPath],
+    signal,
+  );
   const signature = await execFileAsync(
     '/usr/bin/codesign',
     ['-dv', '--verbose=4', appPath],
@@ -234,13 +265,15 @@ async function inspectApp(appPath: string): Promise<InstalledLiveHost> {
       encoding: 'utf8',
       timeout: COMMAND_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
+      signal,
     },
   );
+  signal?.throwIfAborted();
   const signatureOutput = `${signature.stdout}${signature.stderr}`;
   if (!isExpectedLiveHostSignature(signatureOutput)) {
     throw new InstallerError('installer.signatureInvalid');
   }
-  await run('/usr/sbin/spctl', ['-a', '-t', 'exec', appPath]);
+  await run('/usr/sbin/spctl', ['-a', '-t', 'exec', appPath], signal);
   return {
     version,
     protocolVersion: Number.isSafeInteger(protocolVersion)
@@ -269,10 +302,13 @@ function assertCompatibleInstalledHost(host: InstalledLiveHost): void {
     });
 }
 
-async function inspectInstalledHost(): Promise<InstalledLiveHost | undefined> {
+async function inspectInstalledHost(
+  signal?: AbortSignal,
+): Promise<InstalledLiveHost | undefined> {
   try {
-    return await inspectApp(LIVE_HOST_APP_PATH);
+    return await inspectApp(LIVE_HOST_APP_PATH, signal);
   } catch (error) {
+    signal?.throwIfAborted();
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
   }
@@ -477,6 +513,7 @@ async function installLatestHost(
 async function launchInstalledHost(
   options?: LiveHostLaunchOptions,
 ): Promise<void> {
+  options?.signal?.throwIfAborted();
   const hostArgs: string[] = [];
   if (options?.debug) hostArgs.push('--live-harness-debug');
   if (options?.connectOnly) hostArgs.push('--qwen-live-harness-connect-only');
@@ -484,10 +521,42 @@ async function launchInstalledHost(
     hostArgs.push(
       `--qwen-live-harness-discovery-file=${path.resolve(options.discoveryPath)}`,
     );
-  await run('/usr/bin/open', [
-    LIVE_HOST_APP_PATH,
-    ...(hostArgs.length > 0 ? ['--args', ...hostArgs] : []),
-  ]);
+  if (options?.owner)
+    hostArgs.push(
+      `--qwen-live-harness-owner=${options.owner.pid}:${options.owner.instanceNonce}`,
+    );
+  await run(
+    '/usr/bin/open',
+    [
+      LIVE_HOST_APP_PATH,
+      ...(hostArgs.length > 0 ? ['--args', ...hostArgs] : []),
+    ],
+    options?.signal,
+  );
+}
+
+/** A cancelled launch must not wait for a separate installation or inspection. */
+async function awaitLaunchStep<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return await operation;
+  // A dependency can synchronously abort while returning a rejected promise.
+  // Observe that promise even when cancellation has already won.
+  if (signal.aborted) void operation.catch(() => {});
+  signal.throwIfAborted();
+  let cancel: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    cancel = () => reject(signal.reason);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+  try {
+    const result = await Promise.race([operation, cancelled]);
+    signal.throwIfAborted();
+    return result;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -514,8 +583,8 @@ export class LiveHostInstaller {
   private operation: Promise<LiveHostInstallStatus> | undefined;
   private readonly platform: NodeJS.Platform;
   private readonly currentArchitecture: string;
-  private readonly inspectInstalled: () => Promise<
-    InstalledLiveHost | undefined
+  private readonly inspectInstalled: NonNullable<
+    LiveHostInstallerDeps['inspectInstalled']
   >;
   private readonly installLatest: NonNullable<
     LiveHostInstallerDeps['installLatest']
@@ -569,19 +638,31 @@ export class LiveHostInstaller {
   async launch(
     options?: LiveHostLaunchOptions,
   ): Promise<LiveHostInstallStatus> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     if (this.platform !== 'darwin') {
       return this.setError(liveMessage('installer.macOnly'), false);
     }
-    if (this.operation) return await this.operation;
+    if (this.operation) return await awaitLaunchStep(this.operation, signal);
     try {
-      const installed = await this.inspectInstalled();
+      options?.onStage?.('checking');
+      signal?.throwIfAborted();
+      const installed = await awaitLaunchStep(
+        this.inspectInstalled(signal),
+        signal,
+      );
+      signal?.throwIfAborted();
       if (!installed)
         return this.setError(liveMessage('installer.notInstalled'), true);
       assertCompatibleInstalledHost(installed);
       this.status = { state: 'launching', version: installed.version };
-      await this.launchHost(options);
+      options?.onStage?.('opening');
+      signal?.throwIfAborted();
+      await awaitLaunchStep(this.launchHost(options), signal);
+      signal?.throwIfAborted();
       this.status = { state: 'installed', version: installed.version };
     } catch (error) {
+      signal?.throwIfAborted();
       this.setError(errorMessage(error), true);
     }
     return this.getStatus();
