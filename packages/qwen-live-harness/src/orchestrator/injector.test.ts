@@ -98,6 +98,29 @@ describe('Injector context budget', () => {
     expect(sink.injected.map((entry) => entry.item)).toEqual([big, after]);
   });
 
+  it('does not speak for an item whose context was deferred', () => {
+    // Speaking about a result the model has no context for is the exact
+    // "claimed without evidence" failure the instructions warn against —
+    // and the line would then be spoken a second time when the deferred
+    // item really lands.
+    const big = complete('B'.repeat(BUDGET), 'The first task finished.');
+    const after = complete('[COMPLETE job_2] lint done', 'Lint finished.');
+    injector.noteSpeechStarted();
+    injector.enqueue(big);
+    injector.enqueue(after);
+    injector.noteInputCommitted();
+
+    expect(sink.contextCalls).toEqual([big.context, after.context]);
+    expect(sink.speechCalls).toEqual([
+      'The first task finished.',
+      'Lint finished.',
+    ]);
+    // Exactly once each, in step with the context that backs it.
+    expect(
+      sink.speechCalls.filter((line) => line === 'Lint finished.'),
+    ).toHaveLength(1);
+  });
+
   it('truncates a lone oversized item rather than wedging the lane', () => {
     const huge = complete('H'.repeat(BUDGET * 3));
     injector.enqueue(huge);

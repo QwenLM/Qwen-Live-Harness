@@ -491,8 +491,11 @@ export class Injector {
     const contextAccepted = this.sink.injectContext(context);
 
     // One combined spoken line for the speech-worthy items — whole lines
-    // only, since the model is told to read the text verbatim.
-    const spokenLines = batch
+    // only, since the model is told to read the text verbatim. Drawn from
+    // the FITTED items, never the whole batch: speaking for an item whose
+    // context was deferred would announce a result the model cannot back
+    // up, and would then say it again when that item really lands.
+    const spokenLines = fitted
       .map((item) => item.spoken)
       .filter((line): line is string => typeof line === 'string' && !!line);
     let spoken = '';
