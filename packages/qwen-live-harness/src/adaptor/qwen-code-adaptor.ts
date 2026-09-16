@@ -47,6 +47,8 @@ import type {
   PromptReceipt,
   InstructionReceipt,
   InstructionDelivery,
+  PeerSessionReport,
+  PeerReportContext,
   SessionSummary,
 } from './types.js';
 
@@ -355,6 +357,13 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     listener: () => void,
   ) => () => void;
 
+  readonly createReportContext?: (
+    target: BackendHandle,
+  ) => PeerReportContext | undefined;
+  readonly subscribeReports?: (
+    listener: (report: PeerSessionReport) => boolean,
+  ) => () => void;
+
   constructor(options: QwenCodeAdaptorOptions) {
     this.options = options;
     this.name = options.name ?? ADAPTOR_NAME;
@@ -370,6 +379,11 @@ export class QwenCodeAdaptor implements BackendAdaptor {
       this.listInstructionDeliveries = () => peers.deliveries();
       this.subscribeInstructionDeliveries = (listener) =>
         peers.subscribe(listener);
+      if (options.peerDiscovery.reports) {
+        this.createReportContext = (target) =>
+          peers.createReportContext(target);
+        this.subscribeReports = (listener) => peers.subscribeReports(listener);
+      }
     }
     this.client =
       options.client ??

@@ -242,7 +242,7 @@ function fixture(
   };
 }
 describe('Subagents native lifecycle', () => {
-  it('refreshes delivery-only revisions independently of task counts and preserves the pinned panel', async () => {
+  it('refreshes delivery and report revisions independently of task counts and preserves the pinned panel', async () => {
     const calls: SubagentsControlRequest[] = [];
     const f = fixture(undefined, async (request) => {
       calls.push(request);
@@ -278,6 +278,28 @@ describe('Subagents native lifecycle', () => {
     );
     await settled();
     assert.equal(calls.length, 2);
+    f.controller.update(
+      'en',
+      true,
+      { ...snapshot, deliveryRevision: 1, reportRevision: 1 },
+      'one',
+      true,
+    );
+    await settled();
+    assert.equal(calls.length, 3);
+    assert.equal(window.moves.length, moves);
+    assert.equal(f.state(window).snapshot?.revision, snapshot.revision);
+    assert.equal(f.state(window).snapshot?.deliveryRevision, 1);
+    assert.equal(f.state(window).snapshot?.reportRevision, 1);
+    f.controller.update(
+      'en',
+      true,
+      { ...snapshot, deliveryRevision: 1, reportRevision: 1 },
+      'one',
+      true,
+    );
+    await settled();
+    assert.equal(calls.length, 3);
     f.controller.dispose();
   });
 

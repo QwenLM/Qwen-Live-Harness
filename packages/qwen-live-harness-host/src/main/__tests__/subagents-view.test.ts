@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import { liveMessage, liveText } from 'qwen-live-harness/i18n';
 import type {
   InstructionDelivery,
+  SessionReport,
   SubagentTask,
   SubagentsControlResult,
   SubagentsSnapshot,
@@ -118,6 +119,118 @@ function setup(
 }
 
 describe('Subagents read-only surfaces', () => {
+  it('keeps self-reported results separate from tasks and updates announcement state without interpreting report text', () => {
+    const value = snapshot([]);
+    value.omitted = 0;
+    value.counts = {
+      running: 0,
+      completed: 0,
+      needsAttention: 0,
+      failed: 0,
+      cancelled: 0,
+      interrupted: 0,
+    };
+    const report: SessionReport = {
+      id: 'report_1',
+      backend: 'qwen',
+      source: '<b>Terminal</b>',
+      sourceStatus: 'matched',
+      session: 'session_1',
+      category: 'result',
+      text: '<img src=x>\n' + liveMessage('subagents.completed'),
+      receivedAt: 1_788_790_000_000,
+      updatedAt: 1_788_790_001_000,
+      announcement: 'queued',
+    };
+    const page = {
+      snapshot: value,
+      offset: 0,
+      total: 0,
+      sessionReports: [report],
+    };
+    const h = setup(
+      {},
+      { mode: 'list', language: 'en', snapshot: value, page },
+    );
+    assert.equal(h.get('.subagents-empty').hidden, true);
+    assert.equal(
+      h.get('.session-report-source').textContent,
+      '<b>Terminal</b> · qwen',
+    );
+    assert.equal(h.app.querySelector('.session-report-source b'), null);
+    assert.equal(h.get('.session-report-text').textContent, report.text);
+    assert.equal(h.app.querySelector('.session-report-text img'), null);
+    assert.equal(
+      h.get('.session-report-category').textContent,
+      'Reported result',
+    );
+    assert.equal(
+      h.get('.session-report-source-status').textContent,
+      'Linked to a registered source',
+    );
+    assert.match(
+      h.get('.session-reports-description').textContent ?? '',
+      /does not verify identity or confirm task completion/,
+    );
+    assert.equal(
+      h.app.querySelectorAll(
+        '.session-report button, .session-report [data-status="completed"], .subagent-row',
+      ).length,
+      0,
+    );
+    const row = h.get('.session-report');
+    for (const [announcement, label] of [
+      ['queued', '等待播报'],
+      ['submitted', '已提交播报'],
+      ['speaking', '正在播报'],
+      ['announced', '已播报'],
+      ['interrupted', '播报被打断'],
+      ['unspoken', '未播报'],
+      ['suppressed', '已跳过播报'],
+    ] as const) {
+      h.update({
+        language: 'zh-CN',
+        page: {
+          ...page,
+          sessionReports: [
+            {
+              ...report,
+              announcement,
+              sourceStatus: 'unconfirmed',
+              updatedAt: report.updatedAt + 1000,
+            },
+          ],
+        },
+      });
+      assert.equal(h.get('.session-report'), row);
+      assert.equal(h.get('.session-report-announcement').textContent, label);
+      assert.equal(
+        h.get('.session-report-source-status').textContent,
+        '来源未确认',
+      );
+      assert.equal(
+        h.get('.subagents-panel [data-count="running"]').textContent,
+        '0',
+      );
+      assert.equal(
+        h.get('.subagents-panel [data-count="completed"]').textContent,
+        '0',
+      );
+    }
+    assert.match(
+      h.get('.session-report-time').textContent ?? '',
+      /收到于.*更新于/,
+    );
+    h.update({
+      page: { ...page, sessionReports: [], sessionReportsOmitted: 2 },
+    });
+    assert.equal(h.app.querySelector('.session-report'), null);
+    assert.equal(h.get('.session-reports-empty').hidden, false);
+    assert.match(h.get('.session-reports-omitted').textContent ?? '', /2/);
+    h.update({ page: { snapshot: value, offset: 0, total: 0 } });
+    assert.equal(h.app.querySelector('.session-reports'), null);
+  });
+
   it('shows terminal discovery separately without inventing running tasks or session controls', async () => {
     const value = snapshot([]);
     value.omitted = 0;

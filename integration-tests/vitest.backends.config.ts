@@ -5,6 +5,7 @@ export default defineConfig({
     include: [
       'integration-tests/qwen-live-harness-m*.test.ts',
       'integration-tests/qwen-peer-instructions.test.ts',
+      'integration-tests/qwen-peer-reports.test.ts',
     ],
     testTimeout: 180_000,
     hookTimeout: 180_000,

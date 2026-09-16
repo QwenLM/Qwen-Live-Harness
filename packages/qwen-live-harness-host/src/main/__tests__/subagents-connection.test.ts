@@ -174,6 +174,42 @@ it('publishes standalone task revisions without republishing media state and ign
     );
     await flush();
     assert.equal(connection.getSnapshot().subagentsV1?.deliveryRevision, 2);
+    const current = { ...snapshot(1), deliveryRevision: 2, reportRevision: 1 };
+    peer.send(JSON.stringify({ type: 'host.subagents', subagentsV1: current }));
+    await flush();
+    assert.equal(updates.length, 3);
+    assert.equal(connection.getSnapshot().subagentsV1?.reportRevision, 1);
+    for (const stale of [
+      current,
+      { ...current, revision: 0, reportRevision: 2 },
+      { ...current, deliveryRevision: 1, reportRevision: 2 },
+      { ...current, revision: 2, reportRevision: 0 },
+    ])
+      peer.send(JSON.stringify({ type: 'host.subagents', subagentsV1: stale }));
+    await flush();
+    assert.equal(updates.length, 3);
+    for (const reportRevision of [0, 2]) {
+      peer.send(
+        JSON.stringify({
+          type: 'host.state',
+          epoch: 0,
+          status: {
+            v: 1,
+            available: true,
+            state: 'idle',
+            shortcut: 'Command+E',
+          },
+          subagentsV1: { ...current, reportRevision },
+        }),
+      );
+      await flush();
+      assert.equal(
+        connection.getSnapshot().subagentsV1?.reportRevision,
+        reportRevision || 1,
+      );
+    }
+    assert.equal(connection.getSnapshot().subagentsV1?.revision, 1);
+    assert.equal(connection.getSnapshot().subagentsV1?.deliveryRevision, 2);
   } finally {
     connection?.stop();
     for (const peer of server.clients) peer.terminate();
@@ -192,6 +228,7 @@ it('validates standalone task messages and rejects unbounded or malformed snapsh
   for (const bad of [
     { ...snapshot(1), revision: -1 },
     { ...snapshot(1), deliveryRevision: -1 },
+    { ...snapshot(1), reportRevision: -1 },
     { ...snapshot(1), counts: { running: '2' } },
     { ...snapshot(1), tasks: [{ id: 'unsafe' }] },
     { ...snapshot(1), extra: 'x'.repeat(260 * 1024) },

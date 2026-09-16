@@ -700,6 +700,8 @@ export interface BootLiveStackOptions {
   makeOpenAIHandler: (info: { workspaceDir: string }) => FakeOpenAIHandler;
   /** Join only this fixture's isolated Qwen home for terminal discovery. */
   peerDiscovery?: boolean;
+  /** Enable incoming reports on this fixture's call-scoped peer endpoint. */
+  peerReports?: boolean;
   /** Mint a test controller in the isolated home before Live is spawned. */
   preparePeerDiscovery?: (info: {
     homeDir: string;
@@ -829,6 +831,7 @@ export async function bootLiveStack(
                 token: SERVE_TOKEN,
                 peerDiscovery: {
                   qwenHome,
+                  ...(options.peerReports ? { reports: true } : {}),
                   ...(peerConfiguration
                     ? {
                         controllerTokenEnv:

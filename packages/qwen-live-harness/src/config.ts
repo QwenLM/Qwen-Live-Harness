@@ -34,7 +34,11 @@ export type BackendConfig =
       baseUrl: string;
       token?: string;
       /** Opt-in local terminals; an explicit controller grant enables text delivery. */
-      peerDiscovery?: { qwenHome: string; controllerToken?: string };
+      peerDiscovery?: {
+        qwenHome: string;
+        controllerToken?: string;
+        reports?: boolean;
+      };
       isDefault: boolean;
     }
   | {
@@ -739,16 +743,20 @@ function parseBackend(
     const baseUrl = str(raw['serveUrl'] ?? raw['baseUrl']) ?? DEFAULT_SERVE_URL;
     const token = str(raw['token']);
     let peerDiscovery:
-      { qwenHome: string; controllerToken?: string } | undefined;
+      | { qwenHome: string; controllerToken?: string; reports?: boolean }
+      | undefined;
     if (raw['peerDiscovery'] !== undefined) {
       const peer = raw['peerDiscovery'];
       if (
         !isRecordLike(peer) ||
         Object.keys(peer).some(
           (key) =>
-            !['qwenHome', 'controllerToken', 'controllerTokenEnv'].includes(
-              key,
-            ),
+            ![
+              'qwenHome',
+              'controllerToken',
+              'controllerTokenEnv',
+              'reports',
+            ].includes(key),
         ) ||
         typeof peer['qwenHome'] !== 'string' ||
         !peer['qwenHome'].trim()
@@ -758,6 +766,14 @@ function parseBackend(
         );
       }
       peerDiscovery = { qwenHome: peer['qwenHome'].trim() };
+      if (peer['reports'] !== undefined) {
+        if (typeof peer['reports'] !== 'boolean') {
+          throw new Error(
+            `Invalid peerDiscovery in ${where}: reports must be a boolean`,
+          );
+        }
+        peerDiscovery.reports = peer['reports'];
+      }
       if (
         peer['controllerToken'] !== undefined &&
         peer['controllerTokenEnv'] !== undefined

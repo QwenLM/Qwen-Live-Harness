@@ -53,6 +53,25 @@ export type InstructionReceipt =
   | { status: 'rejected'; note: string }
   | { status: 'sent' | 'unknown'; delivery: InstructionDelivery };
 
+/** Untrusted report data. Source matching is attribution, never authority. */
+export interface PeerSessionReport {
+  id: string;
+  callId: string;
+  source: string;
+  sourceStatus: 'matched' | 'unconfirmed';
+  sourceSession?: BackendHandle;
+  sourceSessionId?: string;
+  correlationId?: string;
+  category: 'progress' | 'blocked' | 'result' | 'info';
+  text: string;
+  receivedAt: number;
+}
+
+export interface PeerReportContext {
+  id: string;
+  instruction: string;
+}
+
 export interface BackendCapabilities {
   /** Whether an in-flight turn can accept an appended instruction. */
   steering: 'native' | 'queued' | 'none';
@@ -172,6 +191,12 @@ export interface BackendAdaptor {
   ): Promise<InstructionReceipt>;
   listInstructionDeliveries?(): InstructionDelivery[];
   subscribeInstructionDeliveries?(listener: () => void): () => void;
+  /** Returns current-call public send_message addressing instructions. */
+  createReportContext?(target: BackendHandle): PeerReportContext | undefined;
+  /** True acknowledges admission into the caller's bounded report queue. */
+  subscribeReports?(
+    listener: (report: PeerSessionReport) => boolean,
+  ): () => void;
 
   /**
    * Submit one turn. Resolves as soon as the backend admits the prompt.

@@ -550,8 +550,9 @@ Subagents panel, a separate **Terminal sessions** section shows these entries;
 **Refresh** updates the inventory after a terminal starts or exits.
 They do not contribute to running/completed task counts.
 
-Without a controller grant, these entries support discovery only. The temporary Live peer refuses incoming application
-messages, and closes its socket and registry record when the call ends.
+Without a controller grant, terminal entries remain read-only. Unless reports are
+explicitly enabled below, the temporary Live peer refuses incoming application
+messages. It closes its socket and registry record when the call ends.
 Existing daemon/ACP tasks continue through their normal control and event
 paths. A terminal's unknown execution state is never treated as idle or as
 proof that its work finished.
@@ -586,7 +587,8 @@ startup path. Keep its permissions restricted to your user (`chmod 600`).
 Start a call, list sessions, and ask Live to send a specific instruction to the
 chosen terminal. A configured grant exposes `instruction_only: true` and
 `text_instructions: true`; this indicates configuration, not proof the grant is
-still valid. Live sends only the requested text, rechecks the discovered process
+still valid. Live sends the requested text (plus reporting guidance only when
+reports are enabled), rechecks the discovered process
 identity, rejects missing/restarted/duplicate targets, and writes to that checked
 socket with the complete destination sessionId. Names never select a send target.
 The wire pins sessionId but has no atomic PID/start-time check; a process swap
@@ -621,9 +623,104 @@ be silently discarded and time out as **unknown**, not denied or delivered.
 Inspect grants with `qwen sessions controllers list --json`; revoke one with
 `qwen sessions controllers remove <id>` in the same Qwen home.
 
-Images, terminal cancellation, permission votes, incoming reports, and speech
-from peer reports are outside this stage. These deliveries create no jobs and do
+Images, terminal cancellation, and permission votes are outside this channel.
+Incoming reports require the separate stage 3 opt-in below. These deliveries create no jobs and do
 not change running/completed task counts. Ordinary REST/ACP execution is unchanged.
+
+### Session reports (M3 stage 3)
+
+Enable report reception on the same `qwen-code` backend and restart Live:
+
+```json
+{
+  "peerDiscovery": {
+    "qwenHome": "~/.qwen",
+    "controllerTokenEnv": "QWEN_LIVE_CONTROLLER_TOKEN",
+    "reports": true
+  }
+}
+```
+
+Retain the other backend settings. `reports` defaults to `false`. A controller
+grant is needed for outbound terminal instructions; receiving reports does not
+require a grant and does not make a terminal controllable. No ACP configuration
+or private RPC is added.
+
+During a call, Live publishes a unique public peer address. Each handoff includes
+that address and a JSON example for the Qwen session's public `send_message`
+tool. The target must share the configured Qwen home, have cross-session messaging
+enabled, and expose that tool. Qwen's own `send_message` tool permission still
+applies: approve it in the terminal or deliberately configure its allow rule in
+that Qwen home. Live does not grant that permission. Managed daemon/ACP sessions
+can use the same public tool when available. For an adaptor without its own report endpoint, Live adds
+reporting guidance only when exactly one ready report provider is configured.
+
+The public tool arguments are `to` and `message`. The `message` string can contain:
+
+```json
+{
+  "qwen_live_harness_report": 1,
+  "correlation": "<UUID supplied with this handoff>",
+  "kind": "progress",
+  "text": "The targeted tests passed; checking the remaining integration path."
+}
+```
+
+Use `progress`, `blocked`, `result`, or `info`. Ordinary text is accepted as an
+`info` report. The correlation is optional and is only a filing hint, never
+identity or authority. The call's address and correlations expire when the call
+ends. A new call receives a different address; old messages are not replayed.
+The last call's reports remain visible until the next call starts.
+
+Host's **Session reports** section is independent of tasks and instruction
+receipts. A unique current registry/socket match is shown as a registered source;
+otherwise it is explicitly unconfirmed. Names and report bodies remain untrusted,
+and a match does not authenticate a program running as the same user. A `result`
+report is a self-reported result: it does not complete a task, approve a permission,
+change a delivery receipt, or authorize any tool call. `session_monitor` with
+`reports: true` can retrieve recent reports when the user asks.
+
+Report speech waits for user VAD, pending/direct model responses, and Host audio
+playback to finish, including the existing quiet gap. It uses a separate response
+with no tool authority; raw report text is not inserted as a user conversation
+item or merged into a direct response. The generated assistant announcement is
+part of normal provider conversation history. Host distinguishes queue admission,
+response submission, actual playback, and completed playback. Muted reports remain
+visible without speech; queued reports are discarded from the speech queue on
+mute. Interrupted or failed announcements are not automatically replayed.
+For a correlated managed-task result, the peer report is display-only and the
+normal backend result event retains responsibility for speech. Uncorrelated text
+is not deduplicated by similarity, and peer claims never suppress canonical SSE
+completion events.
+
+Limits per report endpoint and call:
+
+- At most 2,000 text characters; JSON wire text is capped at 16,384 characters.
+- At most 20 reports per minute overall and 6 per sender socket per minute.
+- At most 32 reports waiting for source lookup and 32 queued for speech.
+- The latest 100 receipt decisions and 100 handoff correlations are retained.
+  Duplicate message IDs in the retained window replay the original decision,
+  without queueing another report.
+- Host retains at most 100 reports overall, preserving pending announcements;
+  a bounded page may omit older rows to fit its transport budget.
+
+An incoming `delivered` receipt means Live admitted the report into its bounded
+consumer queue or display-only record, not that audio played or work completed.
+Invalid reports are `refused`; rate/queue pressure is `dropped`; a wrong destination
+session is `misaddressed`. Receipts are best-effort and reports are never resent
+automatically. The existing vendored peer SDK is unchanged; Live uses its public
+inbox and frame helpers so it can acknowledge **after** consumer admission.
+
+For local protocol validation with an external Qwen CLI, run:
+
+```bash
+TEST_CLI_PATH=/absolute/path/to/qwen/cli.js npm run test:backends -- qwen-peer-reports
+```
+
+This suite uses isolated homes, a real Qwen TUI and Live daemon, and fake model,
+Realtime and Host endpoints. It does not verify physical microphone/speaker
+behavior or production provider output. Full device acceptance remains a separate
+manual check.
 
 #### Peer transport limits
 

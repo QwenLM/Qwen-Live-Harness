@@ -11,6 +11,8 @@
  * Spoken/detail split: every item lands as silent context (the model can
  * answer follow-ups from it), and speech-worthy items additionally trigger a
  * short verbatim spoken line.
+ * External peer reports instead use a dedicated speech lane, without silent
+ * context injection or a job/task association.
  *
  * The injection window is closed while any of these hold:
  *  1. the user is speaking (VAD),
@@ -24,6 +26,8 @@ const RECHECK_MIN_MS = 100;
 const PROGRESS_THROTTLE_MS = 5 * 60_000;
 const MAX_SPOKEN_CHARS = 280;
 const MAX_CONTEXT_CHARS = 6_000;
+const MAX_PENDING_PEER_REPORTS = 32;
+const MAX_SEEN_PEER_REPORTS = 256;
 
 export type InjectorItemKind =
   | 'complete'
@@ -32,11 +36,12 @@ export type InjectorItemKind =
   | 'error'
   | 'speak'
   | 'control'
+  | 'peer_report'
   | 'proactive';
 
 export interface InjectorItem {
   kind: InjectorItemKind;
-  /** Silent context body (without prefix). */
+  /** Silent context body; peer reports use this only as a quoted speech body. */
   context: string;
   /** Verbatim spoken line; omitted items inject silently. */
   spoken?: string;
@@ -47,6 +52,8 @@ export interface InjectorItem {
   deliveryId?: string;
   /** Daemon-owned text receipt, acknowledged only after full context delivery. */
   controlId?: string;
+  /** Call-scoped external report identity, separate from jobs and controls. */
+  reportId?: string;
 }
 
 export interface InjectorSink {
@@ -56,6 +63,9 @@ export interface InjectorSink {
   injectSpeech(text: string): boolean;
   /** A model-authored Proactive response request; false when refused. */
   injectProactive?(text: string): boolean;
+  /** Isolated external quotation; must never fall back to ordinary speech. */
+  injectPeerReport?(text: string, reportId?: string): boolean;
+  /** Accepted by the transport; this does not acknowledge Host playback. */
   onInjected?(item: InjectorItem, spoken: boolean): void;
 }
 
@@ -96,6 +106,15 @@ export class Injector {
         playbackDone: boolean;
       }
     | undefined;
+  private peerReportCycle:
+    | {
+        responseStarted: boolean;
+        responseDone: boolean;
+        playbackStarted: boolean;
+        playbackDone: boolean;
+      }
+    | undefined;
+  private readonly seenPeerReports = new Set<string>();
   private lastProgressAt = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
@@ -116,6 +135,8 @@ export class Injector {
     this.playbackInProgress = false;
     this.playbackCompletedAt = 0;
     this.speechInProgress = true;
+    // An accepted external quotation is never replayed after a barge-in.
+    this.peerReportCycle = undefined;
     // Barge-in semantics: pending progress is stale the moment the user
     // speaks; conclusions and permission asks stay queued. A dropped item
     // was never delivered, so its throttle stamp must not stand — the job's
@@ -145,6 +166,9 @@ export class Injector {
     if (authority === 'proactive' && this.proactiveCycle) {
       this.proactiveCycle.responseStarted = true;
     }
+    if (authority === 'peer_report' && this.peerReportCycle) {
+      this.peerReportCycle.responseStarted = true;
+    }
   }
 
   noteResponseDone(authority?: string): void {
@@ -152,6 +176,14 @@ export class Injector {
     if (authority === 'proactive' && this.proactiveCycle) {
       this.proactiveCycle.responseDone = true;
       this.finishProactiveCycleIfComplete();
+    }
+    if (authority === 'peer_report') {
+      // Also releases a request which failed before response.created.
+      this.responseRequestPending = false;
+      if (this.peerReportCycle) {
+        this.peerReportCycle.responseDone = true;
+        this.finishPeerReportCycleIfComplete();
+      }
     }
     this.poke();
   }
@@ -162,6 +194,9 @@ export class Injector {
     if (this.proactiveCycle?.responseStarted) {
       this.proactiveCycle.playbackStarted = true;
     }
+    if (this.peerReportCycle?.responseStarted) {
+      this.peerReportCycle.playbackStarted = true;
+    }
   }
 
   notePlaybackCompleted(): void {
@@ -171,12 +206,17 @@ export class Injector {
       this.proactiveCycle.playbackDone = true;
       this.finishProactiveCycleIfComplete();
     }
+    if (this.peerReportCycle?.playbackStarted) {
+      this.peerReportCycle.playbackDone = true;
+      this.finishPeerReportCycleIfComplete();
+    }
     this.poke();
   }
 
   noteOutputCleared(): void {
     this.playbackInProgress = false;
     this.playbackCompletedAt = 0;
+    this.peerReportCycle = undefined;
     this.poke();
   }
 
@@ -193,6 +233,10 @@ export class Injector {
       this.proactiveCycle.playbackDone = true;
       this.finishProactiveCycleIfComplete();
     }
+    if (this.peerReportCycle) {
+      this.peerReportCycle.playbackDone = true;
+      this.finishPeerReportCycleIfComplete();
+    }
     this.poke();
   }
 
@@ -200,6 +244,22 @@ export class Injector {
 
   enqueue(item: InjectorItem): boolean {
     if (this.disposed) return false;
+    if (item.kind === 'peer_report') {
+      if (item.reportId && this.seenPeerReports.has(item.reportId)) return true;
+      if (
+        this.queue.filter((queued) => queued.kind === 'peer_report').length >=
+        MAX_PENDING_PEER_REPORTS
+      ) {
+        return false;
+      }
+      if (item.reportId) {
+        this.seenPeerReports.add(item.reportId);
+        if (this.seenPeerReports.size > MAX_SEEN_PEER_REPORTS) {
+          const oldest = this.seenPeerReports.values().next().value;
+          if (oldest !== undefined) this.seenPeerReports.delete(oldest);
+        }
+      }
+    }
     if (
       item.kind === 'control' &&
       item.controlId &&
@@ -294,9 +354,21 @@ export class Injector {
     return this.queue.length;
   }
 
+  /** A user mute consumes queued reports without blocking ordinary context. */
+  dropPeerReports(): string[] {
+    const ids = this.queue.flatMap((item) =>
+      item.kind === 'peer_report' && item.reportId ? [item.reportId] : [],
+    );
+    this.queue = this.queue.filter((item) => item.kind !== 'peer_report');
+    this.poke();
+    return ids;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.queue = [];
+    this.peerReportCycle = undefined;
+    this.seenPeerReports.clear();
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
   }
@@ -304,11 +376,17 @@ export class Injector {
   // -- delivery -----------------------------------------------------------
 
   private windowClosedForMs(): number {
-    if (this.speechInProgress || this.responseInFlight || this.proactiveCycle) {
+    if (
+      this.speechInProgress ||
+      this.responseInFlight ||
+      this.proactiveCycle ||
+      this.peerReportCycle
+    ) {
       return -1;
     }
     if (
       (this.queue[0]?.kind === 'proactive' ||
+        this.queue[0]?.kind === 'peer_report' ||
         this.queue[0]?.kind === 'control') &&
       (this.directResponsePending || this.responseRequestPending)
     ) {
@@ -359,10 +437,14 @@ export class Injector {
   private flush(): void {
     if (this.queue.length === 0) return;
     const firstIndependent = this.queue.findIndex(
-      (item) => item.kind === 'proactive' || item.kind === 'control',
+      (item) =>
+        item.kind === 'proactive' ||
+        item.kind === 'control' ||
+        item.kind === 'peer_report',
     );
     if (firstIndependent === 0) {
       if (this.queue[0]?.kind === 'control') this.flushControl();
+      else if (this.queue[0]?.kind === 'peer_report') this.flushPeerReport();
       else this.flushProactive();
       return;
     }
@@ -464,6 +546,49 @@ export class Injector {
     this.queue.shift();
     this.sink.onInjected?.(item, false);
     this.poke();
+  }
+
+  private flushPeerReport(): void {
+    const item = this.queue[0];
+    if (!item || item.kind !== 'peer_report') return;
+    this.peerReportCycle = {
+      responseStarted: false,
+      responseDone: false,
+      playbackStarted: false,
+      playbackDone: false,
+    };
+    const previousResponseRequestPending = this.responseRequestPending;
+    this.responseRequestPending = true;
+    if (
+      !this.sink.injectPeerReport?.(item.spoken ?? item.context, item.reportId)
+    ) {
+      this.peerReportCycle = undefined;
+      this.responseRequestPending = previousResponseRequestPending;
+      if (this.timer !== undefined) clearTimeout(this.timer);
+      this.timer = setTimeout(
+        () => {
+          this.timer = undefined;
+          this.poke();
+        },
+        Math.max(this.quietGapMs, RECHECK_MIN_MS),
+      );
+      this.timer.unref?.();
+      return;
+    }
+    this.queue.shift();
+    this.sink.onInjected?.(item, true);
+  }
+
+  private finishPeerReportCycleIfComplete(): void {
+    const cycle = this.peerReportCycle;
+    if (
+      !cycle ||
+      !cycle.responseDone ||
+      (cycle.playbackStarted && !cycle.playbackDone)
+    ) {
+      return;
+    }
+    this.peerReportCycle = undefined;
   }
 
   private finishProactiveCycleIfComplete(): void {

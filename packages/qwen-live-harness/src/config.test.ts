@@ -621,6 +621,28 @@ describe('loadConfig', () => {
 });
 
 describe('Qwen peer discovery configuration', () => {
+  it.each([true, false])(
+    'explicitly configures report reception without controller authority: %s',
+    async (reports) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [
+          {
+            name: 'qwen',
+            kind: 'qwen-code',
+            default: true,
+            peerDiscovery: { qwenHome: '/isolated', reports },
+          },
+        ],
+      });
+      expect(
+        loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).backends[0],
+      ).toMatchObject({
+        peerDiscovery: { qwenHome: '/isolated', reports },
+      });
+    },
+  );
+
   it('accepts an explicit local Qwen home on a qwen-code backend', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'test',
@@ -644,6 +666,7 @@ describe('Qwen peer discovery configuration', () => {
     {},
     { qwenHome: '' },
     { qwenHome: 2 },
+    { qwenHome: '/tmp', reports: 'true' },
     { qwenHome: '/tmp', controllerToken: 'never-accepted-here' },
   ])(
     'rejects invalid discovery or controller config %j',
