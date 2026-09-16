@@ -6544,6 +6544,32 @@ describe('LiveSession', () => {
     });
   });
 
+  it('clamps an oversized turn detail instead of letting it overrun the injection', async () => {
+    const { adaptor, callbacks, realtime } = await startSession();
+
+    callTool(callbacks, 'handoff', { task: 'convert the suite' });
+    await awaitReceipts(realtime, 1);
+
+    // Backends clamp a turn buffer at MAX_DETAIL_CHARS (48k), well past what
+    // one context injection can carry, so the body has to be budgeted here.
+    // The tail is what is kept: an agent's conclusion is at the end.
+    const detail = `${'x'.repeat(50_000)} and the suite now passes.`;
+    adaptor.queue('s1').push({
+      type: 'turn_complete',
+      jobRef: 'p1',
+      summary: 'the suite now passes',
+      detail,
+    });
+    await vi.waitFor(() => {
+      expect(realtime.sendBackendContext).toHaveBeenCalledTimes(1);
+    });
+
+    const injected = realtime.sendBackendContext.mock.calls[0]?.[0] as string;
+    expect(injected.length).toBeLessThan(5_000);
+    expect(injected).toMatch(/^\[COMPLETE job_1\] …/);
+    expect(injected.endsWith('and the suite now passes.')).toBe(true);
+  });
+
   it('injects turn_complete and turn_error events as context plus speech', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
