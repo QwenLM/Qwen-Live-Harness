@@ -9,10 +9,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { LiveLogger } from '../logger.js';
 import { AcpAdaptor, type AcpConnectionLike } from './acp-adaptor.js';
 
-function createModeRig() {
+interface ModeRigOptions {
+  name?: string;
+  modes?: Array<{ id: string; name: string }>;
+  currentModeId?: string;
+  sessionMode?: string;
+}
+
+function createModeRig(options: ModeRigOptions = {}) {
   let client!: Client;
-  let currentModeId = 'agent';
-  const availableModes = [
+  let currentModeId = options.currentModeId ?? 'agent';
+  const availableModes = options.modes ?? [
     { id: 'read-only', name: 'Ask for approval' },
     { id: 'agent', name: 'Approve for me' },
     { id: 'agent-full-access', name: 'Full access' },
@@ -39,11 +46,13 @@ function createModeRig() {
   };
   const logger = new LiveLogger();
   const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+  const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
   const adaptor = new AcpAdaptor({
-    name: 'codex',
+    name: options.name ?? 'codex',
     command: 'unused-test-fixture',
     defaultCwd: '/fixture',
     logger,
+    ...(options.sessionMode ? { sessionMode: options.sessionMode } : {}),
     connect: async (value) => {
       client = value;
       return connection;
@@ -55,6 +64,7 @@ function createModeRig() {
     currentModeId: () => currentModeId,
     setSessionMode,
     warn,
+    info,
   };
 }
 
@@ -74,6 +84,70 @@ describe('ACP permission mode compatibility', () => {
       });
       expect(rig.currentModeId()).toBe('read-only');
       expect(rig.warn).not.toHaveBeenCalled();
+      expect(rig.info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'approval mode "read-only": every action needs approval',
+        ),
+      );
+    } finally {
+      await rig.adaptor.close();
+    }
+  });
+
+  it('honors a configured sessionMode instead of the asking mode', async () => {
+    const rig = createModeRig({
+      name: 'qwen',
+      currentModeId: 'yolo',
+      modes: [
+        { id: 'default', name: 'Default' },
+        { id: 'auto-edit', name: 'Auto Edit' },
+        { id: 'yolo', name: 'YOLO' },
+      ],
+      sessionMode: 'yolo',
+    });
+    try {
+      const handle = await rig.adaptor.createSession();
+
+      expect(rig.setSessionMode).toHaveBeenCalledExactlyOnceWith({
+        sessionId: handle.id,
+        modeId: 'yolo',
+      });
+      expect(rig.currentModeId()).toBe('yolo');
+      expect(rig.warn).not.toHaveBeenCalled();
+      expect(rig.info).toHaveBeenCalledWith(
+        expect.stringContaining('approval mode "yolo"'),
+      );
+    } finally {
+      await rig.adaptor.close();
+    }
+  });
+
+  it('falls back to the asking mode when the configured sessionMode is not advertised', async () => {
+    const rig = createModeRig({
+      name: 'qwen',
+      currentModeId: 'default',
+      modes: [
+        { id: 'default', name: 'Default' },
+        { id: 'auto-edit', name: 'Auto Edit' },
+      ],
+      sessionMode: 'yolo',
+    });
+    try {
+      const handle = await rig.adaptor.createSession();
+
+      expect(rig.setSessionMode).toHaveBeenCalledExactlyOnceWith({
+        sessionId: handle.id,
+        modeId: 'default',
+      });
+      expect(rig.currentModeId()).toBe('default');
+      expect(rig.warn).toHaveBeenCalledWith(
+        expect.stringContaining('sessionMode "yolo" is not advertised'),
+      );
+      expect(rig.info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'approval mode "default": every action needs approval',
+        ),
+      );
     } finally {
       await rig.adaptor.close();
     }
