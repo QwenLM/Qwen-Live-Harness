@@ -179,6 +179,41 @@ describe('PermissionBroker', () => {
     expect(broker.pendingCount).toBe(0);
   });
 
+  it('skips the local rule when the backend takes the grant itself', async () => {
+    const { adaptor, broker } = createBroker();
+    const persistent: readonly PermissionOption[] = [
+      { optionId: 'proceed_always', kind: 'proceed', escalation: 'always' },
+      { optionId: 'proceed_once', kind: 'proceed', escalation: 'once' },
+      { optionId: 'deny', kind: 'reject', escalation: 'once' },
+    ];
+    await broker.onRequest({
+      requestId: 'r1',
+      backend: BACKEND,
+      sessionHandle: 'session_1',
+      title: 'Writing to src/a.ts',
+      options: persistent,
+    });
+    await broker.respond('req_1', 'allow_always');
+    expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
+      BACKEND,
+      'r1',
+      'allow_always',
+    );
+
+    // The agent recorded the real scope, so it will not raise this again.
+    // A local rule keyed on the title would be dead weight — and it must
+    // not silently auto-answer a request the agent did choose to raise.
+    const repeat = await broker.onRequest({
+      requestId: 'r2',
+      backend: BACKEND,
+      sessionHandle: 'session_1',
+      title: 'Writing to src/a.ts',
+      options: persistent,
+    });
+    expect(repeat.autoAnswered).toBe(false);
+    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
+  });
+
   it('scopes the standing rule to the whole approved command, not its prefix', async () => {
     const { broker } = createBroker();
     await request(broker, {

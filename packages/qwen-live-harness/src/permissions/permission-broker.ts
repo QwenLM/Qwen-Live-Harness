@@ -97,6 +97,17 @@ function titleKeyOf(title: string): string {
   return `${head.trim()}:${normalized}`;
 }
 
+/**
+ * Whether the backend offered a grant it will remember itself. Mirrors the
+ * adaptors' `pickPersistentGrant` over the same option list, so the broker
+ * and the vote agree on which path a deliberate "allow always" took.
+ */
+function offersPersistentGrant(pending: PendingPermission): boolean {
+  return pending.options.some(
+    (option) => option.kind === 'proceed' && option.escalation === 'always',
+  );
+}
+
 export class PermissionBroker {
   private readonly pending = new Map<string, PendingPermission>();
   private readonly pendingByRequestId = new Map<string, string>();
@@ -193,7 +204,12 @@ export class PermissionBroker {
   ): Promise<'delivered' | 'already_resolved' | 'not_found'> {
     const pending = this.pending.get(requestHandle.trim());
     if (!pending) return 'not_found';
-    if (decision === 'allow_always') {
+    if (decision === 'allow_always' && !offersPersistentGrant(pending)) {
+      // Only a backend with no always-option to take needs the local rule.
+      // When it had one, the agent records the real scope itself and stops
+      // asking, so a rule keyed on this request's title would be dead
+      // weight — it can only ever match an identical repeat the agent is
+      // no longer going to raise.
       this.remember(pending);
     }
     if (decision === 'deny') {
