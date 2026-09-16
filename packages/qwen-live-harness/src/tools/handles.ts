@@ -50,6 +50,37 @@ export class HandleRegistry {
   private sessionSeq = 0;
   private jobSeq = 0;
   private assetSeq = 0;
+  private deliverySeq = 0;
+  private readonly deliveries = new Map<
+    string,
+    { adaptor: string; id: string }
+  >();
+
+  /** Receipt handles are deliberately separate from jobs and their counters. */
+  delivery(adaptor: string, id: string): string {
+    for (const [handle, record] of this.deliveries) {
+      if (record.adaptor === adaptor && record.id === id) return handle;
+    }
+    const handle = `delivery_${++this.deliverySeq}`;
+    this.deliveries.set(handle, { adaptor, id });
+    return handle;
+  }
+
+  retainDeliveries(
+    records: ReadonlyArray<{ adaptor: string; id: string }>,
+  ): void {
+    const current = new Set(
+      records.map(({ adaptor, id }) => `${adaptor}:${id}`),
+    );
+    for (const [handle, record] of this.deliveries) {
+      if (!current.has(`${record.adaptor}:${record.id}`))
+        this.deliveries.delete(handle);
+    }
+  }
+
+  resolveDelivery(handle: string): { adaptor: string; id: string } | undefined {
+    return this.deliveries.get(handle.trim());
+  }
 
   /** Register (or return the existing handle for) a backend session. */
   session(backend: BackendHandle): string {

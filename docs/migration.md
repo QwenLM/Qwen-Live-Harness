@@ -45,8 +45,9 @@ unaffected.
 ## M3 discovery follow-up
 
 After extraction, M3 stage 1 adds opt-in local terminal discovery to
-QwenCodeAdaptor. The entries are read-only; terminal handoff and peer report
-announcements remain later stages. The original migration boundaries above
+QwenCodeAdaptor. Stage 2 adds optional controller-authorized text delivery and
+separate receipts. Entries remain read-only without a grant; peer report
+announcements remain a later stage. The original migration boundaries above
 describe the extraction snapshot. See the
 [terminal discovery guide](../packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1)
 for current configuration and limits.

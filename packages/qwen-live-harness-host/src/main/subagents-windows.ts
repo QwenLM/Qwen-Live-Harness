@@ -137,7 +137,10 @@ export class SubagentsWindows {
     }
     const refresh =
       connected &&
-      (!this.connected || this.snapshot?.revision !== snapshot?.revision);
+      (!this.connected ||
+        this.snapshot?.revision !== snapshot?.revision ||
+        (this.snapshot?.deliveryRevision ?? 0) !==
+          (snapshot?.deliveryRevision ?? 0));
     this.language = language;
     this.connected = connected;
     this.controlsAvailable =

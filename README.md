@@ -119,10 +119,11 @@ not modify any remote release feed. See [migration details](docs/migration.md).
 See the [daemon guide](packages/qwen-live-harness/README.md) for backend configuration,
 visual input, Memory, diagnostics and capability limits.
 
-M3 now has opt-in, read-only discovery of existing local Qwen terminal sessions.
+M3 now has opt-in discovery and authorized text instructions for existing local Qwen terminal sessions.
 Configure `peerDiscovery` on a `qwen-code` backend as described in the
 [terminal discovery guide](packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1).
-Sending instructions and receiving peer reports are later stages. Ordinary
+Add an explicit controller grant to send text and inspect separate delivery receipts;
+receiving peer reports is a later stage. Ordinary
 backend completion and permission announcements remain supported; the retired
 private injected speech channel is not used.
 

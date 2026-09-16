@@ -1375,8 +1375,79 @@ export const LIVE_MESSAGES = {
   },
   'subagents.refreshSessions': { en: 'Refresh', 'zh-CN': '刷新' },
   'subagents.sessionsReadOnly': {
-    en: 'Read only · Instructions and task controls are not available here yet.',
-    'zh-CN': '只读 · 暂不支持在这里发送指令或管理任务。',
+    en: 'Read only · Configure controller authorization for this Qwen backend to send text instructions.',
+    'zh-CN': '只读 · 请为此 Qwen 后端配置 controller 授权，以发送文字指令。',
+  },
+  'subagents.sessionsInstructions': {
+    en: 'Terminal sessions support text instructions only. Stopping, approvals and images are unavailable here.',
+    'zh-CN': '终端会话仅支持文字指令，暂不支持停止、审批或图片。',
+  },
+  'subagents.sessionsCanInstruct': {
+    en: 'Text instructions enabled · Name this terminal in your voice request.',
+    'zh-CN': '可发送文字指令 · 说出此终端名称和要发送的内容。',
+  },
+  'subagents.instructionDeliveries': {
+    en: 'Instruction deliveries',
+    'zh-CN': '指令投递',
+  },
+  'subagents.deliveryNotCompletion': {
+    en: 'Delivered means the terminal received the instruction. Task completion still needs a later result.',
+    'zh-CN': '送达表示终端收到了指令；任务是否完成仍需后续结果确认。',
+  },
+  'subagents.noInstructionDeliveries': {
+    en: 'No terminal instructions have been sent in this call.',
+    'zh-CN': '本次通话尚未发送终端指令。',
+  },
+  'subagents.deliveriesOmitted': {
+    en: '{count} older instruction deliveries are not shown.',
+    'zh-CN': '另有 {count} 条较早的投递记录未显示。',
+  },
+  'subagents.deliveryPending': { en: 'Awaiting receipt', 'zh-CN': '等待回执' },
+  'subagents.deliveryHeld': {
+    en: 'Awaiting terminal review',
+    'zh-CN': '等待终端审阅',
+  },
+  'subagents.deliveryDelivered': { en: 'Delivered', 'zh-CN': '已送达' },
+  'subagents.deliveryDenied': {
+    en: 'Denied by recipient',
+    'zh-CN': '接收方已拒绝',
+  },
+  'subagents.deliveryRefused': {
+    en: 'Terminal is not accepting instructions',
+    'zh-CN': '终端不接受指令',
+  },
+  'subagents.deliveryExpired': {
+    en: 'Delivery expired',
+    'zh-CN': '投递已过期',
+  },
+  'subagents.deliveryMisaddressed': {
+    en: 'Target session changed',
+    'zh-CN': '目标会话已变化',
+  },
+  'subagents.deliveryDropped': {
+    en: 'Not accepted by terminal',
+    'zh-CN': '终端未接收',
+  },
+  'subagents.deliveryUnknown': {
+    en: 'Delivery outcome unknown',
+    'zh-CN': '投递结果不明',
+  },
+  'subagents.deliveryFailed': { en: 'Sending failed', 'zh-CN': '发送失败' },
+  'subagents.deliveryTracking': {
+    en: 'Watching for receipt updates',
+    'zh-CN': '继续关注回执更新',
+  },
+  'subagents.deliveryTrackingEnded': {
+    en: 'Receipt tracking ended',
+    'zh-CN': '回执跟踪已结束',
+  },
+  'subagents.deliveryUnknownDetail': {
+    en: 'The terminal may have received this instruction. Check before sending it again.',
+    'zh-CN': '终端可能已收到此指令，请先核实再决定是否重发。',
+  },
+  'subagents.deliveryTime': {
+    en: 'Started {created} · Updated {updated}',
+    'zh-CN': '发起于 {created} · 更新于 {updated}',
   },
   'subagents.executionUnknown': {
     en: 'Execution status unknown',

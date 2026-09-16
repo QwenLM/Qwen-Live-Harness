@@ -550,13 +550,82 @@ Subagents panel, a separate **Terminal sessions** section shows these entries;
 **Refresh** updates the inventory after a terminal starts or exits.
 They do not contribute to running/completed task counts.
 
-This stage supports discovery only. Handoff, image delivery, stop and tool
-approval are unavailable for these read-only entries. No controller token is
-accepted or created. The temporary Live peer refuses incoming application
+Without a controller grant, these entries support discovery only. The temporary Live peer refuses incoming application
 messages, and closes its socket and registry record when the call ends.
 Existing daemon/ACP tasks continue through their normal control and event
 paths. A terminal's unknown execution state is never treated as idle or as
 proof that its work finished.
+
+### Terminal text instructions (M3 stage 2)
+
+Use a Qwen version exposing `sessions controllers` and the peer protocol (locally
+verified with Qwen Code 0.23.3). Create a grant in the **same Qwen home** as the
+terminals, using the CLI belonging to that installation:
+
+```bash
+QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live" --json
+```
+
+Copy the returned `token` into the existing backend's `peerDiscovery` object,
+then restart Live. Live never creates grants automatically. The controller token
+is separate from the REST `token` and must not be supplied in voice prompts:
+
+```json
+{
+  "qwenHome": "~/.qwen",
+  "controllerToken": "qpc_<64 hex characters returned by the CLI>"
+}
+```
+
+Alternatively, set `controllerTokenEnv` to the name of an environment variable
+containing the token. Choose one of these fields; malformed tokens and unset
+variables fail configuration validation. A daemon launched from Finder does not
+inherit arbitrary shell variables, so use the private config file for that
+startup path. Keep its permissions restricted to your user (`chmod 600`).
+
+Start a call, list sessions, and ask Live to send a specific instruction to the
+chosen terminal. A configured grant exposes `instruction_only: true` and
+`text_instructions: true`; this indicates configuration, not proof the grant is
+still valid. Live sends only the requested text, rechecks the discovered process
+identity, rejects missing/restarted/duplicate targets, and writes to that checked
+socket with the complete destination sessionId. Names never select a send target.
+The wire pins sessionId but has no atomic PID/start-time check; a process swap
+reusing the same sessionId and socket after that check cannot be ruled out by this
+protocol. Local registry metadata is not authentication against other programs
+running as the same user.
+
+The terminal's `agents.crossSessionInbound` policy still wins: the default allows
+a valid controller, `hold` asks for review in the terminal, and `refuse` rejects
+the message. List held messages with `/peers` before accepting or denying them.
+Controller delivery does not approve the terminal's tool permission requests.
+
+Host shows **Instruction deliveries** separately from tasks, and
+`session_monitor` accepts the returned `delivery_N` handle:
+
+| Status                           | Meaning                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| pending                          | The write was attempted; no receipt yet.                                            |
+| held                             | The terminal is holding the message for local review.                               |
+| delivered                        | The terminal accepted the message into its inbox; no execution or completion proof. |
+| denied / refused                 | Local review denied it, or inbound policy refused it.                               |
+| expired / misaddressed / dropped | The terminal reported that delivery could not proceed.                              |
+| unknown                          | Transport, receipt timeout, or ended tracking left the result uncertain.            |
+| failed                           | A transport failure proved the frame was not written.                               |
+
+The receipt timeout is 30 seconds. Late receipts still update records, including
+`delivered` changing to `expired` or `misaddressed`. Ending the call stops receipt
+tracking; it does not recall instructions already sent. The next call starts a new
+delivery history. Each backend retains at most 100 records and Host shows the
+latest 100 overall. No automatic resend occurs. In particular, a revoked token may
+be silently discarded and time out as **unknown**, not denied or delivered.
+Inspect grants with `qwen sessions controllers list --json`; revoke one with
+`qwen sessions controllers remove <id>` in the same Qwen home.
+
+Images, terminal cancellation, permission votes, incoming reports, and speech
+from peer reports are outside this stage. These deliveries create no jobs and do
+not change running/completed task counts. Ordinary REST/ACP execution is unchanged.
+
+#### Peer transport limits
 
 Only terminal records are added. Registry copies of serve/headless sessions
 are left to their existing REST/ACP routes. Names and directories are display

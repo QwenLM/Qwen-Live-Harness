@@ -22,6 +22,7 @@ import type {
   BackendEvent,
   BackendHandle,
   ContentBlock,
+  InstructionDelivery,
   PermissionDecision,
   PermissionOption,
   PromptReceipt,
@@ -6282,6 +6283,177 @@ describe('LiveSession', () => {
       id: 's1',
       adaptor: 'fake',
     });
+  });
+
+  it('tracks terminal deliveries independently of jobs, including late contradictory receipts', async () => {
+    const adaptor = new FakeAdaptor();
+    const target: BackendHandle = {
+      id: 'peer',
+      adaptor: 'fake',
+      instructionOnly: true,
+    };
+    adaptor.summaries = [
+      {
+        handle: target,
+        state: 'unknown',
+        discovery: {
+          source: 'terminal',
+          sessionId: 'actual',
+          address: 'Terminal',
+        },
+      },
+    ];
+    const deliveries: InstructionDelivery[] = [];
+    let changed = () => {};
+    const unsubscribe = vi.fn();
+    const send = vi.fn(async () => {
+      const delivery: InstructionDelivery = {
+        id: 'private-msg-id',
+        target,
+        status: 'pending',
+        tracking: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      deliveries.push(delivery);
+      changed();
+      return { status: 'sent' as const, delivery };
+    });
+    Object.assign(adaptor, {
+      sendInstruction: send,
+      listInstructionDeliveries: () => deliveries,
+      listDiscoveredSessions: async () => adaptor.summaries,
+      subscribeInstructionDeliveries: (listener: () => void) => {
+        changed = listener;
+        return unsubscribe;
+      },
+    });
+    const updates: SubagentsSnapshot[] = [];
+    const { session, callbacks, realtime } = await startSession(adaptor, {
+      onSubagentsChanged: (snapshot) => updates.push(snapshot),
+    });
+    adaptor.busy = true;
+    callTool(callbacks, 'session_list', {});
+    expect((await awaitReceipts(realtime, 1))[0]).toMatchObject({
+      sessions: [
+        {
+          handle: 'session_1',
+          instruction_only: true,
+          text_instructions: true,
+          state: 'unknown',
+        },
+      ],
+    });
+    callTool(callbacks, 'handoff', {
+      session: 'session_1',
+      task: 'Run the tests',
+    });
+    const receipt = (await awaitReceipts(realtime, 2))[1];
+    expect(send).toHaveBeenCalledExactlyOnceWith(target, 'Run the tests');
+    expect(receipt).toMatchObject({
+      status: 'sent',
+      session: 'session_1',
+      delivery: 'delivery_1',
+      delivery_status: 'pending',
+    });
+    expect(receipt).not.toHaveProperty('job');
+    expect(JSON.stringify(receipt)).not.toContain('private-msg-id');
+    expect(adaptor.prompt).not.toHaveBeenCalled();
+    expect(adaptor.queues.size).toBe(0);
+    const taskRevision = session.getSubagentsSnapshot().revision;
+    for (const status of ['held', 'delivered', 'expired'] as const) {
+      deliveries[0]!.status = status;
+      changed();
+    }
+    callTool(callbacks, 'session_monitor', { delivery: 'delivery_1' });
+    expect((await awaitReceipts(realtime, 3))[2]).toMatchObject({
+      status: 'ok',
+      delivery: 'delivery_1',
+      delivery_status: 'expired',
+      execution_state: 'unknown',
+    });
+    expect(session.getSubagentsSnapshot()).toMatchObject({
+      revision: taskRevision,
+      deliveryRevision: 4,
+      tasks: [],
+      counts: { running: 0, completed: 0, needsAttention: 0 },
+    });
+    expect(updates.at(-1)?.deliveryRevision).toBe(4);
+    expect(
+      await session.handleSubagentsRequest({ action: 'list' }),
+    ).toMatchObject({
+      type: 'page',
+      page: {
+        total: 0,
+        discoveredSessions: [{ readOnly: false }],
+        instructionDeliveries: [
+          { id: 'delivery_1', session: 'session_1', status: 'expired' },
+        ],
+      },
+    });
+    callTool(callbacks, 'handoff', {
+      session: 'session_1',
+      task: 'See image',
+      input_refs: ['asset_1'],
+    });
+    expect((await awaitReceipts(realtime, 4))[3]).toMatchObject({
+      status: 'rejected',
+    });
+    callTool(callbacks, 'session_stop', { session: 'session_1' });
+    expect((await awaitReceipts(realtime, 5))[4]).toMatchObject({
+      status: 'unsupported',
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(adaptor.cancel).not.toHaveBeenCalled();
+    expect(adaptor.respondPermission).not.toHaveBeenCalled();
+    callTool(callbacks, 'handoff', { task: 'Normal managed work' });
+    expect((await awaitReceipts(realtime, 6))[5]).toMatchObject({
+      status: 'accepted',
+      job: 'job_1',
+    });
+    session.dispose();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('does not turn an uncertain terminal send into an accepted job or retry', async () => {
+    const adaptor = new FakeAdaptor();
+    const target: BackendHandle = {
+      id: 'peer',
+      adaptor: 'fake',
+      instructionOnly: true,
+    };
+    adaptor.summaries = [{ handle: target, state: 'unknown' }];
+    const delivery: InstructionDelivery = {
+      id: 'id',
+      target,
+      status: 'unknown',
+      tracking: true,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const send = vi.fn(async () => ({ status: 'unknown', delivery }));
+    Object.assign(adaptor, {
+      sendInstruction: send,
+      listInstructionDeliveries: () => [delivery],
+    });
+    const { session, callbacks, realtime } = await startSession(adaptor);
+    callTool(callbacks, 'session_list', {});
+    await awaitReceipts(realtime, 1);
+    callTool(callbacks, 'handoff', { session: 'session_1', task: 'Continue' });
+    expect((await awaitReceipts(realtime, 2))[1]).toMatchObject({
+      status: 'unknown',
+      delivery_status: 'unknown',
+      delivery: 'delivery_1',
+    });
+    callTool(callbacks, 'session_monitor', { session: 'session_1' });
+    expect((await awaitReceipts(realtime, 3))[2]).toMatchObject({
+      state: 'unknown',
+      instruction_only: true,
+      deliveries: [{ status: 'unknown' }],
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(adaptor.prompt).not.toHaveBeenCalled();
+    expect(session.getSubagentsSnapshot().tasks).toEqual([]);
   });
 
   it('exposes discovery in the Host catalog without manufacturing jobs and clears it when the call stops', async () => {

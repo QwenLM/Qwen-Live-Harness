@@ -21,7 +21,37 @@ export interface BackendHandle {
   readonly adaptor: string;
   /** Discovery-only targets must never enter an execution/control path. */
   readonly readOnly?: true;
+  /** Text delivery only: no execution stream, images, stop or permission votes. */
+  readonly instructionOnly?: true;
 }
+
+export type InstructionDeliveryStatus =
+  | 'pending'
+  | 'held'
+  | 'delivered'
+  | 'denied'
+  | 'refused'
+  | 'expired'
+  | 'misaddressed'
+  | 'dropped'
+  | 'unknown'
+  | 'failed';
+
+/** A message receipt, independent of managed prompts and task completion. */
+export interface InstructionDelivery {
+  id: string;
+  target: BackendHandle;
+  status: InstructionDeliveryStatus;
+  /** Whether later receipts can still update this record. */
+  tracking: boolean;
+  createdAt: number;
+  updatedAt: number;
+  note?: string;
+}
+
+export type InstructionReceipt =
+  | { status: 'rejected'; note: string }
+  | { status: 'sent' | 'unknown'; delivery: InstructionDelivery };
 
 export interface BackendCapabilities {
   /** Whether an in-flight turn can accept an appended instruction. */
@@ -135,6 +165,13 @@ export interface BackendAdaptor {
   listDiscoveredSessions?(): Promise<SessionSummary[]>;
   startDiscovery?(callId: string): Promise<void>;
   stopDiscovery?(callId: string): Promise<void>;
+  /** Optional text-only controller channel. Never creates a managed job. */
+  sendInstruction?(
+    handle: BackendHandle,
+    text: string,
+  ): Promise<InstructionReceipt>;
+  listInstructionDeliveries?(): InstructionDelivery[];
+  subscribeInstructionDeliveries?(listener: () => void): () => void;
 
   /**
    * Submit one turn. Resolves as soon as the backend admits the prompt.

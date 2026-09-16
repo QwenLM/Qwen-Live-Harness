@@ -646,7 +646,7 @@ describe('Qwen peer discovery configuration', () => {
     { qwenHome: 2 },
     { qwenHome: '/tmp', controllerToken: 'never-accepted-here' },
   ])(
-    'rejects invalid or authority-bearing discovery config %j',
+    'rejects invalid discovery or controller config %j',
     async (peerDiscovery) => {
       const dataDir = await dataDirWithConfig({
         realtimeApiKey: 'test',
@@ -659,6 +659,50 @@ describe('Qwen peer discovery configuration', () => {
       );
     },
   );
+  it('loads an explicit controller grant from config or a named environment variable without fallback', async () => {
+    const token = `qpc_${'a'.repeat(64)}`;
+    const backend = { name: 'qwen', kind: 'qwen-code', default: true };
+    for (const peerDiscovery of [
+      { qwenHome: '/isolated', controllerToken: token },
+      { qwenHome: '/isolated', controllerTokenEnv: 'TEST_PEER_CONTROLLER' },
+    ]) {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [{ ...backend, peerDiscovery }],
+      });
+      expect(
+        loadConfig({
+          QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+          TEST_PEER_CONTROLLER: token,
+        }).backends[0],
+      ).toMatchObject({
+        peerDiscovery: { qwenHome: '/isolated', controllerToken: token },
+      });
+    }
+    for (const peerDiscovery of [
+      { qwenHome: '/isolated', controllerTokenEnv: 'UNSET_CONTROLLER' },
+      { qwenHome: '/isolated', controllerTokenEnv: 'bad name' },
+      {
+        qwenHome: '/isolated',
+        controllerTokenEnv: 'TOKEN',
+        controllerToken: token,
+      },
+      { qwenHome: '/isolated', controllerToken: `secret-${token}` },
+    ]) {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [{ ...backend, peerDiscovery }],
+      });
+      let message = '';
+      try {
+        loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('Invalid peerDiscovery');
+      expect(message).not.toContain(token);
+    }
+  });
   it('does not accept peer settings on an ACP backend', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'test',

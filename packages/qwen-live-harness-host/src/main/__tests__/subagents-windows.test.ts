@@ -242,6 +242,45 @@ function fixture(
   };
 }
 describe('Subagents native lifecycle', () => {
+  it('refreshes delivery-only revisions independently of task counts and preserves the pinned panel', async () => {
+    const calls: SubagentsControlRequest[] = [];
+    const f = fixture(undefined, async (request) => {
+      calls.push(request);
+      return { type: 'page', page: { snapshot, offset: 0, total: 1 } };
+    });
+    const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
+    f.controller.update('en', true, snapshot, 'one', true);
+    f.controller.setOrbHovered(true);
+    const window = f.windows[0]!;
+    window.ready();
+    f.invoke('live:subagents:expand', window);
+    await settled();
+    const moves = window.moves.length;
+    assert.equal(calls.length, 1);
+    f.controller.update(
+      'en',
+      true,
+      { ...snapshot, deliveryRevision: 1 },
+      'one',
+      true,
+    );
+    await settled();
+    assert.equal(calls.length, 2);
+    assert.equal(window.moves.length, moves);
+    assert.equal(f.state(window).snapshot?.revision, snapshot.revision);
+    assert.equal(f.state(window).snapshot?.deliveryRevision, 1);
+    f.controller.update(
+      'en',
+      true,
+      { ...snapshot, deliveryRevision: 1 },
+      'one',
+      true,
+    );
+    await settled();
+    assert.equal(calls.length, 2);
+    f.controller.dispose();
+  });
+
   it('coalesces page refreshes, preserves geometry and rejects stale or foreign mutations', async () => {
     const requests: Array<{
       request: SubagentsControlRequest;

@@ -105,11 +105,12 @@ const SESSION_LIST_TOOL: RealtimeToolDefinition = {
   function: {
     name: SESSION_LIST_TOOL_NAME,
     description:
-      'List coding sessions and read-only terminal sessions, with their short ' +
+      'List coding sessions and local terminal sessions, with their short ' +
       'handles, working directories, whether each is idle or busy, and the ' +
       'backend (coding agent) each runs on. Call this before referring to ' +
       'any session you have not listed yet in this call. Entries marked ' +
       'read_only cannot accept handoff, images, stop or permission actions; ' +
+      'instruction_only targets accept only text when text_instructions is true. ' +
       'unknown execution state does not mean idle.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
@@ -157,7 +158,10 @@ const HANDOFF_TOOL: RealtimeToolDefinition = {
       'the default action for anything that touches files, runs commands, ' +
       'needs the screen inspected in depth, or requires up-to-date ' +
       "information. Pass the user's own words in `task`; do not rewrite " +
-      'them. Returns a receipt immediately — the result arrives later as a ' +
+      'them. An instruction_only terminal receives text only and returns a delivery handle, ' +
+      'not a job; delivery never proves execution, steering or completion. ' +
+      'Do not attach input_refs to terminals or resend uncertain deliveries. ' +
+      'For managed sessions, returns a receipt immediately — the result arrives later as a ' +
       '[COMPLETE] context message. Targeting a busy session appends the ' +
       'instruction to its running task or queues it within that session ' +
       '(the receipt says how it landed). Use separate sessions for independent parallel work. ' +
@@ -196,15 +200,22 @@ const SESSION_MONITOR_TOOL: RealtimeToolDefinition = {
   function: {
     name: SESSION_MONITOR_TOOL_NAME,
     description:
-      'Get a progress snapshot for a session or job (state plus recent ' +
+      'Get a progress snapshot for a session or job, or inspect a terminal delivery separately (state plus recent ' +
       'activity, including whether it is waiting for permission). Use it ' +
       'only when the user asks how something is going; ' +
-      'completed work announces itself without polling.',
+      'managed completed work announces itself without polling. Terminal delivery status only describes the message, ' +
+      'not task execution: pending/held may later change, delivered may still become expired/misaddressed, ' +
+      'and unknown means no conclusive receipt. Never automatically resend.',
     parameters: {
       type: 'object',
       properties: {
         session: { type: 'string', description: 'Session handle.' },
         job: { type: 'string', description: 'Job reference (e.g. "job_2").' },
+        delivery: {
+          type: 'string',
+          description:
+            'Terminal delivery handle (e.g. "delivery_2"); omit session and job.',
+        },
       },
       additionalProperties: false,
     },
