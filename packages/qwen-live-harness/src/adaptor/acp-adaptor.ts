@@ -346,6 +346,10 @@ export class AcpAdaptor implements BackendAdaptor {
       // One message per steer, mirroring the serve adaptor: the blocks are
       // one instruction, and a 1:1 receipt-to-message mapping is what the
       // orchestrator's joinedTasks bookkeeping expects.
+      // Distinct from the `turn-N` jobRef namespace on purpose: the
+      // orchestrator also looks a jobRef up in its messageId map (to catch
+      // the serve adaptor's promoted messages, which reuse their id as the
+      // ref), so an overlap here would silently bind the wrong task.
       const messageId = `steer-${++this.steerSeq}`;
       state.steerQueue.push({
         messageId,
