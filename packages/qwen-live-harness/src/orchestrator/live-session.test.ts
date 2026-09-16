@@ -329,6 +329,7 @@ interface StartSessionOptions {
   createProactiveScheduler?: (
     options: ProactiveSchedulerOptions,
   ) => ProactiveSchedulerControl;
+  registry?: BackendRegistry;
 }
 
 const MONITOR_TASK: ProactiveTask = {
@@ -527,16 +528,18 @@ async function startSession(
   const log = { write: vi.fn(), close: async () => {} };
   const session = new LiveSession({
     host,
-    registry: new BackendRegistry(
-      options.withoutBackends
-        ? []
-        : secondary
-          ? [
-              { adaptor, isDefault: true },
-              { adaptor: secondary, isDefault: false },
-            ]
-          : [{ adaptor, isDefault: true }],
-    ),
+    registry:
+      options.registry ??
+      new BackendRegistry(
+        options.withoutBackends
+          ? []
+          : secondary
+            ? [
+                { adaptor, isDefault: true },
+                { adaptor: secondary, isDefault: false },
+              ]
+            : [{ adaptor, isDefault: true }],
+      ),
     realtime: {
       endpoint: 'https://dashscope.example.com',
       model: options.realtimeModel ?? 'qwen-omni-turbo-realtime',
@@ -7766,6 +7769,62 @@ describe('LiveSession', () => {
     expect(list?.['sessions']).toEqual([
       { handle: 'session_1', backend: 'serve', state: 'idle' },
     ]);
+  });
+
+  it('waits for a warming-up backend instead of failing a named create', async () => {
+    const primary = new FakeAdaptor('serve');
+    const secondary = new FakeAdaptor('acp');
+    let release!: () => void;
+    secondary.preflight = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const registry = new BackendRegistry([
+      { adaptor: primary, isDefault: true },
+      { adaptor: secondary, isDefault: false },
+    ]);
+    const { callbacks, realtime } = await startSession(undefined, { registry });
+
+    // Readiness does not wait for the secondary; the daemon is already up.
+    await registry.preflight(vi.fn());
+    expect(registry.byAdaptorName('acp')?.status).toBe('starting');
+
+    callTool(callbacks, 'session_create', { backend: 'acp' });
+    release();
+    await awaitReceipts(realtime, 1);
+    expect(receipts(realtime)[0]?.['status']).toBe('ok');
+    expect(secondary.createSession).toHaveBeenCalledTimes(1);
+    expect(primary.createSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a named create whose backend warm-up failed', async () => {
+    const primary = new FakeAdaptor('serve');
+    const secondary = new FakeAdaptor('acp');
+    let refuse!: (error: Error) => void;
+    secondary.preflight = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          refuse = reject;
+        }),
+    );
+    const registry = new BackendRegistry([
+      { adaptor: primary, isDefault: true },
+      { adaptor: secondary, isDefault: false },
+    ]);
+    const { callbacks, realtime } = await startSession(undefined, { registry });
+
+    await registry.preflight(vi.fn());
+    callTool(callbacks, 'session_create', { backend: 'acp' });
+    refuse(new Error('missing executable'));
+    await awaitReceipts(realtime, 1);
+    const receipt = receipts(realtime)[0];
+    expect(receipt?.['status']).toBe('error');
+    expect(receipt?.['note']).toBe(
+      "backend 'acp' is unavailable: missing executable.",
+    );
+    expect(secondary.createSession).not.toHaveBeenCalled();
   });
 
   it('strips image blocks for an image-incapable backend and notes it', async () => {
