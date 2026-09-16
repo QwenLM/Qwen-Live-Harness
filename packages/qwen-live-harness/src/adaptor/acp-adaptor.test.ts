@@ -154,6 +154,13 @@ class FakeConnection implements AcpConnectionLike {
   drain(sessionId: string): void {
     void this.client.extMethod?.('craft/drainMidTurnQueue', { sessionId });
   }
+
+  /** Drain and hand back what the agent would have pulled into the turn. */
+  drainMessages(sessionId: string): Promise<Record<string, unknown>> {
+    return this.client.extMethod!('craft/drainMidTurnQueue', {
+      sessionId,
+    }) as Promise<Record<string, unknown>>;
+  }
 }
 
 const logger: LiveLogger = {
@@ -567,11 +574,83 @@ describe('AcpAdaptor sessions and receipts', () => {
       [{ type: 'text', text: 'and that' }],
       { steer: true },
     );
+    // The receipt names the MESSAGE. Naming the running turn here would
+    // bind the task to a turn that may end before the agent drains.
     expect(after).toMatchObject({
       status: 'accepted',
       joinedActiveTurn: true,
+      joinedMessageId: expect.any(String),
+    });
+    expect(after.jobRef).toBeUndefined();
+  });
+
+  it('reports the running turn as the owner of drained steering', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    await adaptor.prompt(handle, [{ type: 'text', text: 'first' }]);
+    connection.drain(handle.id);
+
+    const collector = eventCollector(adaptor, handle.id);
+    const receipt = await adaptor.prompt(
+      handle,
+      [{ type: 'text', text: 'also skip integration' }],
+      { steer: true },
+    );
+    const drained = await connection.drainMessages(handle.id);
+
+    // The agent really received the text, in the turn that is still running.
+    expect(drained['messages']).toEqual(['also skip integration']);
+    const events = await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'turn_joined'),
+    );
+    expect(events).toContainEqual({
+      type: 'turn_joined',
+      messageId: receipt.joinedMessageId,
       jobRef: 'turn-1',
     });
+  });
+
+  /**
+   * The race a real user hits: steering lands after the agent's last drain
+   * of a turn, so it runs in the NEXT turn. The receipt already said it
+   * joined running work, so the adaptor must report the turn that actually
+   * carries it — otherwise the orchestrator leaves the task bound to a turn
+   * that never ran it, and that turn's [COMPLETE] omits the instruction.
+   */
+  it('reports the next turn as the owner of steering the agent never drained', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    await adaptor.prompt(handle, [{ type: 'text', text: 'first' }]);
+    connection.drain(handle.id);
+
+    const collector = eventCollector(adaptor, handle.id);
+    const receipt = await adaptor.prompt(
+      handle,
+      [{ type: 'text', text: 'also skip integration' }],
+      { steer: true },
+    );
+    // Turn ends before the agent pulls again.
+    connection.settle('end_turn');
+
+    const events = await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'turn_joined'),
+    );
+    expect(events).toContainEqual({
+      type: 'turn_joined',
+      messageId: receipt.joinedMessageId,
+      jobRef: 'turn-2',
+    });
+    // And it really is carried by that next turn, not silently dropped.
+    await vi.waitFor(() => {
+      expect(connection.promptCalls).toHaveLength(2);
+    });
+    expect(JSON.stringify(connection.promptCalls[1])).toContain(
+      'also skip integration',
+    );
   });
 
   it('delivers queued prompts and undrained steers after the turn ends', async () => {
