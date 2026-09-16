@@ -31,6 +31,8 @@ import {
   resolveLiveDiscoveryDirectory,
 } from './paths.js';
 import { registerCurrentRuntime } from './startup-registration.js';
+import { isIP } from 'node:net';
+import { resolveQwenHome } from './vendor/qwen-code-peer/registry.js';
 import {
   displayLiveMessage,
   isLiveLanguage,
@@ -40,7 +42,7 @@ import {
   type LiveMessageParams,
 } from './i18n/messages.js';
 
-interface RawBackend {
+interface RawBackend extends Record<string, unknown> {
   name: string;
   kind: 'acp';
   command: string;
@@ -57,7 +59,7 @@ interface RawConfig {
   realtimeModel?: string;
   voice?: string;
   defaultCwd?: string;
-  backends?: RawBackend[];
+  backends?: Record<string, unknown>[];
   port?: number;
   visualInput?: {
     source: 'screen' | 'camera';
@@ -208,6 +210,7 @@ export async function runInit(
     }
     console.log();
 
+    console.log(`  ${t('init.agentHint')}\n`);
     // 3. Select a default backend, or explicitly leave delegation disabled.
     const defaultChoice = await prompts({
       type: 'select',
@@ -237,8 +240,70 @@ export async function runInit(
   }
   if (!defaultAgent) console.log(`\n  ${t('init.noBackendHint')}\n`);
 
+  async function configureBackend(
+    agent: DetectedAgent,
+    isDefault: boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (agent.name !== 'qwen') return toRawBackend(agent, isDefault);
+    const mode = await prompts({
+      type: 'select',
+      ...selectLabels,
+      name: 'value',
+      message: t('init.qwenMode'),
+      choices: [
+        { title: t('init.qwenManaged'), value: 'managed' },
+        { title: t('init.qwenExisting'), value: 'existing' },
+        { title: t('init.qwenAcp'), value: 'acp' },
+      ],
+      initial: 0,
+    });
+    if (mode.value === 'acp') return toRawBackend(agent, isDefault);
+    const common = {
+      name: agent.name,
+      kind: 'qwen-code',
+      peerDiscovery: { qwenHome: resolveQwenHome(), reports: false },
+      ...(isDefault ? { default: true } : {}),
+    };
+    if (mode.value === 'managed') {
+      console.log(`  ${t('init.qwenManagedHint')}\n`);
+      return { ...common, managedServe: { command: agent.command } };
+    }
+    if (mode.value !== 'existing') return undefined;
+    console.log(`  ${t('init.qwenExistingHint')}\n`);
+    const url = await prompts({
+      type: 'text',
+      name: 'value',
+      message: t('init.localServeUrl'),
+      initial: 'http://127.0.0.1:4170',
+      validate: (value: string) =>
+        validServeUrl(value.trim()) || t('init.invalidLocalServeUrl'),
+    });
+    if (typeof url.value !== 'string') return undefined;
+    if (!validServeUrl(url.value.trim()))
+      throw new Error(t('init.invalidLocalServeUrl'));
+    const token = await prompts({
+      type: 'password',
+      name: 'value',
+      message: t('peerSetup.serveToken'),
+    });
+    if (typeof token.value !== 'string') return undefined;
+    return {
+      ...common,
+      baseUrl: url.value.trim(),
+      ...(token.value.trim() ? { token: token.value.trim() } : {}),
+    };
+  }
+
+  const backends: Record<string, unknown>[] = [];
+  if (defaultAgent) {
+    const defaultBackend = await configureBackend(defaultAgent, true);
+    if (!defaultBackend) {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    backends.push(defaultBackend);
+  }
   // 4. Add additional backends
-  const backends: RawBackend[] = [];
   const remaining = defaultAgent
     ? agents.filter((agent) => agent !== defaultAgent)
     : [];
@@ -276,13 +341,15 @@ export async function runInit(
       return;
     }
     const agent = available.find((a) => a.name === pick.value)!;
-    backends.push(toRawBackend(agent, false));
+    const backend = await configureBackend(agent, false);
+    if (!backend) {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    backends.push(backend);
     const idx = available.indexOf(agent);
     if (idx !== -1) available.splice(idx, 1);
   }
-
-  // Build the default backend
-  if (defaultAgent) backends.unshift(toRawBackend(defaultAgent, true));
 
   // 5. API key
   const envKeyName = process.env['DASHSCOPE_API_KEY']
@@ -531,6 +598,8 @@ export async function runInit(
   );
   console.log(`  ✓ ${t('init.hostSummary', { status: hostStatus })}`);
   console.log(`\n  ${t(options.source ? 'init.sourceRun' : 'init.run')}\n`);
+  if (backends.some((backend) => backend['kind'] === 'qwen-code'))
+    console.log(t('peerSetup.initHint'));
 }
 
 function toRawBackend(agent: DetectedAgent, isDefault: boolean): RawBackend {
@@ -542,4 +611,22 @@ function toRawBackend(agent: DetectedAgent, isDefault: boolean): RawBackend {
     ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
     ...(isDefault ? { default: true } : {}),
   };
+}
+
+function validServeUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      (url.hostname === 'localhost' ||
+        url.hostname === '[::1]' ||
+        (isIP(url.hostname) === 4 && url.hostname.startsWith('127.')))
+    );
+  } catch {
+    return false;
+  }
 }

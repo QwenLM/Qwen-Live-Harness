@@ -52,14 +52,23 @@ const bundled = await build({
   metafile: true,
   legalComments: 'eof',
 });
-for (const input of Object.keys(bundled.metafile.inputs)) {
+for (const [input, metadata] of Object.entries(bundled.metafile.inputs)) {
   if (/[/\\]dist[/\\]cli[/\\]/u.test(input)) {
     throw new Error(`Live build included a backend CLI: ${input}`);
+  }
+  // Only our owned-service launcher may spawn. Keep the SDK HTTP-only.
+  if (
+    metadata.imports.some((entry) =>
+      /^(?:node:)?child_process$/u.test(entry.path),
+    ) &&
+    input.replaceAll('\\', '/') !== 'src/adaptor/managed-qwen-serve.ts'
+  ) {
+    throw new Error(`Unexpected process launcher in Qwen adaptor: ${input}`);
   }
 }
 for (const output of Object.values(bundled.metafile.outputs)) {
   for (const dependency of output.imports) {
-    if (!isBuiltin(dependency.path) || /child_process/u.test(dependency.path)) {
+    if (!isBuiltin(dependency.path)) {
       throw new Error(
         `Unexpected Qwen adaptor runtime dependency: ${dependency.path}`,
       );

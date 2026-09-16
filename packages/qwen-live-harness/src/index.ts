@@ -15,6 +15,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { runInit } from './init.js';
+import { runPeerSetup } from './peer-setup.js';
+import {
+  diagnoseQwenPeers,
+  formatPeerDiagnostics,
+} from './peer-diagnostics.js';
 import { LiveLogger } from './logger.js';
 import { parseLiveCliArgs, type LiveCliArgs } from './cli-args.js';
 import { readPreferredLiveLanguage as preferredLanguage } from './language-preferences.js';
@@ -134,9 +139,38 @@ function runCli(args: LiveCliArgs): void {
     return;
   }
   if (args.command === 'init') {
-    void runInit({ source: args.source }).catch((error: unknown) => {
+    void (
+      args.peers
+        ? runPeerSetup(preferredLanguage())
+        : runInit({ source: args.source })
+    ).catch((error: unknown) => {
       process.stderr.write(
         `${displayLiveMessage(preferredLanguage(), error instanceof Error ? error.message : String(error))}\n`,
+      );
+      process.exitCode = 1;
+    });
+    return;
+  }
+  if (args.command === 'doctor') {
+    void (async () => {
+      let config: ReturnType<typeof loadConfig>;
+      try {
+        config = loadConfig();
+      } catch {
+        process.stderr.write(
+          `${liveText(preferredLanguage(), 'peerDoctor.configError')}\n`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const diagnostics = await diagnoseQwenPeers(config);
+      process.stdout.write(
+        `${formatPeerDiagnostics(diagnostics, config.language ?? preferredLanguage())}\n`,
+      );
+      if (diagnostics.hasErrors) process.exitCode = 1;
+    })().catch(() => {
+      process.stderr.write(
+        `${liveText(preferredLanguage(), 'peerDoctor.configError')}\n`,
       );
       process.exitCode = 1;
     });

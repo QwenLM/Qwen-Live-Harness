@@ -707,6 +707,62 @@ describe('Qwen peer discovery configuration', () => {
     },
   );
 
+  it('loads managed Qwen Serve without a fixed endpoint or stored token', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [
+        {
+          name: 'qwen',
+          kind: 'qwen-code',
+          managedServe: { command: '/bin/qwen' },
+        },
+      ],
+    });
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).backends[0],
+    ).toMatchObject({
+      managedServe: { command: '/bin/qwen' },
+      baseUrl: 'http://127.0.0.1:0',
+    });
+  });
+
+  it.each([
+    { managedServe: true },
+    { managedServe: {} },
+    { managedServe: { command: '' } },
+    { managedServe: { command: 'qwen', args: [] } },
+    { managedServe: { command: 'qwen' }, baseUrl: 'http://127.0.0.1:4170' },
+    { managedServe: { command: 'qwen' }, token: 'external-secret' },
+  ])(
+    'rejects ambiguous or invalid managed service config %j',
+    async (fields) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [{ name: 'qwen', kind: 'qwen-code', ...fields }],
+      });
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        'Invalid managedServe',
+      );
+    },
+  );
+
+  it('rejects managed service lifecycle on ACP entries', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [
+        {
+          name: 'qwen',
+          kind: 'acp',
+          command: 'qwen',
+          managedServe: { command: 'qwen' },
+        },
+      ],
+    });
+    expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+      'managedServe',
+    );
+  });
+
   it('accepts an explicit local Qwen home on a qwen-code backend', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'test',

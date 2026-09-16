@@ -28,6 +28,7 @@
  */
 
 import { DaemonClient } from '@qwen-code/sdk/daemon';
+import { ManagedQwenServe } from './managed-qwen-serve.js';
 import { publicActivity } from './public-activity.js';
 import {
   QwenPeerDiscovery,
@@ -142,6 +143,7 @@ export interface QwenCodeAdaptorOptions {
   /** qwen serve base URL, e.g. `http://127.0.0.1:4170`. */
   baseUrl: string;
   token?: string;
+  managedServe?: { command: string };
   /** Default cwd for new sessions; falls back to the daemon's workspaceCwd. */
   defaultCwd?: string;
   /** Stable client identity used for permission-vote attribution. */
@@ -340,7 +342,10 @@ function sanitizeTitleLine(title: string): string {
 export class QwenCodeAdaptor implements BackendAdaptor {
   readonly name: string;
 
-  private readonly client: DaemonClientLike;
+  private client: DaemonClientLike;
+  private readonly managedServe?: ManagedQwenServe;
+  private endpoint: string;
+  private closed = false;
   private readonly options: QwenCodeAdaptorOptions;
   private readonly sessions = new Map<string, SessionState>();
   /** Every cwd sessions were created in; listSessions unions across them. */
@@ -366,6 +371,13 @@ export class QwenCodeAdaptor implements BackendAdaptor {
 
   constructor(options: QwenCodeAdaptorOptions) {
     this.options = options;
+    this.endpoint = options.baseUrl;
+    if (options.managedServe) {
+      this.managedServe = new ManagedQwenServe({
+        command: options.managedServe.command,
+        cwd: options.defaultCwd,
+      });
+    }
     this.name = options.name ?? ADAPTOR_NAME;
     if (options.peerDiscovery) {
       this.peers = new QwenPeerDiscovery(
@@ -406,11 +418,32 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   }
 
   async preflight(): Promise<void> {
+    try {
+      if (this.closed) throw new Error('Qwen Code adaptor is closed.');
+      if (this.managedServe) {
+        const endpoint = await this.managedServe.start();
+        this.endpoint = endpoint.baseUrl;
+        this.client = new DaemonClient(endpoint) as unknown as DaemonClientLike;
+      }
+      if (this.closed) throw new Error('Qwen Code adaptor is closed.');
+      await this.checkCapabilities();
+      if (this.closed) throw new Error('Qwen Code adaptor is closed.');
+    } catch (error) {
+      await this.managedServe?.close();
+      throw error;
+    }
+  }
+
+  private async checkCapabilities(): Promise<void> {
     let caps: Awaited<ReturnType<DaemonClientLike['capabilities']>>;
     try {
       caps = await this.client.capabilities();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = this.managedServe
+        ? 'The managed service did not complete its capability check'
+        : error instanceof Error
+          ? error.message
+          : String(error);
       const status =
         isRecord(error) && typeof error['status'] === 'number'
           ? error['status']
@@ -420,22 +453,24 @@ export class QwenCodeAdaptor implements BackendAdaptor {
         // A "start it" hint would send the operator hunting for a daemon
         // that already exists.
         throw new Error(
-          `qwen serve at ${this.options.baseUrl} responded with HTTP ` +
+          `qwen serve at ${this.endpoint} responded with HTTP ` +
             `${status} and refused the request: ${detail}. ` +
             'Check the auth token and base URL.',
         );
       }
       throw new Error(
-        `qwen serve is not reachable at ${this.options.baseUrl}: ` +
+        `qwen serve is not reachable at ${this.endpoint}: ` +
           `${detail}. ` +
-          'Start it with `qwen serve` before launching qwen-live-harness.',
+          (this.managedServe
+            ? 'Check the installed Qwen Code version and configuration.'
+            : 'Start it with `qwen serve` before launching qwen-live-harness.'),
       );
     }
     const features = new Set(caps.features ?? []);
     const missing = REQUIRED_FEATURES.filter((f) => !features.has(f));
     if (missing.length > 0) {
       throw new Error(
-        `qwen serve at ${this.options.baseUrl} is missing required ` +
+        `qwen serve at ${this.endpoint} is missing required ` +
           `capabilities: ${missing.join(', ')}. Upgrade qwen-code.`,
       );
     }
@@ -750,8 +785,13 @@ export class QwenCodeAdaptor implements BackendAdaptor {
   }
 
   async close(): Promise<void> {
-    await this.peers?.close();
-    this.sessions.clear();
+    this.closed = true;
+    try {
+      await this.peers?.close();
+    } finally {
+      await this.managedServe?.close();
+      this.sessions.clear();
+    }
   }
 
   // -- internals -----------------------------------------------------------

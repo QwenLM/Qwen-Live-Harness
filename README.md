@@ -99,9 +99,13 @@ the Host. If the CLI was stopped while opening Host, merely activating that
 window does not recreate the stopped daemon.
 `End call` leaves the application running; `Quit Host` closes both components.
 
-The wizard detects supported agents already installed on your machine. Select
-an ACP backend such as `qwen --acp` or `qodercli --acp`; `qwen serve` is needed
-only when you explicitly use the optional REST/SSE backend. A DashScope API key
+The wizard detects supported agents already installed on your machine. For Qwen
+Code, choose automatic local Qwen Serve startup (the default), connect to an existing
+local Qwen Serve, or use ACP. Both Serve choices enable read-only discovery of
+local Qwen terminals without an extra setup question. Automatic startup assigns a local port and authentication
+token when Live starts and stops that service when Live exits. Existing services
+remain independently managed. Other agents use ACP, such as `qodercli --acp`.
+Initialization saves the choice without starting a service. A DashScope API key
 is required for realtime voice. Proactive and Memory can make additional model
 requests; configure them in the wizard or settings.
 
@@ -120,13 +124,16 @@ See the [daemon guide](packages/qwen-live-harness/README.md) for backend configu
 visual input, Memory, diagnostics and capability limits.
 
 M3 now supports opt-in discovery, authorized text instructions, and incoming reports from existing local Qwen terminal sessions.
-Configure `peerDiscovery` on a `qwen-code` backend as described in the
-[terminal discovery guide](packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1).
+Run `qwen-live-harness init --peers` to configure it without replacing other
+settings, and `qwen-live-harness doctor --peers` for read-only diagnostics.
+Manual `peerDiscovery` configuration remains available in the
+[terminal setup guide](packages/qwen-live-harness/README.md#terminal-setup-and-diagnostics-m3-stage-4).
 Add an explicit controller grant to send text and inspect separate delivery receipts;
 set `reports: true` to receive progress, blocker, and result reports during a call.
 Reports appear separately in Host and are announced when the conversation and playback are quiet. Ordinary
 backend completion and permission announcements remain supported; the retired
-private injected speech channel is not used.
+private injected speech channel is not used. See the
+[M3 acceptance checklist](docs/m3-acceptance.md) for the remaining physical-voice acceptance.
 
 ## Tests and compatibility
 

@@ -327,6 +327,52 @@ export const LIVE_MESSAGES = {
     en: 'Which agent should be the default backend?',
     'zh-CN': '选择默认的编程代理：',
   },
+  'init.agentHint': {
+    en: 'Qwen Code supports Qwen Serve or ACP; other agents use ACP and are launched automatically in the background. Independent tasks can use separate sessions; each session runs one task at a time.',
+    'zh-CN':
+      'Qwen Code 可使用 Qwen Serve 或 ACP；其他编程代理通过 ACP 自动在后台启动。独立任务可使用不同会话；每个会话同一时间执行一个任务。',
+  },
+  'init.qwenMode': {
+    en: 'How should Qwen Code run?',
+    'zh-CN': '如何运行 Qwen Code？',
+  },
+  'init.qwenManaged': {
+    en: 'Automatically start local Qwen Serve (recommended)',
+    'zh-CN': '自动启动本机 Qwen Serve（推荐）',
+  },
+  'init.qwenExisting': {
+    en: 'Connect to an existing local Qwen Serve',
+    'zh-CN': '连接已有本机 Qwen Serve',
+  },
+  'init.qwenAcp': { en: 'Use ACP', 'zh-CN': '使用 ACP' },
+  'init.qwenManagedHint': {
+    en: 'Live will start a local Qwen Serve when it starts, configure its address and authentication automatically, and stop it when Live exits. This wizard only saves the configuration.',
+    'zh-CN':
+      '启动 Live 时会自动启动本机 Qwen Serve，并配置地址和认证；退出 Live 时关闭该服务。此向导只保存配置。',
+  },
+  'init.qwenExistingHint': {
+    en: 'Provide the loopback address and authentication of the service already running on this computer. Live will connect to it without starting or stopping it.',
+    'zh-CN':
+      '填写本机已运行服务的回环地址和认证信息。Live 只连接该服务，不负责启动或关闭。',
+  },
+  'init.localServeUrl': {
+    en: 'Existing local Qwen Serve URL',
+    'zh-CN': '已有本机 Qwen Serve 地址',
+  },
+  'init.invalidLocalServeUrl': {
+    en: 'Enter a local HTTP(S) URL using localhost, 127.0.0.1 or [::1], without embedded credentials, query or fragment.',
+    'zh-CN':
+      '请输入 localhost、127.0.0.1 或 [::1] 的本机 HTTP(S) 地址，不要包含用户名、密码、查询参数或片段。',
+  },
+  'peers.doctor.state.managed-unverified': {
+    en: 'Managed service not probed',
+    'zh-CN': '未探测自动管理的服务',
+  },
+  'peers.doctor.hint.managedServe': {
+    en: 'Live starts this Qwen Serve automatically. Read-only diagnostics do not start it and cannot verify its dynamically assigned endpoint.',
+    'zh-CN':
+      '此 Qwen Serve 由 Live 自动启动。只读诊断不会启动服务，无法验证其动态分配的地址。',
+  },
   'init.cancelled': { en: 'Cancelled.', 'zh-CN': '已取消。' },
   'init.addAgent': {
     en: 'Add another backend? ({count} remaining)',
@@ -477,10 +523,336 @@ export const LIVE_MESSAGES = {
     'zh-CN':
       '已开启 debug。前台诊断日志省略媒体和连接凭据，但视觉 Monitor 归档包含真实屏幕／摄像头画面、音频和提示词／回复文本。归档就绪后会打印目录；分享前请检查敏感内容。',
   },
-  'cli.usage': {
-    en: 'Usage: qwen-live-harness [init] [--debug]\n\nStart or reuse the daemon and open the desktop Host.\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive visual Monitor archives\n  --daemon-only  Run the daemon without opening Host (development)\n  --help, -h   Show this help',
+  'peerSetup.optIn': {
+    en: 'Enable local Qwen terminal discovery?',
+    'zh-CN': '是否启用本机 Qwen 终端发现？',
+  },
+  'peerSetup.optInHint': {
+    en: 'Optionally discover running local Qwen terminals. With explicit authorization, Live can send them instructions and receive task reports.',
     'zh-CN':
-      '用法：qwen-live-harness [init] [--debug]\n\n启动或复用服务，并打开桌面 Host。\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的视觉 Monitor 归档\n  --daemon-only  仅运行服务，不打开 Host（开发调试）\n  --help, -h   显示帮助',
+      '可选：发现本机已运行的 Qwen 终端。配置授权后，Live 可以发送指令并接收任务汇报。',
+  },
+  'peerSetup.intro': {
+    en: 'Configure local terminal discovery and authorization on a Qwen Serve connection. QWEN_HOME is the local settings directory used by the target terminals.',
+    'zh-CN':
+      '为 Qwen Serve 连接配置本机终端发现和授权。QWEN_HOME 是目标终端使用的本机配置目录。',
+  },
+  'peerSetup.backend': {
+    en: 'Select a Qwen Serve connection',
+    'zh-CN': '选择 Qwen Serve 连接',
+  },
+  'peerSetup.addBackend': {
+    en: 'Add a Qwen Serve connection',
+    'zh-CN': '新增 Qwen Serve 连接',
+  },
+  'peerSetup.enabled': {
+    en: 'Enable local terminal discovery on this backend?',
+    'zh-CN': '在此后端启用本机终端发现？',
+  },
+  'peerSetup.name': { en: 'New backend name', 'zh-CN': '新后端名称' },
+  'peerSetup.invalidName': {
+    en: 'Use a unique name: 1–32 letters, digits, underscores or hyphens; start with a letter or digit.',
+    'zh-CN':
+      '名称须唯一：1–32 个字母、数字、下划线或连字符，并以字母或数字开头。',
+  },
+  'peerSetup.url': {
+    en: 'Running qwen serve URL',
+    'zh-CN': '已运行的 qwen serve 地址',
+  },
+  'peerSetup.invalidUrl': {
+    en: 'Enter an HTTP(S) URL without embedded credentials, query or fragment.',
+    'zh-CN': '请输入 HTTP(S) 地址，不要包含用户名、密码、查询参数或片段。',
+  },
+  'peerSetup.serveToken': {
+    en: 'qwen serve authentication token (leave blank if not required)',
+    'zh-CN': 'qwen serve 认证令牌（无需认证时留空）',
+  },
+  'peerSetup.home': {
+    en: 'Local QWEN_HOME used by the target terminals',
+    'zh-CN': '目标终端使用的本机 QWEN_HOME',
+  },
+  'peerSetup.invalidHome': {
+    en: 'Enter a non-empty local directory path without control characters.',
+    'zh-CN': '请输入非空本机目录路径，不要包含控制字符。',
+  },
+  'peerSetup.messagingHint': {
+    en: 'In that Qwen home, enable agents.crossSessionMessaging in settings.json and restart the target terminals. Workspace/system settings can override it. Live does not change Qwen settings.',
+    'zh-CN':
+      '请在该 Qwen home 的 settings.json 中启用 agents.crossSessionMessaging，并重启目标终端。工作区或系统设置可能覆盖此项。Live 不会修改 Qwen 设置。',
+  },
+  'peerSetup.reports': {
+    en: 'Receive and announce session reports during calls?',
+    'zh-CN': '在通话中接收并播报会话汇报？',
+  },
+  'peerSetup.grantHint': {
+    en: 'To authorize text instructions, run in another terminal: QWEN_HOME={home} qwen sessions controllers add --label "Qwen Live Harness" --json\nUse the returned token below, or keep discovery read-only. Live does not create or verify grants during setup.',
+    'zh-CN':
+      '如需授权发送文字指令，请在另一个终端执行：QWEN_HOME={home} qwen sessions controllers add --label "Qwen Live Harness" --json\n使用返回的 token，或保持只读发现。配置过程不会创建或验证授权。',
+  },
+  'peerSetup.controller': {
+    en: 'Authorization for terminal instructions',
+    'zh-CN': '终端指令授权',
+  },
+  'peerSetup.keepGrant': {
+    en: 'Keep the existing token setting',
+    'zh-CN': '保留已有令牌配置',
+  },
+  'peerSetup.readOnly': {
+    en: 'Read-only discovery (no instruction token)',
+    'zh-CN': '只读发现（不配置指令令牌）',
+  },
+  'peerSetup.environment': {
+    en: 'Use a token environment variable',
+    'zh-CN': '使用令牌环境变量',
+  },
+  'peerSetup.pasteToken': {
+    en: 'Paste a granted token (saved in config.json)',
+    'zh-CN': '粘贴已授权令牌（保存到 config.json）',
+  },
+  'peerSetup.tokenEnv': {
+    en: 'Controller token environment variable',
+    'zh-CN': 'Controller 令牌环境变量名称',
+  },
+  'peerSetup.invalidEnv': {
+    en: 'Set this environment variable to a qpc_ token before running setup. Only its name is saved; restart Live with the variable available.',
+    'zh-CN':
+      '请在配置前将此环境变量设为 qpc_ 令牌。仅保存变量名，重启 Live 时也需提供该变量。',
+  },
+  'peerSetup.token': {
+    en: 'Granted controller token (hidden input)',
+    'zh-CN': '已授权的 Controller 令牌（隐藏输入）',
+  },
+  'peerSetup.invalidToken': {
+    en: 'Use the qpc_ token returned by qwen sessions controllers add.',
+    'zh-CN': '请使用 qwen sessions controllers add 返回的 qpc_ 令牌。',
+  },
+  'peerSetup.permissionsHint': {
+    en: 'Reports also require the target session to expose send_message and approve its tool use. A delivery receipt is not proof of execution or completed speech.',
+    'zh-CN':
+      '汇报还需要目标会话提供 send_message 并批准工具使用。投递回执不代表任务执行完成或语音播报完成。',
+  },
+  'peerSetup.unsupported': {
+    en: 'Terminal peer setup currently supports macOS and Linux only. Existing daemon/ACP backends can still be used.',
+    'zh-CN':
+      '终端 peer 配置目前仅支持 macOS 和 Linux，已有 daemon/ACP 后端仍可使用。',
+  },
+  'peerSetup.invalidConfig': {
+    en: 'Could not validate the backend settings. Check names, backend kinds, the default backend and controller token environment variables in config.json. No settings were saved.',
+    'zh-CN':
+      '无法验证后端配置。请检查 config.json 中的名称、后端类型、默认后端和 Controller 令牌环境变量。尚未保存。',
+  },
+  'peerSetup.configRequired': {
+    en: 'A readable, regular config.json is required. Run qwen-live-harness init first; symlinks and files larger than 1 MiB are not edited.',
+    'zh-CN':
+      '需要可读的普通 config.json 文件。请先运行 qwen-live-harness init；此入口不编辑符号链接或超过 1 MiB 的文件。',
+  },
+  'peerSetup.envOverride': {
+    en: 'Backend environment overrides take precedence over config.json. Configure those variables directly or unset them before using init --peers. No settings were saved.',
+    'zh-CN':
+      '后端环境变量会覆盖 config.json。请直接配置这些变量，或先取消覆盖再运行 init --peers。尚未保存。',
+  },
+  'peerSetup.saveBusy': {
+    en: 'Another peer setup is saving config.json. Retry after it finishes. If a setup process crashed, check the PID in config.json.peer-setup.lock and remove that lock only after confirming the process has exited.',
+    'zh-CN':
+      '另一个终端配置向导正在保存 config.json，请等待完成后重试。如果配置进程曾崩溃，请检查 config.json.peer-setup.lock 中的 PID，确认进程已退出后再移除此锁文件。',
+  },
+  'peerSetup.concurrentEdit': {
+    en: 'config.json changed while setup was open. Your other edits were kept; run init --peers again.',
+    'zh-CN':
+      '配置过程中 config.json 已被其他程序修改。已保留其他修改，请重新运行 init --peers。',
+  },
+  'peerSetup.unchanged': {
+    en: 'Peer settings are unchanged.',
+    'zh-CN': 'Peer 配置未变化。',
+  },
+  'peerSetup.saved': {
+    en: 'Peer settings saved. Restart Live, then run qwen-live-harness doctor --peers. End and restart any existing call to use the new settings.',
+    'zh-CN':
+      'Peer 配置已保存。请重启 Live，再运行 qwen-live-harness doctor --peers。已有通话需结束并重新开始才能使用新配置。',
+  },
+  'peerSetup.initHint': {
+    en: 'To change only terminal settings later: qwen-live-harness init --peers',
+    'zh-CN': '以后仅调整终端配置可运行：qwen-live-harness init --peers',
+  },
+  'peerDoctor.configError': {
+    en: 'Could not load Live configuration. Check config.json and backend/controller environment settings; run init first if needed. Credentials are not included in this diagnostic.',
+    'zh-CN':
+      '无法加载 Live 配置。请检查 config.json 和后端、Controller 环境变量；尚未初始化时请先运行 init。此诊断不会输出凭证。',
+  },
+  'peers.doctor.title': {
+    en: 'Qwen Live Harness peer diagnostics (read-only)',
+    'zh-CN': 'Qwen Live Harness peer 诊断（只读）',
+  },
+  'peers.doctor.backend': {
+    en: 'Backend {name} ({kind})',
+    'zh-CN': '后端 {name}（{kind}）',
+  },
+  'peers.doctor.notConfigured': {
+    en: '  Local peer discovery: not configured',
+    'zh-CN': '  本机 peer 发现：未配置',
+  },
+  'peers.doctor.serve': {
+    en: '  qwen serve ({location}): {state}',
+    'zh-CN': '  qwen serve（{location}）：{state}',
+  },
+  'peers.doctor.features': {
+    en: '  Missing required capabilities: {features}',
+    'zh-CN': '  缺少必要能力：{features}',
+  },
+  'peers.doctor.home': {
+    en: '  Local Qwen home #{home}: settings {settings}; inbound {inbound}',
+    'zh-CN': '  本机 Qwen 目录 #{home}：设置 {settings}；入站策略 {inbound}',
+  },
+  'peers.doctor.registry': {
+    en: '  Registry: {state}; live records {records}; terminals {terminals}; terminal inboxes {inboxes}',
+    'zh-CN':
+      '  目录状态：{state}；存活记录 {records}；终端 {terminals}；终端 inbox {inboxes}',
+  },
+  'peers.doctor.sockets': {
+    en: '  Socket probes: {probed}; reachable {reachable}; dead {dead}; unknown {unknown}; omitted {omitted}',
+    'zh-CN':
+      '  Socket 探测：{probed}；可达 {reachable}；失效 {dead}；未知 {unknown}；未探测 {omitted}',
+  },
+  'peers.doctor.controller': {
+    en: '  Controller: {state}; reports: {reports}',
+    'zh-CN': '  Controller：{state}；报告：{reports}',
+  },
+  'peers.doctor.versions': {
+    en: '  Observed Qwen versions: {versions}',
+    'zh-CN': '  观察到的 Qwen 版本：{versions}',
+  },
+  'peers.doctor.daemon': {
+    en: 'Live daemon: {state}; Host installation: {host}',
+    'zh-CN': 'Live daemon：{state}；Host 安装：{host}',
+  },
+  'peers.doctor.callUnknown': {
+    en: 'Call readiness and output mute: unknown; inspect the current Host.',
+    'zh-CN': '通话就绪和输出静音状态：未知；请在当前 Host 中查看。',
+  },
+  'peers.doctor.omitted': {
+    en: 'Backend entries omitted by the diagnostic limit: {count}',
+    'zh-CN': '因诊断上限而未检查的后端：{count}',
+  },
+  'peers.doctor.state.local': { en: 'local', 'zh-CN': '本机' },
+  'peers.doctor.state.remote': { en: 'remote', 'zh-CN': '远程' },
+  'peers.doctor.state.ready': {
+    en: 'verified for this check',
+    'zh-CN': '此项检查通过',
+  },
+  'peers.doctor.state.missing': { en: 'missing', 'zh-CN': '缺失' },
+  'peers.doctor.state.unknown': { en: 'unknown', 'zh-CN': '未知' },
+  'peers.doctor.state.invalid': {
+    en: 'invalid or unsafe',
+    'zh-CN': '无效或不安全',
+  },
+  'peers.doctor.state.unreachable': {
+    en: 'unreachable or timed out',
+    'zh-CN': '不可达或超时',
+  },
+  'peers.doctor.state.auth-rejected': {
+    en: 'authentication rejected',
+    'zh-CN': '认证被拒绝',
+  },
+  'peers.doctor.state.missing-features': {
+    en: 'required capabilities missing',
+    'zh-CN': '缺少必要能力',
+  },
+  'peers.doctor.state.remote-unverified': {
+    en: 'remote service not probed',
+    'zh-CN': '未探测远程服务',
+  },
+  'peers.doctor.state.unsupported': {
+    en: 'unsupported on this platform',
+    'zh-CN': '当前平台不支持',
+  },
+  'peers.doctor.state.unreadable': { en: 'unreadable', 'zh-CN': '无法读取' },
+  'peers.doctor.state.truncated': {
+    en: 'not inspected: diagnostic limit reached',
+    'zh-CN': '未检查：已达到诊断上限',
+  },
+  'peers.doctor.state.enabled': { en: 'enabled', 'zh-CN': '已启用' },
+  'peers.doctor.state.disabled': { en: 'disabled', 'zh-CN': '未启用' },
+  'peers.doctor.state.unset': { en: 'unset', 'zh-CN': '未设置' },
+  'peers.doctor.state.configured-unverified': {
+    en: 'configured; grant validity unverified',
+    'zh-CN': '已配置；授权有效性未验证',
+  },
+  'peers.doctor.state.protocol-mismatch': {
+    en: 'protocol mismatch',
+    'zh-CN': '协议不匹配',
+  },
+  'peers.doctor.state.stale': {
+    en: 'discovery identity mismatch',
+    'zh-CN': '发现记录身份不匹配',
+  },
+  'peers.doctor.state.error': {
+    en: 'service responded with an error',
+    'zh-CN': '服务返回错误',
+  },
+  'peers.doctor.state.accept': { en: 'accept', 'zh-CN': '接受' },
+  'peers.doctor.state.hold': {
+    en: 'hold for local review',
+    'zh-CN': '等待本机审核',
+  },
+  'peers.doctor.state.refuse': { en: 'refuse', 'zh-CN': '拒绝' },
+  'peers.doctor.state.installed': {
+    en: 'installed; connection not verified',
+    'zh-CN': '已安装；连接未验证',
+  },
+  'peers.doctor.hint.settingsScope': {
+    en: 'Settings describe only the configured local Qwen home. Workspace/system overrides and already-running sessions may differ; restart Qwen Code after changing crossSessionMessaging.',
+    'zh-CN':
+      '设置结果仅代表配置的本机 Qwen 目录；工作区/系统覆盖及已运行会话可能不同。修改 crossSessionMessaging 后请重启 Qwen Code。',
+  },
+  'peers.doctor.hint.grant': {
+    en: 'A configured controller token is not proof of a valid grant. Mint or revoke grants yourself in the same Qwen home; this diagnostic never does so.',
+    'zh-CN':
+      '配置 controller token 不代表授权有效。请自行在同一 Qwen 目录下创建或撤销授权；诊断不会执行这些操作。',
+  },
+  'peers.doctor.hint.remote': {
+    en: "Remote qwen serve was not contacted. Local peer discovery still uses this machine's configured Qwen home; it does not inspect terminals on the remote machine.",
+    'zh-CN':
+      '未连接远程 qwen serve。本机 peer 发现仍使用此机器上配置的 Qwen 目录，不会检查远程机器的终端。',
+  },
+  'peers.doctor.hint.probeOnly': {
+    en: 'A socket accepting a connection does not prove authentication, instruction delivery, or report playback. Registry versions are observations, not a minimum supported CLI version.',
+    'zh-CN':
+      'Socket 接受连接不代表认证通过、指令已投递或报告已播报。目录版本只是观察值，不是最低 CLI 版本要求。',
+  },
+  'peers.doctor.hint.hold': {
+    en: "For held or refused instructions, inspect the target terminal's crossSessionInbound policy and local review queue. A controller cannot approve a pending permission prompt.",
+    'zh-CN':
+      '指令被 hold 或 refuse 时，请检查目标终端的 crossSessionInbound 策略和本机审核队列。Controller 不能替用户批准待处理权限请求。',
+  },
+  'peers.doctor.hint.unknownDelivery': {
+    en: 'Unknown delivery means the outcome is uncertain. Inspect the target terminal and late receipts; do not automatically resend.',
+    'zh-CN':
+      'unknown 表示投递结果不确定。请检查目标终端及迟到回执，不要自动重发。',
+  },
+  'peers.doctor.hint.callAndMute': {
+    en: 'Peer endpoints exist only during a call. For silent reports, check reports configuration, the current call address, Host output mute, and report playback state; delivered only acknowledges queue admission.',
+    'zh-CN':
+      'Peer endpoint 仅在通话中存在。报告没有声音时，请检查 reports 配置、当前通话地址、Host 输出静音和报告播放状态；delivered 仅确认已进入队列。',
+  },
+  'peers.doctor.hint.serveRequired': {
+    en: 'QwenCodeAdaptor also requires a reachable qwen serve with all required capabilities. Fix its URL/authentication or upgrade it; terminal discovery alone does not make the backend ready.',
+    'zh-CN':
+      'QwenCodeAdaptor 还需要可达且具备必要能力的 qwen serve。请修正地址/认证或升级服务；仅能发现终端不代表后端已就绪。',
+  },
+  'peers.doctor.hint.windows': {
+    en: 'The current local peer transport is unavailable on Windows. Run this slice on macOS or Linux; managed backend access is a separate capability.',
+    'zh-CN':
+      '当前本机 peer 传输不支持 Windows。请在 macOS 或 Linux 上使用本阶段功能；托管后端连接是独立能力。',
+  },
+  'peers.doctor.hint.limits': {
+    en: 'Checks are bounded: 16 backends, 8 local homes, 128 registry entries per home, 32 socket probes, and 2 seconds/64 KiB per HTTP response. Omitted or timed-out checks remain unverified.',
+    'zh-CN':
+      '诊断有上限：16 个后端、8 个本机目录、每目录 128 条记录、32 个 socket，以及每个 HTTP 响应 2 秒/64 KiB。未检查或超时项目保持未验证。',
+  },
+  'cli.usage': {
+    en: 'Usage: qwen-live-harness [init] [--debug]\n\nStart or reuse the daemon and open the desktop Host.\n\nCommands:\n  init --peers    Configure local Qwen terminal sessions without replacing other settings\n  doctor --peers  Inspect terminal setup without sending messages or starting a call\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive visual Monitor archives\n  --daemon-only  Run the daemon without opening Host (development)\n  --help, -h   Show this help',
+    'zh-CN':
+      '用法：qwen-live-harness [init] [--debug]\n\n启动或复用服务，并打开桌面 Host。\n\n命令：\n  init --peers    配置本机 Qwen 终端会话，保留其他设置\n  doctor --peers  检查终端配置，不发送消息或开启通话\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的视觉 Monitor 归档\n  --daemon-only  仅运行服务，不打开 Host（开发调试）\n  --help, -h   显示帮助',
   },
   'cli.reused': {
     en: 'Connected to the running Qwen Live Harness daemon.',

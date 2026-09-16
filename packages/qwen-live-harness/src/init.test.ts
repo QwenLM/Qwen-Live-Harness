@@ -65,6 +65,7 @@ function answerSetupPrompts(
       [liveText('en', 'language.choose'), true],
       [liveText('en', 'init.overwrite'), true],
       [liveText('en', 'init.defaultAgent'), 'qwen'],
+      [liveText('en', 'init.qwenMode'), 'acp'],
       [liveText('en', 'init.addAgent', { count: 1 }), false],
       [liveText('en', 'init.endpoint'), international],
       [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
@@ -150,6 +151,7 @@ beforeEach(() => {
   });
   vi.stubEnv('QWEN_LIVE_HARNESS_DATA_DIR', '/synthetic/harness-init');
   vi.stubEnv('QWEN_LIVE_HARNESS_DISCOVERY_DIR', undefined);
+  vi.stubEnv('QWEN_HOME', undefined);
   process.env['DASHSCOPE_API_KEY'] = 'sk-test';
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
 });
@@ -163,6 +165,218 @@ afterEach(() => {
 });
 
 describe('runInit', () => {
+  it.each(['managed', 'existing', 'acp'] as const)(
+    'saves the selected Qwen connection mode %s as the sole default backend',
+    async (mode) => {
+      answerSetupPrompts();
+      const normal = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) => {
+        if (question.message === liveText('en', 'init.qwenMode'))
+          return { value: mode };
+        if (question.message === liveText('en', 'init.localServeUrl'))
+          return { value: ' http://127.0.0.1:5123 ' };
+        if (question.message === liveText('en', 'peerSetup.serveToken'))
+          return { value: ' test-token ' };
+        return normal(question);
+      });
+      await runInit();
+      const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+      const expected =
+        mode === 'managed'
+          ? {
+              kind: 'qwen-code',
+              managedServe: { command: '/usr/local/bin/qwen' },
+              peerDiscovery: {
+                qwenHome: join(homedir(), '.qwen'),
+                reports: false,
+              },
+            }
+          : mode === 'existing'
+            ? {
+                kind: 'qwen-code',
+                baseUrl: 'http://127.0.0.1:5123',
+                token: 'test-token',
+                peerDiscovery: {
+                  qwenHome: join(homedir(), '.qwen'),
+                  reports: false,
+                },
+              }
+            : { kind: 'acp', command: '/usr/local/bin/qwen', args: ['--acp'] };
+      expect(config.backends).toEqual([
+        { name: 'qwen', default: true, ...expected },
+      ]);
+      const prompts = mocks.prompt.mock.calls.map(
+        ([question]) => question.message,
+      );
+      expect(prompts.includes(liveText('en', 'init.localServeUrl'))).toBe(
+        mode === 'existing',
+      );
+      for (const key of [
+        'optIn',
+        'home',
+        'reports',
+        'controller',
+        'backend',
+      ] as const) {
+        expect(prompts).not.toContain(liveText('en', `peerSetup.${key}`));
+      }
+      expect(config.backends[0].peerDiscovery?.controllerId).toBeUndefined();
+      expect(config.backends[0].peerDiscovery?.controllerToken).toBeUndefined();
+      expect(
+        mocks.prompt.mock.calls.find(
+          ([question]) => question.message === liveText('en', 'init.qwenMode'),
+        )?.[0],
+      ).toMatchObject({
+        initial: 0,
+        choices: [
+          { value: 'managed' },
+          { value: 'existing' },
+          { value: 'acp' },
+        ],
+      });
+    },
+  );
+
+  it.each(['init.localServeUrl', 'peerSetup.serveToken'] as const)(
+    'does not save when existing serve %s is cancelled',
+    async (field) => {
+      answerSetupPrompts();
+      const normal = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) => {
+        if (question.message === liveText('en', 'init.qwenMode'))
+          return { value: 'existing' };
+        if (question.message === liveText('en', field)) return {};
+        if (question.message === liveText('en', 'init.localServeUrl'))
+          return { value: 'http://127.0.0.1:5123' };
+        return normal(question);
+      });
+      await runInit();
+      expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['managed', 'existing'] as const)(
+    'uses QWEN_HOME for read-only discovery in %s mode',
+    async (mode) => {
+      vi.stubEnv('QWEN_HOME', '/isolated/qwen-home');
+      answerSetupPrompts();
+      const normal = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) => {
+        if (question.message === liveText('en', 'init.qwenMode'))
+          return { value: mode };
+        if (question.message === liveText('en', 'init.localServeUrl'))
+          return { value: 'http://localhost:4170' };
+        if (question.message === liveText('en', 'peerSetup.serveToken'))
+          return { value: '' };
+        return normal(question);
+      });
+      await runInit();
+      const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+      expect(config.backends[0].peerDiscovery).toEqual({
+        qwenHome: '/isolated/qwen-home',
+        reports: false,
+      });
+    },
+  );
+
+  it.each([
+    'http://localhost:4170',
+    'https://127.0.0.1:4170',
+    'http://127.12.34.56:4170',
+    'http://[::1]:4170',
+  ])('accepts a local Qwen Serve URL %s', async (url) => {
+    answerSetupPrompts();
+    const normal = mocks.prompt.getMockImplementation()!;
+    mocks.prompt.mockImplementation(async (question) => {
+      if (question.message === liveText('en', 'init.qwenMode'))
+        return { value: 'existing' };
+      if (question.message === liveText('en', 'init.localServeUrl')) {
+        expect(question.validate(url)).toBe(true);
+        return { value: url };
+      }
+      if (question.message === liveText('en', 'peerSetup.serveToken'))
+        return { value: '' };
+      return normal(question);
+    });
+    await runInit();
+    const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+    expect(config.backends[0].baseUrl).toBe(url);
+  });
+
+  it.each([
+    'http://example.com:4170',
+    'http://192.168.1.2:4170',
+    'http://localhost.example.com:4170',
+    'http://[::2]:4170',
+    'ftp://localhost:4170',
+    'http://user:password@localhost:4170',
+    'http://localhost:4170?token=private',
+    'http://localhost:4170#private',
+    'not-a-url',
+  ])(
+    'rejects nonlocal or unsafe Qwen Serve URL %s without saving',
+    async (url) => {
+      answerSetupPrompts();
+      const normal = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) => {
+        if (question.message === liveText('en', 'init.qwenMode'))
+          return { value: 'existing' };
+        if (question.message === liveText('en', 'init.localServeUrl')) {
+          expect(question.validate(url)).toBe(
+            liveText('en', 'init.invalidLocalServeUrl'),
+          );
+          return { value: url };
+        }
+        return normal(question);
+      });
+      await expect(runInit()).rejects.toThrow(
+        liveText('en', 'init.invalidLocalServeUrl'),
+      );
+      expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.renameSync).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    },
+  );
+
+  it('leaves other agents on ACP and does not offer Qwen-specific options', async () => {
+    mocks.detectAgents.mockReturnValue([
+      {
+        label: 'Qoder',
+        name: 'qoder',
+        command: '/usr/local/bin/qodercli',
+        args: ['--acp'],
+        version: '1.0.0',
+      },
+    ]);
+    answerSetupPrompts();
+    const normal = mocks.prompt.getMockImplementation()!;
+    mocks.prompt.mockImplementation(async (question) => {
+      if (question.message === liveText('en', 'init.defaultAgent'))
+        return { value: 'qoder' };
+      return normal(question);
+    });
+    await runInit();
+    const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+    expect(config.backends).toEqual([
+      {
+        name: 'qoder',
+        kind: 'acp',
+        command: '/usr/local/bin/qodercli',
+        args: ['--acp'],
+        default: true,
+      },
+    ]);
+    expect(
+      mocks.prompt.mock.calls.some(([question]) =>
+        [
+          liveText('en', 'init.qwenMode'),
+          liveText('en', 'peerSetup.optIn'),
+        ].includes(question.message),
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     [false, 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'],
     [true, 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'],
@@ -216,6 +430,7 @@ describe('runInit', () => {
       const answers = new Map<string, unknown>([
         [liveText('en', 'language.choose'), language === 'en'],
         [t('init.defaultAgent'), 'qwen'],
+        [t('init.qwenMode'), 'acp'],
         [t('init.apiKey'), 'synthetic-region-test-key'],
         [t('init.apiName'), 'qwen3.5-omni-plus-realtime'],
         [t('init.endpoint'), true],
@@ -233,6 +448,7 @@ describe('runInit', () => {
       ).toEqual([
         liveText('en', 'language.choose'),
         t('init.defaultAgent'),
+        t('init.qwenMode'),
         t('init.apiKey'),
         t('init.apiName'),
         t('init.endpoint'),
@@ -404,6 +620,31 @@ describe('runInit', () => {
       );
     },
   );
+
+  it('configures managed Qwen Serve in source setup without registering or installing Host', async () => {
+    answerSetupPrompts();
+    const normal = mocks.prompt.getMockImplementation()!;
+    mocks.prompt.mockImplementation(async (question) => {
+      if (question.message === liveText('en', 'init.qwenMode'))
+        return { value: 'managed' };
+      return normal(question);
+    });
+    await runInit({ source: true });
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])).backends,
+    ).toEqual([
+      {
+        name: 'qwen',
+        kind: 'qwen-code',
+        managedServe: { command: '/usr/local/bin/qwen' },
+        peerDiscovery: { qwenHome: join(homedir(), '.qwen'), reports: false },
+        default: true,
+      },
+    ]);
+    expect(mocks.refreshHost).not.toHaveBeenCalled();
+    expect(mocks.installHost).not.toHaveBeenCalled();
+    expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+  });
 
   it('preserves backend selection in source setup without checking or installing Host', async () => {
     answerSetupPrompts();
@@ -641,6 +882,8 @@ describe('runInit', () => {
               return { value: true };
             case 'Which agent should be the default backend?':
               return { value: 'qwen' };
+            case liveText('en', 'init.qwenMode'):
+              return { value: 'acp' };
             case liveText('en', 'init.endpoint'):
               return { value: false };
             case 'Use DASHSCOPE_API_KEY from the environment?':
@@ -700,6 +943,8 @@ describe('runInit', () => {
             return { value: true };
           case 'Which agent should be the default backend?':
             return { value: 'qwen' };
+          case liveText('en', 'init.qwenMode'):
+            return { value: 'acp' };
           case liveText('en', 'init.endpoint'):
             return { value: false };
           case 'Use DASHSCOPE_API_KEY from the environment?':
@@ -784,6 +1029,7 @@ describe('runInit', () => {
           }
           const choices = new Map<string, string | boolean>([
             [liveText(language, 'init.defaultAgent'), 'qwen'],
+            [liveText(language, 'init.qwenMode'), 'acp'],
             [liveText(language, 'init.endpoint'), false],
             [
               liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
@@ -855,12 +1101,13 @@ describe('runInit', () => {
     expect(mocks.refreshHost).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8])(
     'does not write config if prompt %s is cancelled',
     async (cancelAt) => {
       const answers = [
         [liveText('en', 'language.choose'), true],
         [liveText('en', 'init.defaultAgent'), 'qwen'],
+        [liveText('en', 'init.qwenMode'), 'acp'],
         [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
         [liveText('en', 'init.apiName'), 'fixture-model'],
         [liveText('en', 'init.endpoint'), false],

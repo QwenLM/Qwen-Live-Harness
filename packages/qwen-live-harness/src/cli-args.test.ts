@@ -9,6 +9,32 @@ import { parseLiveCliArgs } from './cli-args.js';
 import { displayLiveMessage } from './i18n/messages.js';
 
 describe('parseLiveCliArgs', () => {
+  it('routes incremental peer setup and read-only diagnostics without starting a daemon', () => {
+    expect(parseLiveCliArgs(['init', '--peers'])).toEqual({
+      command: 'init',
+      peers: true,
+      debug: false,
+      daemonOnly: false,
+    });
+    expect(parseLiveCliArgs(['--peers', 'doctor'])).toEqual({
+      command: 'doctor',
+      peers: true,
+      debug: false,
+      daemonOnly: false,
+    });
+    expect(parseLiveCliArgs(['doctor', '--peers', '--help']).command).toBe(
+      'help',
+    );
+    for (const args of [
+      ['--peers'],
+      ['doctor'],
+      ['doctor', '--peers', '--daemon-only'],
+      ['init', '--peers', '--daemon-only'],
+      ['init', 'doctor', '--peers'],
+    ]) {
+      expect(() => parseLiveCliArgs(args)).toThrow();
+    }
+  });
   it('allows source setup only for the initialization command', () => {
     expect(parseLiveCliArgs(['init', '--source'])).toEqual({
       command: 'init',
