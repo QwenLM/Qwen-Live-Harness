@@ -266,7 +266,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: 'y' },
         { question: 'New backend name', input: '\r' },
         { question: 'Running qwen serve URL', input: `${baseUrl}\r` },
@@ -318,7 +318,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const unchanged = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: '\r' },
         { question: 'Local QWEN_HOME', input: '\r' },
         { question: 'Receive and announce session reports', input: '\r' },
@@ -333,7 +333,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const disabled = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: 'n' },
       ],
     );
@@ -355,7 +355,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: 'n' },
       ],
     );
@@ -371,7 +371,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: 'y' },
         { question: 'Local QWEN_HOME', input: `${qwenHome}\r` },
         { question: 'Receive and announce session reports', input: 'y' },
@@ -390,7 +390,7 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Qwen backend for terminal sessions', input: '\r' },
+        { question: 'Select a Qwen Serve connection', input: '\r' },
         { question: 'Enable local terminal discovery', input: 'y' },
         { question: 'Local QWEN_HOME', input: `${qwenHome}\r` },
         { question: 'Receive and announce session reports', input: 'y' },

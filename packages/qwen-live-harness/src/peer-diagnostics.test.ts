@@ -293,6 +293,21 @@ describe('read-only Qwen peer diagnostics', () => {
     expect(result.hints).toContain('serveRequired');
   });
 
+  it('does not launch or probe a guessed address for a managed service', async () => {
+    const f = await fixture();
+    f.backend.managedServe = { command: 'qwen' };
+    f.backend.baseUrl = 'http://127.0.0.1:0';
+    const result = await diagnoseQwenPeers(f.config, { fetch: f.fetch });
+    expect(result.backends[0]!.serve).toMatchObject({
+      state: 'managed-unverified',
+      location: 'local',
+    });
+    expect(result.hasErrors).toBe(false);
+    expect(result.hints).toContain('managedServe');
+    expect(result.hints).not.toContain('serveRequired');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('does not contact remote services or follow redirects with configured credentials', async () => {
     const f = await fixture();
     f.backend.baseUrl = 'https://remote.invalid/prefix';

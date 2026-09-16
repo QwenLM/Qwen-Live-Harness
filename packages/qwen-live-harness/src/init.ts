@@ -31,7 +31,8 @@ import {
   resolveLiveDiscoveryDirectory,
 } from './paths.js';
 import { registerCurrentRuntime } from './startup-registration.js';
-import { promptPeerSetup } from './peer-setup.js';
+import { isIP } from 'node:net';
+import { resolveQwenHome } from './vendor/qwen-code-peer/registry.js';
 import {
   displayLiveMessage,
   isLiveLanguage,
@@ -147,6 +148,7 @@ export async function runInit(): Promise<void> {
   console.log();
 
   // 3. Select default backend
+  console.log(`  ${t('init.agentHint')}\n`);
   const defaultChoice = await prompts({
     type: 'select',
     ...selectLabels,
@@ -163,8 +165,68 @@ export async function runInit(): Promise<void> {
     return;
   }
 
+  async function configureBackend(
+    agent: DetectedAgent,
+    isDefault: boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (agent.name !== 'qwen') return toRawBackend(agent, isDefault);
+    const mode = await prompts({
+      type: 'select',
+      ...selectLabels,
+      name: 'value',
+      message: t('init.qwenMode'),
+      choices: [
+        { title: t('init.qwenManaged'), value: 'managed' },
+        { title: t('init.qwenExisting'), value: 'existing' },
+        { title: t('init.qwenAcp'), value: 'acp' },
+      ],
+      initial: 0,
+    });
+    if (mode.value === 'acp') return toRawBackend(agent, isDefault);
+    const common = {
+      name: agent.name,
+      kind: 'qwen-code',
+      peerDiscovery: { qwenHome: resolveQwenHome(), reports: false },
+      ...(isDefault ? { default: true } : {}),
+    };
+    if (mode.value === 'managed') {
+      console.log(`  ${t('init.qwenManagedHint')}\n`);
+      return { ...common, managedServe: { command: agent.command } };
+    }
+    if (mode.value !== 'existing') return undefined;
+    console.log(`  ${t('init.qwenExistingHint')}\n`);
+    const url = await prompts({
+      type: 'text',
+      name: 'value',
+      message: t('init.localServeUrl'),
+      initial: 'http://127.0.0.1:4170',
+      validate: (value: string) =>
+        validServeUrl(value.trim()) || t('init.invalidLocalServeUrl'),
+    });
+    if (typeof url.value !== 'string') return undefined;
+    if (!validServeUrl(url.value.trim()))
+      throw new Error(t('init.invalidLocalServeUrl'));
+    const token = await prompts({
+      type: 'password',
+      name: 'value',
+      message: t('peerSetup.serveToken'),
+    });
+    if (typeof token.value !== 'string') return undefined;
+    return {
+      ...common,
+      baseUrl: url.value.trim(),
+      ...(token.value.trim() ? { token: token.value.trim() } : {}),
+    };
+  }
+
+  const defaultAgent = agents.find((a) => a.name === defaultChoice.value)!;
+  const defaultBackend = await configureBackend(defaultAgent, true);
+  if (!defaultBackend) {
+    console.log(`\n  ${t('init.cancelled')}\n`);
+    return;
+  }
   // 4. Add additional backends
-  let backends: Record<string, unknown>[] = [];
+  const backends: Record<string, unknown>[] = [defaultBackend];
   const remaining = agents.filter((a) => a.name !== defaultChoice.value);
   let addMore = remaining.length > 0;
   const available = [...remaining];
@@ -200,38 +262,14 @@ export async function runInit(): Promise<void> {
       return;
     }
     const agent = available.find((a) => a.name === pick.value)!;
-    backends.push(toRawBackend(agent, false));
-    const idx = available.indexOf(agent);
-    if (idx !== -1) available.splice(idx, 1);
-  }
-
-  // Build the default backend
-  const defaultAgent = agents.find((a) => a.name === defaultChoice.value)!;
-  backends.unshift(toRawBackend(defaultAgent, true));
-
-  // M3 adds a separate qwen-code backend; existing ACP choices stay intact.
-  if (agents.some((agent) => agent.name === 'qwen')) {
-    const peers = await prompts({
-      type: 'confirm',
-      ...confirmLabels,
-      name: 'value',
-      message: t('peerSetup.optIn'),
-      initial: false,
-    });
-    if (typeof peers.value !== 'boolean') {
+    const backend = await configureBackend(agent, false);
+    if (!backend) {
       console.log(`\n  ${t('init.cancelled')}\n`);
       return;
     }
-    if (peers.value) {
-      const configured = await promptPeerSetup(backends, language, {
-        enabled: true,
-      });
-      if (!configured) {
-        console.log(`\n  ${t('init.cancelled')}\n`);
-        return;
-      }
-      backends = configured;
-    }
+    backends.push(backend);
+    const idx = available.indexOf(agent);
+    if (idx !== -1) available.splice(idx, 1);
   }
 
   // 5. API key
@@ -456,4 +494,22 @@ function toRawBackend(agent: DetectedAgent, isDefault: boolean): RawBackend {
     ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
     ...(isDefault ? { default: true } : {}),
   };
+}
+
+function validServeUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      (url.hostname === 'localhost' ||
+        url.hostname === '[::1]' ||
+        (isIP(url.hostname) === 4 && url.hostname.startsWith('127.')))
+    );
+  } catch {
+    return false;
+  }
 }

@@ -33,6 +33,8 @@ export type BackendConfig =
       kind: 'qwen-code';
       baseUrl: string;
       token?: string;
+      /** Live owns this local service; address and token are assigned at startup. */
+      managedServe?: { command: string };
       /** Opt-in local terminals; an explicit controller grant enables text delivery. */
       peerDiscovery?: {
         qwenHome: string;
@@ -740,7 +742,32 @@ function parseBackend(
         );
       }
     }
-    const baseUrl = str(raw['serveUrl'] ?? raw['baseUrl']) ?? DEFAULT_SERVE_URL;
+    let managedServe: { command: string } | undefined;
+    if (raw['managedServe'] !== undefined) {
+      const managed = raw['managedServe'];
+      if (
+        !isRecordLike(managed) ||
+        Object.keys(managed).some((key) => key !== 'command') ||
+        typeof managed['command'] !== 'string' ||
+        !managed['command'].trim() ||
+        /\p{C}/u.test(managed['command'])
+      ) {
+        throw new Error(
+          `Invalid managedServe in ${where}: expected { command: string }`,
+        );
+      }
+      if (
+        ['serveUrl', 'baseUrl', 'token'].some((key) => raw[key] !== undefined)
+      ) {
+        throw new Error(
+          `Invalid managedServe in ${where}: address and token are assigned automatically`,
+        );
+      }
+      managedServe = { command: managed['command'].trim() };
+    }
+    const baseUrl = managedServe
+      ? 'http://127.0.0.1:0'
+      : (str(raw['serveUrl'] ?? raw['baseUrl']) ?? DEFAULT_SERVE_URL);
     const token = str(raw['token']);
     let peerDiscovery:
       | { qwenHome: string; controllerToken?: string; reports?: boolean }
@@ -816,13 +843,20 @@ function parseBackend(
       name,
       kind,
       baseUrl,
+      ...(managedServe ? { managedServe } : {}),
       ...(token ? { token } : {}),
       ...(peerDiscovery ? { peerDiscovery } : {}),
       isDefault: raw['default'] === true,
     };
   }
   if (kind === 'acp') {
-    for (const banned of ['serveUrl', 'baseUrl', 'token', 'peerDiscovery']) {
+    for (const banned of [
+      'serveUrl',
+      'baseUrl',
+      'token',
+      'peerDiscovery',
+      'managedServe',
+    ]) {
       if (raw[banned] !== undefined) {
         throw new Error(`"${banned}" is not valid for kind acp (${where})`);
       }

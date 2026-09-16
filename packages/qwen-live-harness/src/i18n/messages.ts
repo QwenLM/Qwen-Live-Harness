@@ -270,6 +270,52 @@ export const LIVE_MESSAGES = {
     en: 'Which agent should be the default backend?',
     'zh-CN': '选择默认的编程代理：',
   },
+  'init.agentHint': {
+    en: 'Qwen Code supports Qwen Serve or ACP; other agents use ACP and are launched automatically in the background. Independent tasks can use separate sessions; each session runs one task at a time.',
+    'zh-CN':
+      'Qwen Code 可使用 Qwen Serve 或 ACP；其他编程代理通过 ACP 自动在后台启动。独立任务可使用不同会话；每个会话同一时间执行一个任务。',
+  },
+  'init.qwenMode': {
+    en: 'How should Qwen Code run?',
+    'zh-CN': '如何运行 Qwen Code？',
+  },
+  'init.qwenManaged': {
+    en: 'Automatically start local Qwen Serve (recommended)',
+    'zh-CN': '自动启动本机 Qwen Serve（推荐）',
+  },
+  'init.qwenExisting': {
+    en: 'Connect to an existing local Qwen Serve',
+    'zh-CN': '连接已有本机 Qwen Serve',
+  },
+  'init.qwenAcp': { en: 'Use ACP', 'zh-CN': '使用 ACP' },
+  'init.qwenManagedHint': {
+    en: 'Live will start a local Qwen Serve when it starts, configure its address and authentication automatically, and stop it when Live exits. This wizard only saves the configuration.',
+    'zh-CN':
+      '启动 Live 时会自动启动本机 Qwen Serve，并配置地址和认证；退出 Live 时关闭该服务。此向导只保存配置。',
+  },
+  'init.qwenExistingHint': {
+    en: 'Provide the loopback address and authentication of the service already running on this computer. Live will connect to it without starting or stopping it.',
+    'zh-CN':
+      '填写本机已运行服务的回环地址和认证信息。Live 只连接该服务，不负责启动或关闭。',
+  },
+  'init.localServeUrl': {
+    en: 'Existing local Qwen Serve URL',
+    'zh-CN': '已有本机 Qwen Serve 地址',
+  },
+  'init.invalidLocalServeUrl': {
+    en: 'Enter a local HTTP(S) URL using localhost, 127.0.0.1 or [::1], without embedded credentials, query or fragment.',
+    'zh-CN':
+      '请输入 localhost、127.0.0.1 或 [::1] 的本机 HTTP(S) 地址，不要包含用户名、密码、查询参数或片段。',
+  },
+  'peers.doctor.state.managed-unverified': {
+    en: 'Managed service not probed',
+    'zh-CN': '未探测自动管理的服务',
+  },
+  'peers.doctor.hint.managedServe': {
+    en: 'Live starts this Qwen Serve automatically. Read-only diagnostics do not start it and cannot verify its dynamically assigned endpoint.',
+    'zh-CN':
+      '此 Qwen Serve 由 Live 自动启动。只读诊断不会启动服务，无法验证其动态分配的地址。',
+  },
   'init.cancelled': { en: 'Cancelled.', 'zh-CN': '已取消。' },
   'init.addAgent': {
     en: 'Add another backend? ({count} remaining)',
@@ -394,21 +440,26 @@ export const LIVE_MESSAGES = {
       '已开启 debug。前台诊断日志省略媒体和连接凭据，但视觉 Monitor 归档包含真实屏幕／摄像头画面、音频和提示词／回复文本。归档就绪后会打印目录；分享前请检查敏感内容。',
   },
   'peerSetup.optIn': {
-    en: 'Set up existing Qwen terminal sessions (M3)?',
-    'zh-CN': '配置已有 Qwen 终端会话（M3）？',
+    en: 'Enable local Qwen terminal discovery?',
+    'zh-CN': '是否启用本机 Qwen 终端发现？',
+  },
+  'peerSetup.optInHint': {
+    en: 'Optionally discover running local Qwen terminals. With explicit authorization, Live can send them instructions and receive task reports.',
+    'zh-CN':
+      '可选：发现本机已运行的 Qwen 终端。配置授权后，Live 可以发送指令并接收任务汇报。',
   },
   'peerSetup.intro': {
-    en: 'Terminal sessions use a qwen-code backend connected to qwen serve. Existing ACP backends and the default backend are kept. QWEN_HOME always refers to this computer.',
+    en: 'Configure local terminal discovery and authorization on a Qwen Serve connection. QWEN_HOME is the local settings directory used by the target terminals.',
     'zh-CN':
-      '终端会话通过连接 qwen serve 的 qwen-code 后端接入。保留已有 ACP 后端和默认后端。QWEN_HOME 始终指本机目录。',
+      '为 Qwen Serve 连接配置本机终端发现和授权。QWEN_HOME 是目标终端使用的本机配置目录。',
   },
   'peerSetup.backend': {
-    en: 'Qwen backend for terminal sessions',
-    'zh-CN': '用于终端会话的 Qwen 后端',
+    en: 'Select a Qwen Serve connection',
+    'zh-CN': '选择 Qwen Serve 连接',
   },
   'peerSetup.addBackend': {
-    en: 'Add a Qwen backend (requires qwen serve)',
-    'zh-CN': '新增 Qwen 后端（需要 qwen serve）',
+    en: 'Add a Qwen Serve connection',
+    'zh-CN': '新增 Qwen Serve 连接',
   },
   'peerSetup.enabled': {
     en: 'Enable local terminal discovery on this backend?',

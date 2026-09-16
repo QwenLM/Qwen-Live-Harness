@@ -73,7 +73,12 @@ export interface PeerBackendDiagnostics {
   kind: BackendConfig['kind'];
   serve?: {
     location: 'local' | 'remote' | 'unknown';
-    state: HttpFailure | 'ready' | 'missing-features' | 'remote-unverified';
+    state:
+      | HttpFailure
+      | 'ready'
+      | 'missing-features'
+      | 'remote-unverified'
+      | 'managed-unverified';
     missingFeatures: string[];
     version?: string;
   };
@@ -92,6 +97,7 @@ export type PeerDiagnosticHint =
   | 'unknownDelivery'
   | 'callAndMute'
   | 'serveRequired'
+  | 'managedServe'
   | 'windows'
   | 'limits';
 
@@ -449,6 +455,12 @@ async function inspectServe(
   backend: Extract<BackendConfig, { kind: 'qwen-code' }>,
   options: PeerDiagnosticsOptions,
 ): Promise<NonNullable<PeerBackendDiagnostics['serve']>> {
+  if (backend.managedServe)
+    return {
+      location: 'local',
+      state: 'managed-unverified',
+      missingFeatures: [],
+    };
   const base = localHttpUrl(backend.baseUrl);
   if (!base)
     return { location: 'unknown', state: 'invalid', missingFeatures: [] };
@@ -652,8 +664,14 @@ export async function diagnoseQwenPeers(
   }
   if (backends.some((backend) => backend.serve?.location === 'remote'))
     hints.add('remote');
+  if (backends.some((backend) => backend.serve?.state === 'managed-unverified'))
+    hints.add('managedServe');
   if (
-    backends.some((backend) => backend.serve && backend.serve.state !== 'ready')
+    backends.some(
+      (backend) =>
+        backend.serve &&
+        !['ready', 'managed-unverified'].includes(backend.serve.state),
+    )
   )
     hints.add('serveRequired');
   if ((options.platform ?? process.platform) === 'win32') hints.add('windows');
@@ -664,7 +682,9 @@ export async function diagnoseQwenPeers(
     backends.some(
       (backend) =>
         (backend.serve !== undefined &&
-          !['ready', 'remote-unverified'].includes(backend.serve.state)) ||
+          !['ready', 'remote-unverified', 'managed-unverified'].includes(
+            backend.serve.state,
+          )) ||
         (backend.peers !== undefined &&
           (backend.peers.controller === 'invalid' ||
             ['invalid', 'unreadable'].includes(backend.peers.settings) ||

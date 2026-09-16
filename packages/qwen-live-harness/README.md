@@ -53,8 +53,10 @@ The wizard will:
 - Scan your PATH for installed coding agents (qodercli, qwen, gemini,
   claude, codex) and list what it found
 - Let you pick a default backend and add additional ones
-- When Qwen is detected, offer optional terminal-session setup (M3, default: off).
-  This adds a separate `qwen-code` backend and keeps the selected ACP default.
+- For Qwen Code, offer automatic local Qwen Serve startup (default), connection
+  to an existing local Qwen Serve, or ACP. Both Serve choices enable read-only
+  local terminal discovery automatically; report reception and instruction
+  authorization can be configured later with `init --peers`.
 - Ask for your DashScope realtime API key
 - Let you select the DashScope Realtime API name (the default is
   `qwen3.5-omni-plus-realtime`)
@@ -196,7 +198,7 @@ runtime language-pack installation is needed. Technical diagnostics and raw
 external error details retain their original language.
 
 `Quit Host` gracefully shuts down the connected standalone Live daemon and
-Host, including owned ACP processes, Memory work and discovery. It does not
+Host, including owned ACP processes, automatically started Qwen Serve processes, Memory work and discovery. It does not
 terminate an independently running `qwen serve`. A legacy WebShell connection
 only ends its Live call and closes Host. If shutdown is not confirmed, the
 orb remains with an error and Quit can retry the same authenticated instance.
@@ -498,18 +500,57 @@ shows microphone/output mute states beneath the main call status.
 
 ### Supported backends
 
-| Backend     | Kind        | ACP entry                                   | Notes                               |
-| ----------- | ----------- | ------------------------------------------- | ----------------------------------- |
-| Qoder CLI   | `acp`       | `qodercli --acp`                            | Hidden flag; uses Qoder's own login |
-| Qwen Code   | `acp`       | `qwen --acp`                                | Native ACP mode                     |
-| Gemini CLI  | `acp`       | `gemini --experimental-acp`                 | Official ACP support                |
-| Claude Code | `acp`       | `npx @agentclientprotocol/claude-agent-acp` | Adapter-based                       |
-| Codex       | `acp`       | `npx @agentclientprotocol/codex-acp`        | Adapter-based                       |
-| qwen serve  | `qwen-code` | REST/SSE to `qwen serve` daemon             | Legacy; no ACP needed               |
+| Backend     | Kind        | ACP entry                                   | Notes                                 |
+| ----------- | ----------- | ------------------------------------------- | ------------------------------------- |
+| Qoder CLI   | `acp`       | `qodercli --acp`                            | Hidden flag; uses Qoder's own login   |
+| Qwen Code   | `acp`       | `qwen --acp`                                | Native ACP mode                       |
+| Gemini CLI  | `acp`       | `gemini --experimental-acp`                 | Official ACP support                  |
+| Claude Code | `acp`       | `npx @agentclientprotocol/claude-agent-acp` | Adapter-based                         |
+| Codex       | `acp`       | `npx @agentclientprotocol/codex-acp`        | Adapter-based                         |
+| qwen serve  | `qwen-code` | REST/SSE to `qwen serve` daemon             | Automatic startup or existing service |
 
 Multiple backends can coexist — the voice model sees all sessions across
 all backends in `session_list` and can route `handoff` to a specific one by
 name.
+
+### Qwen Code connection modes
+
+The setup wizard defaults to **Automatically start local Qwen Serve** for Qwen Code.
+Live starts the installed `qwen` executable when its daemon starts, waits for
+service readiness and checks required capabilities before accepting work. The
+service uses loopback with an OS-assigned port and a fresh authentication token.
+Live stops its own service on startup failure or shutdown. `init` only saves the
+configuration; it does not start the service or a call.
+
+```json
+{
+  "name": "qwen",
+  "kind": "qwen-code",
+  "default": true,
+  "managedServe": { "command": "/absolute/path/to/qwen" }
+}
+```
+
+Use `defaultCwd` for the service workspace. The service inherits Qwen's existing
+model authentication and settings. Automatic startup does not configure the
+coding model or grant terminal messaging permissions.
+
+Choose **Connect to an existing local Qwen Serve** to enter a loopback `baseUrl`
+(`localhost`, `127.0.0.1`, or `[::1]`) and optional `token` instead. Live never starts or stops that external service. These fields
+cannot be combined with `managedServe`. Choose **ACP** for an automatically
+started `qwen --acp` process. Independent tasks can use separate sessions; each
+session executes one task at a time.
+
+Both Serve choices save read-only terminal discovery using the current
+`QWEN_HOME` (or `~/.qwen` when unset), without asking an extra question. They do
+not grant instruction delivery or enable reports. Use `init --peers` later to
+change the terminal directory, configure an existing controller grant, or enable
+reports. ACP does not enable terminal discovery. The main wizard only offers
+local connections; manually configured remote backends remain supported.
+
+Read-only `doctor --peers` reports automatically managed services as unverified:
+it does not launch a service or guess the ephemeral address. Live checks the
+actual endpoint during startup.
 
 ### Terminal setup and diagnostics (M3 stage 4)
 

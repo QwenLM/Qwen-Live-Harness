@@ -96,9 +96,13 @@ the Host. If the CLI was stopped while opening Host, merely activating that
 window does not recreate the stopped daemon.
 `End call` leaves the application running; `Quit Host` closes both components.
 
-The wizard detects supported agents already installed on your machine. Select
-an ACP backend such as `qwen --acp` or `qodercli --acp`; `qwen serve` is needed
-only when you explicitly use the optional REST/SSE backend. A DashScope API key
+The wizard detects supported agents already installed on your machine. For Qwen
+Code, choose automatic local Qwen Serve startup (the default), connect to an existing
+local Qwen Serve, or use ACP. Both Serve choices enable read-only discovery of
+local Qwen terminals without an extra setup question. Automatic startup assigns a local port and authentication
+token when Live starts and stops that service when Live exits. Existing services
+remain independently managed. Other agents use ACP, such as `qodercli --acp`.
+Initialization saves the choice without starting a service. A DashScope API key
 is required for realtime voice. Proactive and Memory can make additional model
 requests; configure them in the wizard or settings.
 

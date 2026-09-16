@@ -68,6 +68,7 @@ function buildAdaptor(
   if (backend.kind === 'qwen-code') {
     return new QwenCodeAdaptor({
       baseUrl: backend.baseUrl,
+      ...(backend.managedServe ? { managedServe: backend.managedServe } : {}),
       ...(backend.token ? { token: backend.token } : {}),
       ...(backend.peerDiscovery
         ? { peerDiscovery: backend.peerDiscovery }

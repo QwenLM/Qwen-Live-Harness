@@ -69,7 +69,7 @@ function validateBackends(
 export async function promptPeerSetup(
   original: RawBackend[],
   language: LiveLanguage,
-  options: { enabled?: true } = {},
+  options: { enabled?: true; backendIndex?: number } = {},
 ): Promise<RawBackend[] | undefined> {
   const t = (key: Parameters<typeof liveText>[1]) => liveText(language, key);
   if (process.env['QWEN_LIVE_HARNESS_BACKENDS']?.trim())
@@ -96,16 +96,21 @@ export async function promptPeerSetup(
       ? [{ title: String(backend.name), value: index }]
       : [],
   );
-  const selected = await prompts({
-    type: 'select',
-    name: 'value',
-    ...choiceLabels,
-    message: t('peerSetup.backend'),
-    choices: [...candidates, { title: t('peerSetup.addBackend'), value: -1 }],
-    initial: 0,
-  });
-  if (selected.value === undefined) return undefined;
-  const index = selected.value as number;
+  let index = options.backendIndex;
+  if (index === undefined) {
+    const selected = await prompts({
+      type: 'select',
+      name: 'value',
+      ...choiceLabels,
+      message: t('peerSetup.backend'),
+      choices: [...candidates, { title: t('peerSetup.addBackend'), value: -1 }],
+      initial: 0,
+    });
+    if (selected.value === undefined) return undefined;
+    index = selected.value as number;
+  } else if (!candidates.some((candidate) => candidate.value === index)) {
+    throw new Error(t('peerSetup.invalidConfig'));
+  }
   if (
     index !== -1 &&
     !candidates.some((candidate) => candidate.value === index)

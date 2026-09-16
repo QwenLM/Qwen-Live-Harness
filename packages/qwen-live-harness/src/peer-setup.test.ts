@@ -107,6 +107,28 @@ function output() {
   return vi.mocked(console.log).mock.calls.flat().join('\n');
 }
 
+it('adds discovery to the selected managed service without adding a backend', async () => {
+  answers();
+  const backend = {
+    name: 'qwen',
+    kind: 'qwen-code',
+    default: true,
+    managedServe: { command: 'qwen' },
+  };
+  const configured = await promptPeerSetup([backend], 'en', {
+    enabled: true,
+    backendIndex: 0,
+  });
+  expect(configured).toHaveLength(1);
+  expect(configured?.[0]).toMatchObject({
+    ...backend,
+    peerDiscovery: { qwenHome, reports: true },
+  });
+  expect(prompt.mock.calls.map(([question]) => question.message)).not.toContain(
+    liveText('en', 'peerSetup.backend'),
+  );
+});
+
 describe('incremental peer setup', () => {
   it.each(['en', 'zh-CN'] as const)(
     'preserves config and the ACP default while adding a separate backend (%s)',
