@@ -186,6 +186,25 @@ describe('ToolDispatcher', () => {
     expect(JSON.parse(result.receipt)).toEqual({ status: 'ok' });
   });
 
+  it('uses capability-specific timeout guidance without inventing a backend job', async () => {
+    vi.useFakeTimers();
+    const note =
+      'The result is unknown. Do not immediately retry or claim success.';
+    const dispatcher = new ToolDispatcher({
+      handlers: new Map([
+        ['appshot', () => new Promise<Record<string, unknown>>(() => {})],
+      ]),
+      timeoutMs: 50,
+      timeoutNote: note,
+    });
+    const pending = dispatcher.dispatch('appshot', '{}', makeContext());
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await pending).toEqual({
+      ok: false,
+      receipt: JSON.stringify({ status: 'pending', note }),
+    });
+  });
+
   it('threads ctx.activeTranscript through to the handler untouched', async () => {
     const transcript = [
       { role: 'user' as const, text: 'run the tests' },

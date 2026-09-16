@@ -527,6 +527,10 @@ describe('LiveDaemonConnection', () => {
         { mode: 0o600 },
       );
       const changes = new EventEmitter();
+      const authenticatedIdentities: Array<{
+        pid: number;
+        instanceNonce: string;
+      }> = [];
       const connection = new LiveDaemonConnection(
         '0.0.6',
         {
@@ -544,6 +548,11 @@ describe('LiveDaemonConnection', () => {
               appshot: true,
             },
           }),
+          onDaemonIdentity: (record) =>
+            authenticatedIdentities.push({
+              pid: record.pid,
+              instanceNonce: record.instanceNonce,
+            }),
           onSnapshot: () => changes.emit('snapshot'),
           onOutputAudio: () => undefined,
           onOutputAudioFinished: () => undefined,
@@ -565,6 +574,7 @@ describe('LiveDaemonConnection', () => {
       connection.start();
       const peer = await peerReady;
       assert.equal(connection.getConfigFilePath(), undefined);
+      assert.deepEqual(authenticatedIdentities, []);
       peer.send(
         JSON.stringify({
           type: 'host.welcome',
@@ -584,8 +594,12 @@ describe('LiveDaemonConnection', () => {
       if (outcome === 'mismatch') {
         await waitForPhase('error');
         assert.equal(connection.getSnapshot().error, 'daemon_identity');
+        assert.deepEqual(authenticatedIdentities, []);
       } else {
         await waitForPhase('ready');
+        assert.deepEqual(authenticatedIdentities, [
+          { pid: process.pid, instanceNonce: 'abcdefghijklmnop' },
+        ]);
         assert.equal(connection.getConfigFilePath(), configPath);
         if (outcome === 'quit') {
           const quitting = connection.requestQuit();

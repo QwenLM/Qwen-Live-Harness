@@ -32,7 +32,10 @@ import {
 
 const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_LOG_BYTES = 1024 * 1024;
-const STARTUP_TIMEOUT_MS = 60_000;
+// Registry preflights the default agent first, then all secondary agents.
+// Each cold package-runner initialization may take five minutes. Keep the
+// outer desktop/lock deadline above both phases; cancellation stays immediate.
+const STARTUP_TIMEOUT_MS = 11 * 60_000;
 const executeFile = promisify(execFile);
 
 export type StartupErrorCode =

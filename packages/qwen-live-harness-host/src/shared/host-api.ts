@@ -40,6 +40,8 @@ export type HostPublicState = {
   connectionError?: string;
   canOpenConfig?: boolean;
   quitState?: 'pending' | 'failed';
+  audioError?: string;
+  audioRetrying?: boolean;
   overlayOffset?: OverlayOffset;
   visualInput?: VisualInput;
   screenDisplays?: ScreenDisplay[];

@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   refreshHost: vi.fn(),
   installHost: vi.fn(),
   registerCurrentRuntime: vi.fn(),
+  detectAgents: vi.fn(),
 }));
 
 vi.mock('prompts', () => ({ default: mocks.prompt }));
@@ -33,15 +34,7 @@ vi.mock('node:fs', async () => {
   };
 });
 vi.mock('./agent-detector.js', () => ({
-  detectAgents: () => [
-    {
-      label: 'Qwen Code',
-      name: 'qwen',
-      command: '/usr/local/bin/qwen',
-      args: ['--acp'],
-      version: '1.0.0',
-    },
-  ],
+  detectAgents: mocks.detectAgents,
 }));
 vi.mock('./host/qwen-live-harness-host-installer.js', () => ({
   LiveHostInstaller: class {
@@ -63,11 +56,17 @@ import { liveText } from './i18n/messages.js';
 const originalApiKey = process.env['DASHSCOPE_API_KEY'];
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
-function answerSetupPrompts(cwd = '/tmp/harness-init-project'): void {
+function answerSetupPrompts(
+  cwd = '/tmp/harness-init-project',
+  international = false,
+): void {
   mocks.prompt.mockImplementation(async (question: { message: string }) => {
     const answers = new Map<string, unknown>([
       [liveText('en', 'language.choose'), true],
+      [liveText('en', 'init.overwrite'), true],
       [liveText('en', 'init.defaultAgent'), 'qwen'],
+      [liveText('en', 'init.addAgent', { count: 1 }), false],
+      [liveText('en', 'init.endpoint'), international],
       [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
       [liveText('en', 'init.apiName'), 'qwen3.5-omni-plus-realtime'],
       [liveText('en', 'init.memoryEnabled'), false],
@@ -78,6 +77,48 @@ function answerSetupPrompts(cwd = '/tmp/harness-init-project'): void {
       throw new Error(`Unexpected prompt: ${question.message}`);
     return { value: answers.get(question.message) };
   });
+}
+
+function answerWithoutBackend(language: 'en' | 'zh-CN' = 'en'): void {
+  mocks.prompt.mockImplementation(async (question: { message: string }) => {
+    const answers = new Map<string, unknown>([
+      [liveText('en', 'language.choose'), language === 'en'],
+      [liveText(language, 'init.noAgentAction'), 'continue'],
+      [liveText(language, 'init.defaultAgent'), null],
+      [liveText(language, 'init.endpoint'), false],
+      [liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
+      [liveText(language, 'init.apiName'), 'fixture-realtime'],
+      [liveText(language, 'init.memoryEnabled'), true],
+      [liveText(language, 'init.memoryModel'), 'fixture-memory'],
+      [liveText(language, 'init.hostInstall'), true],
+    ]);
+    if (!answers.has(question.message))
+      throw new Error(`Unexpected no-backend prompt: ${question.message}`);
+    return { value: answers.get(question.message) };
+  });
+}
+
+function enableAllYesNoPrompts(): void {
+  mocks.existsSync.mockReturnValue(true);
+  mocks.readFileSync.mockReturnValue('{"language":"en"}');
+  mocks.refreshHost.mockResolvedValue({ state: 'missing' });
+  mocks.detectAgents.mockReturnValue([
+    {
+      label: 'Qwen Code',
+      name: 'qwen',
+      command: '/synthetic/qwen',
+      args: ['--acp'],
+      version: '1.0',
+    },
+    {
+      label: 'Gemini CLI',
+      name: 'gemini',
+      command: '/synthetic/gemini',
+      args: ['--experimental-acp'],
+      version: '1.0',
+    },
+  ]);
+  answerSetupPrompts();
 }
 
 beforeEach(() => {
@@ -94,6 +135,15 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ state: 'installed', version: '0.3.0' });
   mocks.registerCurrentRuntime.mockReset().mockResolvedValue(undefined);
+  mocks.detectAgents.mockReset().mockReturnValue([
+    {
+      label: 'Qwen Code',
+      name: 'qwen',
+      command: '/usr/local/bin/qwen',
+      args: ['--acp'],
+      version: '1.0.0',
+    },
+  ]);
   Object.defineProperty(process, 'platform', {
     ...originalPlatform,
     value: 'darwin',
@@ -113,6 +163,379 @@ afterEach(() => {
 });
 
 describe('runInit', () => {
+  it.each([
+    [false, 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'],
+    [true, 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'],
+  ] as const)(
+    'asks for the agent, API key and model before saving its region (international: %s)',
+    async (international, expected) => {
+      answerSetupPrompts('/tmp/endpoint-test', international);
+      await runInit({ source: true });
+      const saved = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+      expect(saved.realtimeEndpoint).toBe(expected);
+      const endpointIndex = mocks.prompt.mock.calls.findIndex(
+        ([question]) => question.message === liveText('en', 'init.endpoint'),
+      );
+      const agentIndex = mocks.prompt.mock.calls.findIndex(
+        ([question]) =>
+          question.message === liveText('en', 'init.defaultAgent'),
+      );
+      const keyIndex = mocks.prompt.mock.calls.findIndex(
+        ([question]) =>
+          question.message ===
+          liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
+      );
+      const modelIndex = mocks.prompt.mock.calls.findIndex(
+        ([question]) => question.message === liveText('en', 'init.apiName'),
+      );
+      expect(agentIndex).toBeGreaterThanOrEqual(0);
+      expect(agentIndex).toBeLessThan(keyIndex);
+      expect(keyIndex).toBeLessThan(modelIndex);
+      expect(modelIndex).toBeLessThan(endpointIndex);
+      expect(mocks.prompt.mock.calls[endpointIndex]?.[0]).toMatchObject({
+        type: 'toggle',
+        inactive: liveText('en', 'init.endpointBeijing'),
+        active: liveText('en', 'init.endpointSingapore'),
+        initial: false,
+      });
+      expect(console.log).toHaveBeenCalledWith(
+        `\n  ${liveText('en', 'init.endpointKeyHint')}\n`,
+      );
+      expect(mocks.installHost).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['en', 'zh-CN'] as const)(
+    'keeps manual API key entry before the model and service-region questions in %s',
+    async (language) => {
+      vi.stubEnv('DASHSCOPE_API_KEY', undefined);
+      vi.stubEnv('QWEN_LIVE_HARNESS_REALTIME_API_KEY', undefined);
+      const t = (key: Parameters<typeof liveText>[1]) =>
+        liveText(language, key);
+      const answers = new Map<string, unknown>([
+        [liveText('en', 'language.choose'), language === 'en'],
+        [t('init.defaultAgent'), 'qwen'],
+        [t('init.apiKey'), 'synthetic-region-test-key'],
+        [t('init.apiName'), 'qwen3.5-omni-plus-realtime'],
+        [t('init.endpoint'), true],
+        [t('init.memoryEnabled'), false],
+        [t('init.cwd'), '/tmp/region-order-test'],
+      ]);
+      mocks.prompt.mockImplementation(async (question: { message: string }) => {
+        if (!answers.has(question.message))
+          throw new Error(`Unexpected prompt: ${question.message}`);
+        return { value: answers.get(question.message) };
+      });
+      await runInit({ source: true });
+      expect(
+        mocks.prompt.mock.calls.map(([question]) => question.message),
+      ).toEqual([
+        liveText('en', 'language.choose'),
+        t('init.defaultAgent'),
+        t('init.apiKey'),
+        t('init.apiName'),
+        t('init.endpoint'),
+        t('init.memoryEnabled'),
+        t('init.cwd'),
+      ]);
+      expect(t('init.endpoint')).toContain('DASHSCOPE_API_KEY');
+      expect(t('init.apiName')).toContain('DashScope Qwen Omni Realtime API');
+      expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain(
+        language === 'en'
+          ? 'Applies to Realtime voice/vision'
+          : '用于 Realtime 语音／视觉',
+      );
+      expect(
+        JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]))
+          .realtimeEndpoint,
+      ).toBe('wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime');
+      expect(mocks.installHost).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime',
+    'https://dashscope-intl.aliyuncs.com',
+  ])(
+    'preserves Singapore as the initial selection for %s',
+    async (endpoint) => {
+      mocks.existsSync.mockReturnValue(true);
+      mocks.readFileSync.mockReturnValue(
+        JSON.stringify({ language: 'en', realtimeEndpoint: endpoint }),
+      );
+      answerSetupPrompts(undefined, true);
+      await runInit({ source: true });
+      const question = mocks.prompt.mock.calls.find(
+        ([entry]) => entry.message === liveText('en', 'init.endpoint'),
+      )?.[0];
+      expect(question).toMatchObject({ type: 'toggle', initial: true });
+      expect(
+        JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]))
+          .realtimeEndpoint,
+      ).toBe('wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime');
+    },
+  );
+
+  it('warns before replacing a custom endpoint without printing its credentials', async () => {
+    const endpoint = 'wss://private.example/realtime?token=private-token';
+    mocks.existsSync.mockReturnValue(true);
+    mocks.readFileSync.mockReturnValue(
+      JSON.stringify({ language: 'en', realtimeEndpoint: endpoint }),
+    );
+    answerSetupPrompts();
+    await runInit({ source: true });
+    expect(console.log).toHaveBeenCalledWith(
+      `\n  ${liveText('en', 'init.customEndpointHint')}\n`,
+    );
+    expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain(
+      'private-token',
+    );
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]))
+        .realtimeEndpoint,
+    ).toBe('wss://dashscope.aliyuncs.com/api-ws/v1/realtime');
+  });
+
+  it('warns that an endpoint environment override takes precedence without exposing or changing its value', async () => {
+    const override = 'wss://private.example/realtime?token=private-env-token';
+    vi.stubEnv('QWEN_LIVE_HARNESS_REALTIME_ENDPOINT', override);
+    answerSetupPrompts(undefined, true);
+    await runInit({ source: true });
+    expect(console.log).toHaveBeenCalledWith(
+      `\n  ${liveText('en', 'init.endpointEnvOverride')}\n`,
+    );
+    expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain(
+      'private-env-token',
+    );
+    expect(process.env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']).toBe(override);
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]))
+        .realtimeEndpoint,
+    ).toBe('wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime');
+  });
+
+  it('uses left/right Yes/No toggles defaulting to Yes for every boolean confirmation', async () => {
+    enableAllYesNoPrompts();
+    await runInit();
+    const keys = [
+      liveText('en', 'init.overwrite'),
+      liveText('en', 'init.addAgent', { count: 1 }),
+      liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
+      liveText('en', 'init.memoryEnabled'),
+      liveText('en', 'init.hostInstall'),
+    ];
+    for (const message of keys) {
+      const question = mocks.prompt.mock.calls.find(
+        ([entry]) => entry.message === message,
+      )?.[0];
+      expect(question).toMatchObject({
+        type: 'toggle',
+        active: 'Yes',
+        inactive: 'No',
+        initial: true,
+      });
+    }
+    expect(
+      mocks.prompt.mock.calls.some(([question]) => question.type === 'confirm'),
+    ).toBe(false);
+  });
+
+  it.each([
+    'overwrite',
+    'addAgent',
+    'endpoint',
+    'useEnv',
+    'memoryEnabled',
+    'hostInstall',
+  ] as const)(
+    'does not write config or install Host when the %s toggle is cancelled',
+    async (cancelAt) => {
+      enableAllYesNoPrompts();
+      const message =
+        cancelAt === 'addAgent'
+          ? liveText('en', 'init.addAgent', { count: 1 })
+          : cancelAt === 'useEnv'
+            ? liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' })
+            : liveText('en', `init.${cancelAt}`);
+      const answer = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) =>
+        question.message === message ? {} : answer(question),
+      );
+      await runInit();
+      expect(
+        mocks.prompt.mock.calls.some(
+          ([question]) => question.message === message,
+        ),
+      ).toBe(true);
+      expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.renameSync).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+      expect(mocks.installHost).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['en', 'zh-CN'] as const)(
+    'configures source-only mode in %s without touching the installed Host or runtime registration',
+    async (language) => {
+      mocks.detectAgents.mockReturnValue([]);
+      answerWithoutBackend(language);
+      await runInit({ source: true });
+      expect(
+        JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])),
+      ).toMatchObject({
+        language,
+        backends: [],
+        realtimeModel: 'fixture-realtime',
+        memory: { enabled: true },
+      });
+      expect(mocks.refreshHost).not.toHaveBeenCalled();
+      expect(mocks.installHost).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+      expect(console.log).toHaveBeenCalledWith(
+        `\n  ${liveText(language, 'init.sourceHostHint')}`,
+      );
+      expect(console.log).toHaveBeenCalledWith(
+        `\n  ${liveText(language, 'init.sourceRun')}\n`,
+      );
+      expect(console.log).not.toHaveBeenCalledWith(
+        `\n  ${liveText(language, 'init.run')}\n`,
+      );
+    },
+  );
+
+  it('preserves backend selection in source setup without checking or installing Host', async () => {
+    answerSetupPrompts();
+    await runInit({ source: true });
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])).backends,
+    ).toMatchObject([
+      {
+        name: 'qwen',
+        kind: 'acp',
+        command: '/usr/local/bin/qwen',
+        default: true,
+      },
+    ]);
+    expect(mocks.refreshHost).not.toHaveBeenCalled();
+    expect(mocks.installHost).not.toHaveBeenCalled();
+    expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+  });
+
+  it('keeps existing source config and gives the npm start instruction', async () => {
+    mocks.existsSync.mockReturnValue(true);
+    mocks.readFileSync.mockReturnValue('{"language":"en"}');
+    mocks.prompt
+      .mockResolvedValueOnce({ value: true })
+      .mockResolvedValueOnce({ value: false });
+    await runInit({ source: true });
+    expect(mocks.writeFileSync).not.toHaveBeenCalled();
+    expect(mocks.refreshHost).not.toHaveBeenCalled();
+    expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(
+      `\n  ${liveText('en', 'init.sourceKeep')}\n`,
+    );
+  });
+
+  it.each(['en', 'zh-CN'] as const)(
+    'continues setup without any detected coding agent in %s',
+    async (language) => {
+      mocks.detectAgents.mockReturnValue([]);
+      mocks.refreshHost.mockResolvedValue({ state: 'missing' });
+      answerWithoutBackend(language);
+
+      await runInit();
+
+      const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+      expect(config).toMatchObject({
+        language,
+        backends: [],
+        realtimeApiKey: 'sk-test',
+        realtimeModel: 'fixture-realtime',
+        memory: { enabled: true, updater: { model: 'fixture-memory' } },
+        proactive: { enabled: true },
+        visualInput: { mode: 'on-demand', source: 'screen' },
+        defaultCwd: process.cwd(),
+      });
+      expect(mocks.installHost).toHaveBeenCalledExactlyOnceWith(false, {
+        launch: false,
+      });
+      expect(mocks.registerCurrentRuntime).toHaveBeenCalledExactlyOnceWith({
+        dataDir: '/synthetic/harness-init',
+        discoveryDir: join(homedir(), '.qwen-live-harness'),
+        cwd: process.cwd(),
+      });
+      const question = mocks.prompt.mock.calls.find(
+        ([prompt]) =>
+          prompt.message === liveText(language, 'init.noAgentAction'),
+      )?.[0];
+      expect(question).toMatchObject({
+        type: 'select',
+        initial: 0,
+        choices: [
+          {
+            title: liveText(language, 'init.noBackendOption'),
+            value: 'continue',
+          },
+          {
+            title: liveText(language, 'init.installAgentFirst'),
+            value: 'install',
+          },
+        ],
+      });
+      expect(console.log).toHaveBeenCalledWith(
+        `\n  ${liveText(language, 'init.noBackendHint')}\n`,
+      );
+      expect(console.log).toHaveBeenCalledWith(
+        `  ✓ ${liveText(language, 'init.noBackendSummary')}`,
+      );
+      expect(console.log).toHaveBeenCalledWith(
+        `\n  ${liveText(language, 'init.run')}\n`,
+      );
+    },
+  );
+
+  it('allows declining a detected agent without asking for extra agents or a coding workspace', async () => {
+    answerWithoutBackend();
+    await runInit();
+    const question = mocks.prompt.mock.calls.find(
+      ([prompt]) => prompt.message === liveText('en', 'init.defaultAgent'),
+    )?.[0];
+    expect(question.choices).toEqual([
+      { title: 'Qwen Code (1.0.0)', value: 'qwen' },
+      {
+        title: liveText('en', 'init.noBackendOption'),
+        value: null,
+        description: liveText('en', 'init.noBackendHint'),
+      },
+    ]);
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])).backends,
+    ).toEqual([]);
+  });
+
+  it.each(['install', undefined])(
+    'leaves setup untouched when the missing-agent action is %s',
+    async (action) => {
+      mocks.detectAgents.mockReturnValue([]);
+      mocks.prompt
+        .mockResolvedValueOnce({ value: true })
+        .mockResolvedValueOnce({ value: action });
+      await runInit();
+      expect(mocks.prompt).toHaveBeenCalledTimes(2);
+      expect(mocks.refreshHost).not.toHaveBeenCalled();
+      expect(mocks.installHost).not.toHaveBeenCalled();
+      expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.renameSync).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+      if (action === 'install')
+        expect(console.log).toHaveBeenCalledWith(
+          `\n  ${liveText('en', 'init.installAgent')}\n`,
+        );
+    },
+  );
+
   it('installs without launching and registers desktop startup only after saving config', async () => {
     answerSetupPrompts();
     mocks.refreshHost.mockResolvedValue({ state: 'missing' });
@@ -218,9 +641,11 @@ describe('runInit', () => {
               return { value: true };
             case 'Which agent should be the default backend?':
               return { value: 'qwen' };
+            case liveText('en', 'init.endpoint'):
+              return { value: false };
             case 'Use DASHSCOPE_API_KEY from the environment?':
               return { value: true };
-            case 'DashScope Realtime API name:':
+            case liveText('en', 'init.apiName'):
               return { value: 'qwen3.5-omni-plus-realtime' };
             case 'Enable Memory for cross-call recall?':
               return { value: enabled };
@@ -275,9 +700,11 @@ describe('runInit', () => {
             return { value: true };
           case 'Which agent should be the default backend?':
             return { value: 'qwen' };
+          case liveText('en', 'init.endpoint'):
+            return { value: false };
           case 'Use DASHSCOPE_API_KEY from the environment?':
             return { value: true };
-          case 'DashScope Realtime API name:':
+          case liveText('en', 'init.apiName'):
             return { value: 'qwen3.5-omni-plus-realtime' };
           case 'Enable Memory for cross-call recall?':
             return { value: true };
@@ -296,7 +723,7 @@ describe('runInit', () => {
     const modelQuestion = mocks.prompt.mock.calls
       .map(([question]) => question as Record<string, unknown>)
       .find(
-        (question) => question['message'] === 'DashScope Realtime API name:',
+        (question) => question['message'] === liveText('en', 'init.apiName'),
       );
     expect(modelQuestion).toMatchObject({
       type: 'text',
@@ -357,6 +784,7 @@ describe('runInit', () => {
           }
           const choices = new Map<string, string | boolean>([
             [liveText(language, 'init.defaultAgent'), 'qwen'],
+            [liveText(language, 'init.endpoint'), false],
             [
               liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
               true,
@@ -381,11 +809,18 @@ describe('runInit', () => {
         ([question]) => question as Record<string, unknown>,
       );
       for (const question of questions.filter(
-        (entry) => entry['type'] === 'confirm',
+        (entry) =>
+          entry['type'] === 'toggle' &&
+          entry['message'] !== liveText('en', 'language.choose') &&
+          entry['message'] !== liveText(language, 'init.endpoint'),
       )) {
-        expect(question['yes']).toBe(liveText(language, 'init.yes'));
-        expect(question['no']).toBe(liveText(language, 'init.no'));
+        expect(question['active']).toBe(liveText(language, 'init.yes'));
+        expect(question['inactive']).toBe(liveText(language, 'init.no'));
+        expect(question['initial']).toBe(true);
       }
+      expect(questions.some((question) => question['type'] === 'confirm')).toBe(
+        false,
+      );
       expect(
         questions.find((entry) => entry['type'] === 'select')?.['hint'],
       ).toBe(liveText(language, 'init.selectHint'));
@@ -420,22 +855,24 @@ describe('runInit', () => {
     expect(mocks.refreshHost).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1, 2, 3, 4, 5, 6])(
+  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
     'does not write config if prompt %s is cancelled',
     async (cancelAt) => {
       const answers = [
-        true,
-        'qwen',
-        true,
-        'fixture-model',
-        true,
-        'fixture-memory',
-        '/tmp/live-language',
+        [liveText('en', 'language.choose'), true],
+        [liveText('en', 'init.defaultAgent'), 'qwen'],
+        [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
+        [liveText('en', 'init.apiName'), 'fixture-model'],
+        [liveText('en', 'init.endpoint'), false],
+        [liveText('en', 'init.memoryEnabled'), true],
+        [liveText('en', 'init.memoryModel'), 'fixture-memory'],
+        [liveText('en', 'init.cwd'), '/tmp/live-language'],
       ];
       let index = 0;
-      mocks.prompt.mockImplementation(async () => {
+      mocks.prompt.mockImplementation(async (question: { message: string }) => {
         const current = index++;
-        return current === cancelAt ? {} : { value: answers[current] };
+        expect(question.message).toBe(answers[current]?.[0]);
+        return current === cancelAt ? {} : { value: answers[current]?.[1] };
       });
       await runInit();
       expect(mocks.writeFileSync).not.toHaveBeenCalled();

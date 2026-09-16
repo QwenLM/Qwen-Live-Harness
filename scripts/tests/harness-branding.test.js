@@ -18,12 +18,8 @@ describe('Qwen Live Harness package and startup identities', () => {
     expect(daemon.repository.directory).toBe('packages/qwen-live-harness');
     expect(host.name).toBe('qwen-live-harness-host');
     expect(host.private).toBe(true);
-    expect(root.scripts.start).toBe(
-      'node packages/qwen-live-harness/dist/index.js',
-    );
-    expect(root.scripts.init).toBe(
-      'node packages/qwen-live-harness/dist/index.js init',
-    );
+    expect(root.scripts.start).toBe('node scripts/start-dev.mjs');
+    expect(root.scripts.init).toBe('node scripts/start-dev.mjs init');
     expect(root.scripts['build:host']).toBe(
       'npm run build --prefix packages/qwen-live-harness-host',
     );

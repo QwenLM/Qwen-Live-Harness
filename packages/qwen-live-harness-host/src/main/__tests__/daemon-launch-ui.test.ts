@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { resolveDiscoveryPath } from '../discovery.ts';
 import type { DaemonBootstrapState } from '../daemon-bootstrap.ts';
 import type { HostPublicState } from '../../shared/host-api.ts';
+import { parseDaemonOwner } from '../daemon-lifecycle.ts';
 
 function fixture() {
   const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
@@ -17,6 +18,7 @@ function fixture() {
   );
   const names = new Set([
     'openHost',
+    'finishHostActivation',
     'activateHost',
     'retryDaemonStartup',
     'prepareDaemonLaunch',
@@ -34,6 +36,19 @@ function fixture() {
   type TrayItem = { label?: string; enabled?: boolean; click?: () => void };
   let menu: TrayItem[] = [];
   const context = {
+    audioError: undefined,
+    audioRetryPending: false,
+    activationGeneration: 0,
+    pendingActivationGeneration: undefined as number | undefined,
+    daemonLifecycle: undefined as
+      | {
+          acceptActivation: (owner: {
+            pid: number;
+            instanceNonce: string;
+          }) => Promise<boolean>;
+        }
+      | undefined,
+    parseDaemonOwner,
     activationConnectOnly: false,
     tray: {
       setContextMenu: (items: TrayItem[]) => {
@@ -249,6 +264,55 @@ describe('Host desktop launch presentation', () => {
       '--qwen-live-harness-discovery-file=/fixture/run/daemon.json',
     ]);
     assert.equal(host.controls.publicState().connectionError, undefined);
+  });
+
+  it('checks a second-instance owner before activating and does not let macOS focus bypass it', async () => {
+    const host = fixture();
+    let accept!: (accepted: boolean) => void;
+    host.context.daemonLifecycle = {
+      acceptActivation: () =>
+        new Promise<boolean>((resolve) => {
+          accept = resolve;
+        }),
+    };
+    host.controls.openHost([
+      'Host',
+      '--qwen-live-harness-connect-only',
+      '--qwen-live-harness-owner=1234:fixture_daemon_nonce',
+    ]);
+    host.controls.activateHost();
+    assert.equal(host.launches(), 0);
+    accept(true);
+    await Promise.resolve();
+    assert.equal(host.launches(), 1);
+    assert.equal(host.launchOptions[0]?.startIfMissing, false);
+  });
+
+  it('keeps an unrelated running instance untouched when a second owner is rejected', async () => {
+    const host = fixture();
+    host.context.connection.phase = 'ready';
+    host.context.daemonLifecycle = { acceptActivation: async () => false };
+    host.controls.openHost([
+      'Host',
+      '--qwen-live-harness-owner=1234:fixture_daemon_nonce',
+    ]);
+    await Promise.resolve();
+    assert.equal(host.launches(), 0);
+    assert.equal(host.controls.publicState().connection, 'ready');
+    assert.equal(
+      host.controls.publicState().connectionError,
+      'startup.ownerMismatch',
+    );
+  });
+
+  it('rejects malformed owners without invoking daemon startup', () => {
+    const host = fixture();
+    host.controls.openHost(['Host', '--qwen-live-harness-owner=1234:short']);
+    assert.equal(host.launches(), 0);
+    assert.equal(
+      host.controls.publicState().connectionError,
+      'startup.invalidOwner',
+    );
   });
 
   it('rejects invalid desktop arguments and never starts while quitting or awaiting Quit retry', () => {

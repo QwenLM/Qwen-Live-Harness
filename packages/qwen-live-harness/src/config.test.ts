@@ -42,6 +42,57 @@ afterEach(async () => {
 });
 
 describe('loadConfig', () => {
+  it('treats an explicit empty backend list as delegation disabled', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [],
+      serveUrl: 'http://127.0.0.1:4999',
+    });
+    const config = loadConfig({
+      QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+      QWEN_LIVE_HARNESS_SERVE_URL: 'http://127.0.0.1:4998',
+    });
+    expect(config.backends).toEqual([]);
+    expect(config.proactive.enabled).toBe(true);
+    expect(config.memory.enabled).toBe(true);
+  });
+
+  it('allows an explicit empty environment list to override configured backends', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [{ name: 'agent', kind: 'acp', command: '/synthetic/agent' }],
+    });
+    expect(
+      loadConfig({
+        QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+        QWEN_LIVE_HARNESS_BACKENDS: '[]',
+      }).backends,
+    ).toEqual([]);
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).backends,
+    ).toMatchObject([
+      {
+        name: 'agent',
+        kind: 'acp',
+        command: '/synthetic/agent',
+        isDefault: true,
+      },
+    ]);
+  });
+
+  it.each([null, '', {}, false])(
+    'rejects a non-array backend value %j rather than treating it as disabled',
+    async (backends) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends,
+      });
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        '"backends" must be an array',
+      );
+    },
+  );
+
   it.each([{ typo: 1 }, { sourc: 'camera', cameraResoluton: 'native' }])(
     'rejects unknown visual input keys %j',
     async (visualInput) => {

@@ -42,6 +42,10 @@ WebShell 或 Session 窗口；对话由连接的 daemon 管理，编码任务由
 Host 与 CLI 必须使用配套版本；即使协议号一致，也不接受不同版本的已安装 Host 或下载
 manifest。初始化遇到旧 Host 会提示安装配套版本，普通启动发现版本不匹配会明确报错。
 
+CLI 创建前台 daemon 时，`Ctrl+C` 会取消正在进行的 Host 校验，并关闭该 daemon 和对应
+Host；Host 尚在打开或重连时也会接收到同一实例的退出通知。仅复用已有 daemon 的短暂
+CLI 命令退出时，不会终止原有会话。普通启动会显示当前阶段，`--debug` 额外记录阶段耗时。
+
 API key 保存在用户级 `~/.qwen-live-harness/config.json`。停止 daemon 会结束当前通话并撤下
 Host discovery；不会卸载 Host 或删除对话。本次统一命名是无兼容别名的身份切换：
 不会读取或迁移旧配置、记忆、Host 偏好、discovery 或环境变量，也不会删除旧应用和数据。
@@ -105,10 +109,10 @@ GitHub draft。draft 不发布 npm；稳定版先完成 Host 和公共 OSS 分�
 bucket 名称表示现有基础设施归属，不是产品名，也不要求 qwen-code checkout。
 GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
 `qwen-live-harness-host-latest` feed。旧 prefix、tag 和产物不是 fallback。当前源码版本
-0.4.0 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
+0.4.2 使用 protocol v9，正式产物以新应用身份完成配套签名发布和安装验证，版本号相同
 不代表旧名称产物可替代。
 
-管理员需要为新仓库配置以下发布凭据；仓库迁移不会复制或写入这些凭据：
+管理员需要为新仓库配置以下发布凭据和信任关系；仓库迁移不会复制或写入这些配置：
 
 - Developer ID：`MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`，或
   `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`；`APPLE_KEYCHAIN_PASSWORD` 可选。
@@ -118,9 +122,14 @@ GitHub fallback 仅在源仓库对用户可访问时可用，并只使用新的
 - OSS：`ALIYUN_OSS_ACCESS_KEY_ID`、`ALIYUN_OSS_ACCESS_KEY_SECRET`；创建
   `production-release` environment 并配置保护规则。可选变量为 `ALIYUN_OSS_ENDPOINT`、
   `ALIYUN_OSS_BUCKET`、`ALIYUN_OSS_PUBLIC_BASE_URL`、`OSSUTIL_URL`、`OSSUTIL_SHA256`。
-- npm：`production-release` environment 中的 `NPM_TOKEN`，需要拥有
-  `qwen-live-harness` 的发布权限。公开源码发布启用 provenance；private 源码发布
-  使用 token，不生成公开源码 provenance。
+- npm：在 `qwen-live-harness` 包的 Settings 中配置 GitHub Actions
+  [Trusted Publisher](https://docs.npmjs.com/trusted-publishers)：Organization or user
+  填 `QwenLM`，Repository 填 `Qwen-Live-Harness`，Workflow filename 填
+  `qwen-live-harness-host-release.yml`（不含目录），Environment name 填
+  `production-release`，允许直接 `npm publish`。发布 job 使用 GitHub 托管 runner
+  和 `id-token: write` 获取短期 OIDC 凭据，不读取 `NPM_TOKEN`。Node.js 至少需要
+  22.14.0，npm 至少需要 11.5.1。公开源码发布启用 provenance；private 仓库同样
+  支持 OIDC，但不生成公开源码 provenance。
 
 新的 bundle ID 为 `com.alibaba.qwen-live-harness.host`，产品名为
 `Qwen Live Harness Host`，安装路径为 `/Applications/Qwen Live Harness Host.app`。

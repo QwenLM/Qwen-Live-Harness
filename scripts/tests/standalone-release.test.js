@@ -61,13 +61,15 @@ describe('standalone release ownership', () => {
     expect(wrongBranch.stdout).toContain('must run from main');
   });
 
-  it('does not publish draft or dry-run builds to npm', () => {
+  it('publishes eligible builds with OIDC from a protected environment', () => {
     const npm = getWorkflowJob(workflow, 'npm-publish');
     expect(npm).toContain('inputs.dry_run == false && inputs.draft == false');
     expect(npm).toContain("needs.publish.result == 'success'");
     expect(npm).toContain("needs.sync-oss.result == 'success'");
     expect(npm).toContain("environment: 'production-release'");
-    expect(npm).toContain("NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}'");
+    expect(npm).toContain("runs-on: 'ubuntu-latest'");
+    expect(npm).toContain("id-token: 'write'");
+    expect(npm).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN/u);
   });
 
   it('rejects previously published versions instead of silently keeping old code', () => {
