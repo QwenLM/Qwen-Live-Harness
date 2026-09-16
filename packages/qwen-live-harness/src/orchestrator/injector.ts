@@ -476,6 +476,11 @@ export class Injector {
       used += cost;
     }
     const deferred = batch.slice(fitted.length);
+    // The lone-item backstop keeps the HEAD, unlike the tail-keeping clamps
+    // callers apply to a message BODY. An item's correlation tag is its
+    // first characters ("[COMPLETE job_1]", "[PERMISSION req_1]"), and a
+    // tail cut would take the tag with it — leaving the model an untagged
+    // fragment, or a permission ask with no handle to vote on.
     const context = fitted
       .map((item, index) =>
         index === 0 && item.context.length > MAX_CONTEXT_CHARS
