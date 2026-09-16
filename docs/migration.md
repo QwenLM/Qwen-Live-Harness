@@ -42,15 +42,20 @@ retired injected speech tool are no longer available; public peer discovery,
 control and progress reporting belong to M3. Live's own Proactive monitors are
 unaffected.
 
-## M3 discovery follow-up
+## M3 terminal integration follow-up
 
-After extraction, M3 stage 1 adds opt-in local terminal discovery to
-QwenCodeAdaptor. Stage 2 adds optional controller-authorized text delivery and
-separate receipts. Entries remain read-only without a grant; peer report
-announcements remain a later stage. The original migration boundaries above
-describe the extraction snapshot. See the
-[terminal discovery guide](../packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1)
-for current configuration and limits.
+After extraction, M3 adds opt-in local terminal discovery, authorized text
+instructions with separate receipts, and incoming session reports. Configure it
+with `qwen-live-harness init --peers` and inspect it with
+`qwen-live-harness doctor --peers`. These commands preserve existing ACP backends;
+the incremental setup can add an independent `qwen-code` backend when needed.
+
+The retired injected speech channel remains removed. A terminal receipt is not
+a daemon task-completion event. Reports use the public Qwen `send_message` protocol
+and the existing Live conversation/playback scheduling. See the
+[terminal setup guide](../packages/qwen-live-harness/README.md#terminal-setup-and-diagnostics-m3-stage-4)
+and [M3 acceptance checklist](m3-acceptance.md); physical microphone/model evidence
+is separate from code, CI and protocol validation.
 
 ## Breaking naming change (2026-09-14)
 

@@ -31,6 +31,7 @@ import {
   resolveLiveDiscoveryDirectory,
 } from './paths.js';
 import { registerCurrentRuntime } from './startup-registration.js';
+import { promptPeerSetup } from './peer-setup.js';
 import {
   displayLiveMessage,
   isLiveLanguage,
@@ -40,7 +41,7 @@ import {
   type LiveMessageParams,
 } from './i18n/messages.js';
 
-interface RawBackend {
+interface RawBackend extends Record<string, unknown> {
   name: string;
   kind: 'acp';
   command: string;
@@ -57,7 +58,7 @@ interface RawConfig {
   realtimeModel?: string;
   voice?: string;
   defaultCwd?: string;
-  backends?: RawBackend[];
+  backends?: Record<string, unknown>[];
   port?: number;
   visualInput?: {
     source: 'screen' | 'camera';
@@ -163,7 +164,7 @@ export async function runInit(): Promise<void> {
   }
 
   // 4. Add additional backends
-  const backends: RawBackend[] = [];
+  let backends: Record<string, unknown>[] = [];
   const remaining = agents.filter((a) => a.name !== defaultChoice.value);
   let addMore = remaining.length > 0;
   const available = [...remaining];
@@ -207,6 +208,31 @@ export async function runInit(): Promise<void> {
   // Build the default backend
   const defaultAgent = agents.find((a) => a.name === defaultChoice.value)!;
   backends.unshift(toRawBackend(defaultAgent, true));
+
+  // M3 adds a separate qwen-code backend; existing ACP choices stay intact.
+  if (agents.some((agent) => agent.name === 'qwen')) {
+    const peers = await prompts({
+      type: 'confirm',
+      ...confirmLabels,
+      name: 'value',
+      message: t('peerSetup.optIn'),
+      initial: false,
+    });
+    if (typeof peers.value !== 'boolean') {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    if (peers.value) {
+      const configured = await promptPeerSetup(backends, language, {
+        enabled: true,
+      });
+      if (!configured) {
+        console.log(`\n  ${t('init.cancelled')}\n`);
+        return;
+      }
+      backends = configured;
+    }
+  }
 
   // 5. API key
   const envKeyName = process.env['DASHSCOPE_API_KEY']
@@ -418,6 +444,7 @@ export async function runInit(): Promise<void> {
   );
   console.log(`  ✓ ${t('init.hostSummary', { status: hostStatus })}`);
   console.log(`\n  ${t('init.run')}\n`);
+  console.log(t('peerSetup.initHint'));
 }
 
 function toRawBackend(agent: DetectedAgent, isDefault: boolean): RawBackend {

@@ -68,6 +68,7 @@ function answerSetupPrompts(cwd = '/tmp/harness-init-project'): void {
     const answers = new Map<string, unknown>([
       [liveText('en', 'language.choose'), true],
       [liveText('en', 'init.defaultAgent'), 'qwen'],
+      [liveText('en', 'peerSetup.optIn'), false],
       [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
       [liveText('en', 'init.apiName'), 'qwen3.5-omni-plus-realtime'],
       [liveText('en', 'init.memoryEnabled'), false],
@@ -113,6 +114,48 @@ afterEach(() => {
 });
 
 describe('runInit', () => {
+  it('opts into a separate terminal backend while preserving the selected ACP default', async () => {
+    answerSetupPrompts();
+    const normal = mocks.prompt.getMockImplementation()!;
+    const values = new Map([
+      [liveText('en', 'peerSetup.optIn'), true],
+      [liveText('en', 'peerSetup.backend'), -1],
+      [liveText('en', 'peerSetup.name'), 'qwen-peers'],
+      [liveText('en', 'peerSetup.url'), 'http://127.0.0.1:4170'],
+      [liveText('en', 'peerSetup.serveToken'), ''],
+      [liveText('en', 'peerSetup.home'), '/test-qwen-home'],
+      [liveText('en', 'peerSetup.reports'), false],
+      [liveText('en', 'peerSetup.controller'), 'none'],
+    ] as Array<[string, unknown]>);
+    mocks.prompt.mockImplementation(async (question) =>
+      values.has(question.message)
+        ? { value: values.get(question.message) }
+        : normal(question),
+    );
+    await runInit();
+    const config = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+    expect(config.backends).toEqual([
+      {
+        name: 'qwen',
+        kind: 'acp',
+        command: '/usr/local/bin/qwen',
+        args: ['--acp'],
+        default: true,
+      },
+      {
+        name: 'qwen-peers',
+        kind: 'qwen-code',
+        baseUrl: 'http://127.0.0.1:4170',
+        peerDiscovery: { qwenHome: '/test-qwen-home', reports: false },
+      },
+    ]);
+    expect(
+      mocks.prompt.mock.calls.find(
+        ([question]) => question.message === liveText('en', 'peerSetup.optIn'),
+      )?.[0].initial,
+    ).toBe(false);
+  });
+
   it('installs without launching and registers desktop startup only after saving config', async () => {
     answerSetupPrompts();
     mocks.refreshHost.mockResolvedValue({ state: 'missing' });
@@ -216,6 +259,8 @@ describe('runInit', () => {
           switch (question.message) {
             case liveText('en', 'language.choose'):
               return { value: true };
+            case liveText('en', 'peerSetup.optIn'):
+              return { value: false };
             case 'Which agent should be the default backend?':
               return { value: 'qwen' };
             case 'Use DASHSCOPE_API_KEY from the environment?':
@@ -273,6 +318,8 @@ describe('runInit', () => {
         switch (question.message) {
           case liveText('en', 'language.choose'):
             return { value: true };
+          case liveText('en', 'peerSetup.optIn'):
+            return { value: false };
           case 'Which agent should be the default backend?':
             return { value: 'qwen' };
           case 'Use DASHSCOPE_API_KEY from the environment?':
@@ -357,6 +404,7 @@ describe('runInit', () => {
           }
           const choices = new Map<string, string | boolean>([
             [liveText(language, 'init.defaultAgent'), 'qwen'],
+            [liveText(language, 'peerSetup.optIn'), false],
             [
               liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
               true,
@@ -420,12 +468,13 @@ describe('runInit', () => {
     expect(mocks.refreshHost).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1, 2, 3, 4, 5, 6])(
+  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
     'does not write config if prompt %s is cancelled',
     async (cancelAt) => {
       const answers = [
         true,
         'qwen',
+        false,
         true,
         'fixture-model',
         true,

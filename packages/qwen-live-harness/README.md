@@ -53,6 +53,8 @@ The wizard will:
 - Scan your PATH for installed coding agents (qodercli, qwen, gemini,
   claude, codex) and list what it found
 - Let you pick a default backend and add additional ones
+- When Qwen is detected, offer optional terminal-session setup (M3, default: off).
+  This adds a separate `qwen-code` backend and keeps the selected ACP default.
 - Ask for your DashScope realtime API key
 - Let you select the DashScope Realtime API name (the default is
   `qwen3.5-omni-plus-realtime`)
@@ -509,6 +511,83 @@ Multiple backends can coexist — the voice model sees all sessions across
 all backends in `session_list` and can route `handoff` to a specific one by
 name.
 
+### Terminal setup and diagnostics (M3 stage 4)
+
+For an existing Live configuration, run:
+
+```bash
+qwen-live-harness init --peers
+# From a built source checkout:
+npm run init -- --peers
+```
+
+This edits only the selected backend's `peerDiscovery` settings. Choose an
+existing `qwen-code` backend or add one with a running `qwen serve` URL and its
+optional authentication token. Adding a backend preserves the previous default,
+including an implicitly default single ACP backend. It does not convert an ACP
+backend or start `qwen serve`. The local `QWEN_HOME` remains local even when the
+managed daemon URL is remote.
+
+Select discovery, incoming reports, and an existing controller grant separately.
+The wizard prints a command for creating a grant in the selected Qwen home; it
+never creates grants or changes Qwen's messaging/tool settings itself. Store a
+controller token through hidden password input, or provide an environment variable
+whose value is already a valid `qpc_` token. The environment option saves only its
+name. Make that variable available to the Live daemon after restarting; an app
+launched independently from the desktop may not inherit terminal variables.
+Keeping the existing token setting does not verify that its grant is still valid.
+
+Turning discovery off removes `peerDiscovery` while preserving the backend,
+authentication and other settings. Re-running setup lets you edit the same backend
+without creating a duplicate. Cancelled setup leaves the configuration untouched. Setup saves are serialized;
+a changed file detected before replacement aborts the save. Successful writes are
+atomic and private (mode `0600`). If a process crashes while saving, check the PID
+in `config.json.peer-setup.lock` and remove that lock only after confirming the
+process exited. Editors do not participate in this lock; avoid editing the file
+while saving setup.
+Other config fields are preserved. The incremental command requires an existing
+regular `config.json`; use normal `init` for first-time setup. It refuses to edit
+when backend environment overrides would hide the result. Manual JSON configuration
+remains supported.
+
+Restart Live after changing settings, then inspect without starting a call:
+
+```bash
+qwen-live-harness doctor --peers
+# From a built source checkout:
+node packages/qwen-live-harness/dist/index.js doctor --peers
+```
+
+Doctor reads the configured Qwen homes, user messaging settings and live registry
+records, and probes a bounded number of local inbox sockets. It checks local
+`qwen serve` capabilities and authenticates the existing Live discovery record
+against `/live/instance`. Remote daemon URLs are reported as unverified and are not
+probed. It does not register a peer, send an instruction/report, create a grant,
+connect a Host WebSocket, start a model or modify Qwen settings. Its output omits
+credentials, raw response/error payloads and private filesystem paths.
+
+Exit status `1` means an actual check failed, such as authentication rejection,
+missing daemon capabilities or an unreadable configuration. Disabled peers, no
+controller grant, no running Live daemon and unknown call state are reported as
+setup information. Exit `0` means the checks that ran found no error; it does not
+certify that M3 is enabled or that an instruction/report was delivered.
+
+| Observation                                            | Next action                                                                                                                                                           |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No terminal inboxes                                    | Check the selected local Qwen home, enable `agents.crossSessionMessaging`, then restart the target TUI. User settings can be overridden by workspace/system settings. |
+| Local `qwen serve` unavailable or missing capabilities | Start the configured daemon, check its URL/authentication, or use a compatible Qwen build. The peer-enabled backend still requires its normal REST preflight.         |
+| Controller configured but unverified                   | Inspect/revoke grants using Qwen's `sessions controllers` commands in the same home. Token shape and socket reachability do not prove authorization.                  |
+| `held` / `denied` / `refused`                          | Review the instruction in the receiving terminal and its inbound policy. Live does not approve on the user's behalf.                                                  |
+| Delivery outcome unknown                               | Inspect the target terminal and late receipts. Do not automatically resend a possibly delivered instruction.                                                          |
+| Report visible but not heard                           | Check the Host call, speaker mute and report playback state. Doctor cannot read live call/mute state through the current read-only HTTP interface.                    |
+| No incoming reports                                    | Enable `reports`, start a fresh call, and ensure the target exposes and approves `send_message`. Old call addresses do not carry over.                                |
+
+The reproducible real-Qwen test baseline is **Qwen Code 0.23.3**. Older versions
+are not certified by this change; capability/registry evidence is used instead of
+assuming every version number has the required peer behavior. See the
+[full acceptance checklist](../../docs/m3-acceptance.md) for installation,
+coexistence, UI and physical-voice evidence.
+
 ### Terminal session discovery (M3 stage 1)
 
 A `qwen-code` backend can additionally list existing Qwen terminal sessions
@@ -558,7 +637,7 @@ verified with Qwen Code 0.23.3). Create a grant in the **same Qwen home** as the
 terminals, using the CLI belonging to that installation:
 
 ```bash
-QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live" --json
+QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness" --json
 ```
 
 Copy the returned `token` into the existing backend's `peerDiscovery` object,
@@ -629,7 +708,7 @@ Enable report reception on the same `qwen-code` backend and restart Live:
 {
   "peerDiscovery": {
     "qwenHome": "~/.qwen",
-    "controllerTokenEnv": "QWEN_LIVE_CONTROLLER_TOKEN",
+    "controllerTokenEnv": "QWEN_LIVE_HARNESS_CONTROLLER_TOKEN",
     "reports": true
   }
 }
@@ -948,13 +1027,14 @@ tracking the [Live split roadmap](https://github.com/QwenLM/qwen-code/issues/101
 - **This extension**: protocol v9 visual input and fenced playback receipts,
   6 configurable Proactive tools, 2 Memory tools with local multi-library
   storage (both features enabled by default), and configurable desktop controls
-- **M3 stage 1**: opt-in, read-only local terminal discovery is implemented.
-  Controller handoff and incoming peer report announcements remain follow-up
-  stages; full M3 voice acceptance is not implied by discovery support.
+- **M3**: opt-in terminal discovery, authorized text delivery, incoming reports,
+  incremental setup and read-only diagnostics are implemented. Protocol tests
+  and real CLI checks are separate from physical microphone/production-model
+  acceptance; that manual evidence is still required for full M3 acceptance.
 - Built-in Live retirement is implemented in a companion qwen-code cleanup
   branch; the new repository owns daemon and Host builds and releases.
 
-The current source version is 0.3.0 and requires the matching v9 Host under the
+The daemon and Host require matching package versions and the v9 protocol under the
 new application and bundle identities. Build both components from this repository
 until the renamed npm package and signed Host are published. Previously released
 artifacts are not an old-name fallback, even if their version or protocol matches.

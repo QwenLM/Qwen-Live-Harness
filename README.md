@@ -117,13 +117,16 @@ See the [daemon guide](packages/qwen-live-harness/README.md) for backend configu
 visual input, Memory, diagnostics and capability limits.
 
 M3 now supports opt-in discovery, authorized text instructions, and incoming reports from existing local Qwen terminal sessions.
-Configure `peerDiscovery` on a `qwen-code` backend as described in the
-[terminal discovery guide](packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1).
+Run `qwen-live-harness init --peers` to configure it without replacing other
+settings, and `qwen-live-harness doctor --peers` for read-only diagnostics.
+Manual `peerDiscovery` configuration remains available in the
+[terminal setup guide](packages/qwen-live-harness/README.md#terminal-setup-and-diagnostics-m3-stage-4).
 Add an explicit controller grant to send text and inspect separate delivery receipts;
 set `reports: true` to receive progress, blocker, and result reports during a call.
 Reports appear separately in Host and are announced when the conversation and playback are quiet. Ordinary
 backend completion and permission announcements remain supported; the retired
-private injected speech channel is not used.
+private injected speech channel is not used. See the
+[M3 acceptance checklist](docs/m3-acceptance.md) for the remaining physical-voice acceptance.
 
 ## Tests and compatibility
 

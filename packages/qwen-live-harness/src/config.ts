@@ -874,7 +874,8 @@ function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseBackends(
+/** Shared with incremental setup so saved backends use the runtime contract. */
+export function parseBackends(
   env: Record<string, string | undefined>,
   file: Record<string, unknown>,
   configPath: string,
