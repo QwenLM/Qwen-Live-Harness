@@ -84,6 +84,11 @@ describe('ACP permission mode compatibility', () => {
       });
       expect(rig.currentModeId()).toBe('read-only');
       expect(rig.warn).not.toHaveBeenCalled();
+      expect(rig.info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'approval mode "read-only": every action needs approval',
+        ),
+      );
     } finally {
       await rig.adaptor.close();
     }
@@ -137,6 +142,11 @@ describe('ACP permission mode compatibility', () => {
       expect(rig.currentModeId()).toBe('default');
       expect(rig.warn).toHaveBeenCalledWith(
         expect.stringContaining('sessionMode "yolo" is not advertised'),
+      );
+      expect(rig.info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'approval mode "default": every action needs approval',
+        ),
       );
     } finally {
       await rig.adaptor.close();

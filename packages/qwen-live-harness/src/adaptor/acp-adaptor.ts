@@ -262,6 +262,11 @@ export class AcpAdaptor implements BackendAdaptor {
             `[acp ${this.name}] session ${sessionId} approval mode ` +
               `"${configuredMode['id']}": actions run without per-action approval`,
           );
+        } else {
+          this.logger.info(
+            `[acp ${this.name}] session ${sessionId} approval mode ` +
+              `"${selected['id']}": every action needs approval`,
+          );
         }
       } catch {
         this.logger.warn(

@@ -373,7 +373,11 @@ ACP backend entry to select another advertised mode instead — `"yolo"` or
 `"auto-edit"` for Qwen Code, `"agent-full-access"` for Codex, `"dontAsk"` for
 Qoder CLI. The mode must appear in the backend's `availableModes`; an unknown
 or unavailable mode falls back to the asking mode instead of running
-unapproved, and logs a warning either way. Disabling per-action approval lets
+unapproved, and logs a warning either way. Every session says on the daemon log
+which side of the gate it landed on — `approval mode "yolo": actions run
+without per-action approval` or `approval mode "default": every action needs
+approval` — so a session log is enough to tell whether the mode you configured
+is actually in force. Disabling per-action approval lets
 the agent change files and run commands on your machine with no confirmation
 step, so keep it to backends you trust with the checked-out directory.
 

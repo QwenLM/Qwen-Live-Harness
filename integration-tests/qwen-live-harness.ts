@@ -845,6 +845,8 @@ export interface BootAcpStackOptions {
    * "multi" boots serve as default plus acp as a secondary backend.
    */
   mode: 'acp' | 'multi';
+  /** Approval mode handed to the acp backend config verbatim. */
+  sessionMode?: string;
 }
 
 export interface AcpLiveStack {
@@ -962,6 +964,7 @@ export async function bootAcpLiveStack(
         no_proxy: '127.0.0.1,localhost',
       },
       cwd: workspaceDir,
+      ...(options.sessionMode ? { sessionMode: options.sessionMode } : {}),
       ...(options.mode === 'acp' ? { default: true } : {}),
     };
     const backends =
