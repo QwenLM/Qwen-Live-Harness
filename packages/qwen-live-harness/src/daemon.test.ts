@@ -27,6 +27,7 @@ import { LiveSession } from './orchestrator/live-session.js';
 import { MemoryService } from './memory/service.js';
 import { SessionLog } from './log/session-log.js';
 import { MonitorDebugStore } from './proactive/monitor-debug-store.js';
+import { liveText } from './i18n/messages.js';
 import {
   MAX_SUBAGENTS_REQUEST_BYTES,
   parseSubagentsSnapshot,
@@ -175,6 +176,39 @@ afterEach(async () => {
 });
 
 describe('LiveDaemon', () => {
+  it.each([false, true])(
+    'starts an explicit empty backend configuration with memory enabled=%s',
+    async (memoryEnabled) => {
+      const config = await testConfig();
+      config.backends = [];
+      config.memory.enabled = memoryEnabled;
+      const logger = new LiveLogger('error');
+      const info = vi.spyOn(logger, 'info');
+      // Exercise the actual empty registry construction, not a fake adaptor.
+      const daemon = new LiveDaemon(config, { logger });
+      daemons.push(daemon);
+      await expect(daemon.start()).resolves.toMatchObject({
+        port: expect.any(Number),
+      });
+      const registry = (daemon as unknown as { registry: BackendRegistry })
+        .registry;
+      expect(registry.hasBackends).toBe(false);
+      expect(registry.names()).toEqual([]);
+      expect(info).toHaveBeenCalledWith(liveText('en', 'cli.noBackends'));
+      await expect(
+        readDiscoveryRecord(config.discoveryDir),
+      ).resolves.toMatchObject({
+        protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
+      });
+      await daemon.stop();
+      await expect(
+        readDiscoveryRecord(config.discoveryDir),
+      ).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    },
+  );
+
   it('retains an instance-bound stop notice after process exit removes discovery', async () => {
     const config = await testConfig();
     const daemon = startedDaemon(config);

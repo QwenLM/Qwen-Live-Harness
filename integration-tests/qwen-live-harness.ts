@@ -151,6 +151,8 @@ export interface SpawnQwenLiveHarnessOptions {
   model?: string;
   bootTimeoutMs?: number;
   env?: Record<string, string>;
+  /** Test-only file settings for the isolated profile. Environment overrides still win. */
+  initialConfig?: Record<string, unknown>;
 }
 
 export interface SpawnedQwenLiveHarness {
@@ -172,6 +174,7 @@ export async function spawnQwenLiveHarness(
     JSON.stringify({
       memory: { enabled: false },
       proactive: { enabled: false },
+      ...opts.initialConfig,
     }),
     { mode: 0o600 },
   );
@@ -461,6 +464,29 @@ export class FakeHost {
     frame.writeBigUInt64BE(BigInt(epoch), 0);
     pcm16.copy(frame, LIVE_INPUT_AUDIO_EPOCH_BYTES);
     this.socketOrThrow().send(frame, { binary: true });
+  }
+
+  setVisualInput(
+    epoch: number,
+    source: 'screen' | 'camera',
+    mode: 'on-demand' | 'live-feed',
+  ): void {
+    this.send({
+      type: 'host.visual_settings',
+      epoch,
+      source,
+      mode,
+      permissions: {
+        camera: 'granted',
+        accessibility: 'granted',
+        screenRecording: 'granted',
+      },
+      appshot: true,
+    });
+  }
+
+  sendCameraFrame(epoch: number, image: string): void {
+    this.send({ type: 'host.visual_frame', epoch, source: 'camera', image });
   }
 
   waitForState(

@@ -144,9 +144,14 @@ export class LiveDaemon {
       if (await archive.initialize()) this.monitorDebug = archive;
     }
     assertStarting();
-    // Fail fast when the default backend is missing or too old — before we
-    // take the Host discovery file from anyone. Secondary backends are
-    // best-effort: a failure marks them unavailable and startup continues.
+    // An explicit empty registry enables independent Omni capabilities. A
+    // configured default backend still fails fast before discovery is claimed;
+    // secondary backends remain best-effort.
+    if (!this.registry.hasBackends) {
+      this.logger.info(
+        liveText(this.config.language ?? 'en', 'cli.noBackends'),
+      );
+    }
     const backendStarts = new Map<string, number>();
     await this.registry.preflight(
       (message) => this.logger.warn(message),

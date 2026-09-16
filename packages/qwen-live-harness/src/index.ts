@@ -134,7 +134,7 @@ function runCli(args: LiveCliArgs): void {
     return;
   }
   if (args.command === 'init') {
-    void runInit().catch((error: unknown) => {
+    void runInit({ source: args.source }).catch((error: unknown) => {
       process.stderr.write(
         `${displayLiveMessage(preferredLanguage(), error instanceof Error ? error.message : String(error))}\n`,
       );

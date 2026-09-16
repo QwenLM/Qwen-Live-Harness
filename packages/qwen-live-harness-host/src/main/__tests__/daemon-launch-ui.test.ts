@@ -36,6 +36,8 @@ function fixture() {
   type TrayItem = { label?: string; enabled?: boolean; click?: () => void };
   let menu: TrayItem[] = [];
   const context = {
+    audioError: undefined,
+    audioRetryPending: false,
     activationGeneration: 0,
     pendingActivationGeneration: undefined as number | undefined,
     daemonLifecycle: undefined as

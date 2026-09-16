@@ -123,6 +123,10 @@ function fixture(saved?: LiveTheme, systemDark = false) {
     },
   };
   const context = {
+    hostDiagnostics: undefined,
+    createHostDiagnosticsLogger: () => ({ write: () => {} }),
+    audioError: undefined,
+    audioRetryPending: false,
     daemonBootstrap: undefined,
     startupInvocationError: undefined,
     app: {

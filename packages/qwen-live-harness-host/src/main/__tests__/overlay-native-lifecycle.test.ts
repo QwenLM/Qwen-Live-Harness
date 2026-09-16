@@ -144,6 +144,10 @@ function fixture(minimumNativeY?: number, diagnosticsEnabled = false) {
     }
   }
   const context = {
+    audioError: undefined,
+    audioRetryPending: false,
+    cancelAudioRetry: () => {},
+    captureReadiness: { cancel: () => {}, acknowledge: () => {} },
     daemonBootstrap: undefined,
     daemonLifecycle: undefined,
     startupInvocationError: undefined,

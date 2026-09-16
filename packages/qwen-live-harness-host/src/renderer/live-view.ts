@@ -427,10 +427,17 @@ export class LiveView {
     const quitting = this.quitting || state.quitState === 'pending';
     const quitFailed = this.quitFailed || state.quitState === 'failed';
     if (quitting) this.settings.hide();
-    const needsSetup = shouldRenderSetup(
-      state.live,
-      state.connection === 'ready',
-    );
+    const canRecoverAudio =
+      Boolean(state.audioError) &&
+      state.permissions.microphone === 'granted' &&
+      (state.visualInput?.source === 'camera'
+        ? state.permissions.camera === 'granted'
+        : state.permissions.screenRecording === 'granted' &&
+          (state.visualInput?.mode === 'live-feed' ||
+            state.permissions.accessibility === 'granted'));
+    const needsSetup =
+      !canRecoverAudio &&
+      shouldRenderSetup(state.live, state.connection === 'ready');
     if (!needsSetup) this.hasShownOrb = true;
     const setup = needsSetup && !(this.hasShownOrb && (quitting || quitFailed));
     this.setup.hidden = !setup;
@@ -503,6 +510,9 @@ export class LiveView {
         displayLiveMessage(
           language,
           this.error ||
+            (state.audioRetrying
+              ? liveText(language, 'host.audio.retrying')
+              : state.audioError) ||
             state.live.statusText ||
             state.visualError ||
             state.live.message ||
@@ -543,12 +553,16 @@ export class LiveView {
       Boolean(
         quitFailed ||
         this.error ||
+        state.audioError ||
         state.live.state === 'error' ||
         state.visualError,
       ),
     );
     const showPermission =
-      Boolean(state.live.pendingPermission) && !quitting && !quitFailed;
+      Boolean(state.live.pendingPermission) &&
+      !quitting &&
+      !quitFailed &&
+      !state.audioError;
     this.statusPrimary.hidden = showPermission;
     this.permissionLink.hidden = !showPermission;
     this.permissionLink.disabled = pending;
