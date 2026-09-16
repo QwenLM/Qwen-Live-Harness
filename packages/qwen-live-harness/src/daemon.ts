@@ -24,6 +24,7 @@ import { BackendRegistry } from './adaptor/registry.js';
 import type { BackendConfig, LiveConfig } from './config.js';
 import { LiveHostInstaller } from './host/qwen-live-harness-host-installer.js';
 import {
+  getLiveDiscoveryPath,
   handoffLiveDiscoveryOwner,
   LiveDiscoveryOwnerActiveError,
   removeLiveDiscoveryFile,
@@ -39,7 +40,8 @@ import { MemoryStoreError } from './memory/store.js';
 import { deriveMemoryBaseUrl } from './memory/config.js';
 import { persistLanguagePreference } from './language-preferences.js';
 import { persistScreenDisplayPreference } from './visual-preferences.js';
-import { liveMessage } from './i18n/messages.js';
+import { liveMessage, liveText } from './i18n/messages.js';
+import { writeDaemonStopMarker, type DaemonIdentity } from './lifecycle.js';
 import { MonitorDebugStore } from './proactive/monitor-debug-store.js';
 import { escapeAnsiCtrlCodes } from './realtime/sanitize.js';
 import { PACKAGE_VERSION } from './version.js';
@@ -106,6 +108,7 @@ export class LiveDaemon {
   private stopping = false;
   private resourcesStopPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private exitMarkerPromise: Promise<void> | undefined;
   private pendingCleanup: Map<string, () => unknown> | undefined;
 
   constructor(
@@ -128,6 +131,10 @@ export class LiveDaemon {
       );
   }
 
+  getInstanceIdentity(): DaemonIdentity {
+    return { pid: process.pid, instanceNonce: this.instanceNonce };
+  }
+
   async start(): Promise<{ port: number; url: string }> {
     const assertStarting = () => {
       if (this.stopping)
@@ -141,10 +148,37 @@ export class LiveDaemon {
       if (await archive.initialize()) this.monitorDebug = archive;
     }
     assertStarting();
-    // Fail fast when the default backend is missing or too old — before we
-    // take the Host discovery file from anyone. Secondary backends are
-    // best-effort: a failure marks them unavailable and startup continues.
-    await this.registry.preflight((message) => this.logger.warn(message));
+    // An explicit empty registry enables independent Omni capabilities. A
+    // configured default backend still fails fast before discovery is claimed;
+    // secondary backends remain best-effort.
+    if (!this.registry.hasBackends) {
+      this.logger.info(
+        liveText(this.config.language ?? 'en', 'cli.noBackends'),
+      );
+    }
+    const backendStarts = new Map<string, number>();
+    await this.registry.preflight(
+      (message) => this.logger.warn(message),
+      ({ backend, stage }) => {
+        if (stage === 'starting') {
+          backendStarts.set(backend, Date.now());
+          this.logger.info(
+            liveText(this.config.language ?? 'en', 'cli.backendStarting', {
+              name: backend,
+            }),
+          );
+        } else {
+          this.logger.debug(
+            `startup.backend ${JSON.stringify({
+              backend,
+              stage,
+              durationMs:
+                Date.now() - (backendStarts.get(backend) ?? Date.now()),
+            })}`,
+          );
+        }
+      },
+    );
     assertStarting();
 
     let memoryBaseUrl = '';
@@ -320,6 +354,18 @@ export class LiveDaemon {
 
   async stopForProcessExit(): Promise<void> {
     const errors: unknown[] = [];
+    // Persist an instance-bound notification before closing transports. This
+    // also reaches a Host that is still opening or temporarily reconnecting.
+    try {
+      this.exitMarkerPromise ??= writeDaemonStopMarker(
+        getLiveDiscoveryPath(resolve(this.config.discoveryDir)),
+        this.getInstanceIdentity(),
+      );
+      await this.exitMarkerPromise;
+    } catch (error) {
+      this.logCleanupFailure('Host exit notification', error);
+      errors.push(error);
+    }
     try {
       await this.stop();
     } catch (error) {

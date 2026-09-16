@@ -1,6 +1,6 @@
 {
   "name": "qwen-live-harness-workspace",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -14,8 +14,8 @@
   "scripts": {
     "build": "npm run build --workspace qwen-live-harness",
     "typecheck": "npm run typecheck --workspace qwen-live-harness && tsc --project integration-tests/tsconfig.json --noEmit",
-    "start": "node packages/qwen-live-harness/dist/index.js",
-    "init": "node packages/qwen-live-harness/dist/index.js init",
+    "start": "node scripts/start-dev.mjs",
+    "init": "node scripts/start-dev.mjs init",
     "test": "npm run test:daemon && npm run test:scripts && npm run test:integration",
     "test:daemon": "npm run test --workspace qwen-live-harness",
     "test:host": "npm run test --prefix packages/qwen-live-harness-host",

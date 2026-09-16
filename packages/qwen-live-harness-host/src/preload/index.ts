@@ -8,6 +8,10 @@ import type {
 import { isLiveHostDiagnosticsEnabled } from '../shared/diagnostics.ts';
 import type { MemoryState } from '../shared/protocol.ts';
 import { HostAudioEngine } from './audio-engine.ts';
+import {
+  describeAudioCaptureFailure,
+  isAudioOperationCancelled,
+} from './audio-errors.ts';
 import { HostCameraEngine } from './camera-engine.ts';
 
 const inputLevelListeners = new Set<(level: number) => void>();
@@ -20,7 +24,7 @@ const audio = new HostAudioEngine(
     for (const listener of inputLevelListeners) listener(level);
   },
   (event, details) => {
-    if (diagnosticsEnabled) {
+    if (diagnosticsEnabled || event === 'capture_start_failed') {
       ipcRenderer.send('live:audio:diagnostic', { event, details });
     }
   },
@@ -130,12 +134,8 @@ ipcRenderer.on(
         }
       })
       .catch((error: unknown) => {
-        ipcRenderer.send('live:audio:capture-error', {
-          code:
-            error instanceof DOMException
-              ? error.name
-              : 'audio_input_unavailable',
-        });
+        const failure = describeAudioCaptureFailure(error, value.epoch);
+        if (failure) ipcRenderer.send('live:audio:capture-error', failure);
       });
   },
 );
@@ -156,9 +156,11 @@ ipcRenderer.on(
         epoch: payload.epoch,
         outputId: payload.outputId,
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (isAudioOperationCancelled(error)) return;
         audio.clearOutput();
         ipcRenderer.send('live:audio:output-error', {
+          epoch: payload.epoch,
           code: 'audio_output_unavailable',
         });
       });

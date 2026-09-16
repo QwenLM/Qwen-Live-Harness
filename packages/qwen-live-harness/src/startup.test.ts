@@ -21,6 +21,8 @@ import {
   type RuntimeRegistration,
 } from './startup.js';
 import { withDaemonStartupLock } from './startup-lock.js';
+import { startupInternals } from './startup.js';
+import { ACP_PACKAGE_RUNNER_INIT_TIMEOUT_MS } from './adaptor/acp-adaptor.js';
 
 let directory: string;
 let discoveryPath: string;
@@ -294,6 +296,11 @@ describe('daemon probe', () => {
 });
 
 describe('CLI startup lock', () => {
+  it('allows both registry initialization phases before the outer desktop deadline', () => {
+    expect(startupInternals.timeoutMs).toBeGreaterThan(
+      ACP_PACKAGE_RUNNER_INIT_TIMEOUT_MS * 2,
+    );
+  });
   it('keeps its owner while the real discovery writer acquires its separate lock', async () => {
     const record = {
       url: 'http://127.0.0.1:12345',

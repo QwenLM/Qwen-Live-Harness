@@ -147,6 +147,12 @@ can start a missing daemon once; a subsequent disconnect does not cause an
 automatic restart loop. `End call` ends the interaction while leaving the app
 available. `Quit Host` requests coordinated shutdown of the daemon and Host.
 
+When the CLI owns the foreground daemon, `Ctrl+C` cancels any in-progress Host
+verification and closes that daemon together with its matching Host. This also
+works while Host is still opening or reconnecting. A short CLI invocation that
+only reuses an existing daemon does not end that daemon when the invocation exits.
+Normal startup reports the current stage; `--debug` also includes stage timings.
+
 The internal `--daemon-only` CLI option runs just the daemon for debugging and
 tests. Host uses this mode when bootstrapping, preventing recursive Host launches.
 

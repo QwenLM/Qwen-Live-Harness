@@ -2,6 +2,12 @@ import { ipcRenderer } from 'electron';
 import { liveMessage } from 'qwen-live-harness/i18n';
 import { HostAudioLifecycle } from './audio-lifecycle.ts';
 import {
+  AudioOperation,
+  AudioOperationTimeoutError,
+  closeAudioContext,
+  stopAudioStream,
+} from './audio-operation.ts';
+import {
   audioInputConstraints,
   hasAudioInputDevice,
   isUnavailableDevicePreference,
@@ -32,6 +38,7 @@ type AudioDiagnosticDetails = Readonly<
 >;
 
 function errorCode(error: unknown): string {
+  if (error instanceof AudioOperationTimeoutError) return error.code;
   if (error instanceof DOMException && error.name) return error.name;
   return 'audio_unavailable';
 }
@@ -63,6 +70,10 @@ export class HostAudioEngine {
   private serviceActive = false;
   private selfCheckGeneration = 0;
   private firstCaptureFrameEpoch: number | undefined;
+  private captureOperation: AudioOperation | undefined;
+  private readinessOperation: AudioOperation | undefined;
+  private outputOperation: AudioOperation | undefined;
+  private captureRequestRevision = 0;
   private readonly lifecycle = new HostAudioLifecycle();
 
   constructor(
@@ -81,9 +92,12 @@ export class HostAudioEngine {
 
   private readonly handleDeviceChange = (): void => {
     if (this.captureRequested && this.captureContext && this.captureNode) {
+      const epoch = this.captureEpoch;
       void this.lifecycle
         .runIfCurrent(() => this.refreshCaptureInput())
-        .catch(() => this.reportCaptureError());
+        .catch((error: unknown) => {
+          if (errorCode(error) !== 'AbortError') this.reportCaptureError(epoch);
+        });
       return;
     }
     if (shouldRecheckAudioInput(this.captureRequested)) {
@@ -92,6 +106,7 @@ export class HostAudioEngine {
   };
 
   initialize(microphoneAllowed: boolean): Promise<void> {
+    this.cancelPendingInput();
     return this.lifecycle.activate(async () => {
       this.serviceActive = true;
       this.microphoneAllowed = microphoneAllowed;
@@ -102,7 +117,15 @@ export class HostAudioEngine {
 
   async listInputDevices(): Promise<AudioInputDevice[]> {
     const selectedDeviceId = this.selectedInputDeviceId();
-    const devices = await navigator.mediaDevices.enumerateDevices();
+    const operation = new AudioOperation('audio_devices');
+    let devices: MediaDeviceInfo[];
+    try {
+      devices = await operation.wait(() =>
+        navigator.mediaDevices.enumerateDevices(),
+      );
+    } finally {
+      operation.dispose();
+    }
     return devices
       .filter(
         (device) =>
@@ -126,7 +149,15 @@ export class HostAudioEngine {
   }
 
   recheck(reason: string): Promise<void> {
+    this.cancelPendingInput();
     return this.lifecycle.runIfCurrent(() => this.recheckCurrent(reason));
+  }
+
+  private cancelPendingInput(): void {
+    this.captureRequestRevision += 1;
+    this.selfCheckGeneration += 1;
+    this.captureOperation?.cancel();
+    this.readinessOperation?.cancel();
   }
 
   private async recheckCurrent(reason: string): Promise<void> {
@@ -147,34 +178,56 @@ export class HostAudioEngine {
   }
 
   private async runSelfCheck(generation: number): Promise<void> {
+    const operation = new AudioOperation('audio_readiness');
+    this.readinessOperation = operation;
     const result: AudioSelfCheck = {
       audioInput: false,
       audioOutput: false,
     };
     try {
-      await this.checkOutput();
-      result.audioOutput = true;
-    } catch (error) {
-      result.outputError = errorCode(error);
-    }
-
-    if (this.microphoneAllowed) {
       try {
-        await this.checkInput();
-        result.audioInput = true;
+        await this.checkOutput();
+        result.audioOutput = true;
       } catch (error) {
-        result.inputError = errorCode(error);
+        result.outputError = errorCode(error);
       }
-    }
-    if (this.serviceActive && generation === this.selfCheckGeneration) {
-      ipcRenderer.send('live:audio:self-check', result);
+
+      if (this.microphoneAllowed) {
+        try {
+          await operation.wait(() => this.checkInput());
+          result.audioInput = true;
+        } catch (error) {
+          result.inputError = errorCode(error);
+        }
+      }
+      if (this.serviceActive && generation === this.selfCheckGeneration) {
+        ipcRenderer.send('live:audio:self-check', result);
+      }
+    } finally {
+      operation.dispose();
+      if (this.readinessOperation === operation)
+        this.readinessOperation = undefined;
     }
   }
 
   setCapture(enabled: boolean, muted: boolean, epoch?: number): Promise<void> {
-    return this.lifecycle.runIfCurrent(() =>
-      this.setCaptureCurrent(enabled, muted, epoch),
-    );
+    const revision = ++this.captureRequestRevision;
+    if (!enabled || muted || epoch !== this.captureEpoch)
+      this.captureOperation?.cancel();
+    let completed = false;
+    return this.lifecycle
+      .runIfCurrent(async () => {
+        if (revision !== this.captureRequestRevision)
+          throw new DOMException('audio_capture_start_cancelled', 'AbortError');
+        await this.setCaptureCurrent(enabled, muted, epoch);
+        completed = true;
+      })
+      .then(() => {
+        // A lifecycle replacement can skip the callback entirely. That is
+        // cancellation, not a successful capture-ready acknowledgement.
+        if (!completed || revision !== this.captureRequestRevision)
+          throw new DOMException('audio_capture_start_cancelled', 'AbortError');
+      });
   }
 
   private async setCaptureCurrent(
@@ -208,7 +261,7 @@ export class HostAudioEngine {
       return;
     }
     if (epochChanged && this.captureContext) await this.stopCapture();
-    await this.startCapture();
+    if (!(await this.startCapture())) return;
     this.onDiagnostic('capture_ready', {
       epoch,
       muted,
@@ -521,6 +574,7 @@ export class HostAudioEngine {
       outputCursor: this.outputCursor,
     });
     this.outputGeneration += 1;
+    this.outputOperation?.cancel();
     this.outputPlayback.clear();
     this.outputResamplers.clear();
     for (const source of this.outputSources) {
@@ -534,10 +588,11 @@ export class HostAudioEngine {
     const context = this.outputContext;
     this.outputContext = undefined;
     this.outputCursor = 0;
-    void context?.close().catch(() => undefined);
+    void closeAudioContext(context);
   }
 
   dispose(): Promise<void> {
+    this.cancelPendingInput();
     let captureClose = Promise.resolve();
     return this.lifecycle.deactivate(
       () => {
@@ -584,7 +639,20 @@ export class HostAudioEngine {
         latencyHint: 'interactive',
       });
     this.outputContext = context;
-    if (context.state === 'suspended') await context.resume();
+    if (context.state === 'suspended') {
+      const operation = new AudioOperation('audio_output_start');
+      this.outputOperation = operation;
+      try {
+        await operation.wait(
+          () => context.resume(),
+          () => closeAudioContext(context),
+        );
+      } finally {
+        operation.dispose();
+        if (this.outputOperation === operation)
+          this.outputOperation = undefined;
+      }
+    }
     if (context.state !== 'running')
       throw new Error('audio_output_unavailable');
     if (created) {
@@ -598,7 +666,7 @@ export class HostAudioEngine {
     return context;
   }
 
-  private async startCapture(): Promise<void> {
+  private async startCapture(): Promise<boolean> {
     const epoch = this.captureEpoch;
     if (
       this.captureContext ||
@@ -606,53 +674,71 @@ export class HostAudioEngine {
       this.inputMuted ||
       epoch === undefined
     )
-      return;
+      return this.captureContext !== undefined;
     const generation = ++this.captureGeneration;
-    const stream = await this.openInputStream();
-    if (
-      generation !== this.captureGeneration ||
-      !this.captureRequested ||
-      this.inputMuted ||
-      this.captureEpoch !== epoch
-    ) {
-      for (const track of stream.getTracks()) track.stop();
-      return;
-    }
-
-    const context = new AudioContext({ latencyHint: 'interactive' });
+    const operation = new AudioOperation('audio_capture_start');
+    this.captureOperation = operation;
+    let stream: MediaStream | undefined;
+    let context: AudioContext | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let worklet: AudioWorkletNode | undefined;
+    let outputStream: MediaStream | undefined;
+    let adopted = false;
+    let stage = 'microphone';
+    const current = () =>
+      !operation.aborted &&
+      generation === this.captureGeneration &&
+      this.serviceActive &&
+      this.captureRequested &&
+      !this.inputMuted &&
+      this.captureEpoch === epoch;
     try {
-      await context.audioWorklet.addModule(
-        new URL('./audio-input-worklet.js', window.location.href).href,
+      operation.stage = stage;
+      this.onDiagnostic('capture_start_stage', { epoch, stage });
+      stream = await this.openInputStream(operation);
+      operation.throwIfAborted();
+      if (!current())
+        throw new DOMException('audio_capture_start_cancelled', 'AbortError');
+      const startedContext = new AudioContext({ latencyHint: 'interactive' });
+      context = startedContext;
+      stage = 'worklet';
+      operation.stage = stage;
+      this.onDiagnostic('capture_start_stage', { epoch, stage });
+      await operation.wait(
+        () =>
+          startedContext.audioWorklet.addModule(
+            new URL('./audio-input-worklet.js', window.location.href).href,
+          ),
+        () => closeAudioContext(startedContext),
       );
-      if (
-        generation !== this.captureGeneration ||
-        !this.captureRequested ||
-        this.inputMuted ||
-        this.captureEpoch !== epoch
-      ) {
-        for (const track of stream.getTracks()) track.stop();
-        await context.close();
-        return;
-      }
-      const source = context.createMediaStreamSource(stream);
-      const worklet = new AudioWorkletNode(context, 'qwen-pcm16-input', {
-        channelCount: 1,
-        channelCountMode: 'explicit',
-        outputChannelCount: [1],
-      });
-      const destination = context.createMediaStreamDestination();
+      operation.throwIfAborted();
+      if (!current())
+        throw new DOMException('audio_capture_start_cancelled', 'AbortError');
+      source = startedContext.createMediaStreamSource(stream);
+      const startedWorklet = new AudioWorkletNode(
+        startedContext,
+        'qwen-pcm16-input',
+        {
+          channelCount: 1,
+          channelCountMode: 'explicit',
+          outputChannelCount: [1],
+        },
+      );
+      worklet = startedWorklet;
+      const destination = startedContext.createMediaStreamDestination();
+      outputStream = destination.stream;
       destination.channelCount = 1;
-      source.connect(worklet);
-      worklet.connect(destination);
-      worklet.port.onmessage = (
+      source.connect(startedWorklet);
+      startedWorklet.connect(destination);
+      startedWorklet.port.onmessage = (
         event: MessageEvent<{ level: number; pcm16: ArrayBuffer }>,
       ) => {
         if (
           !this.serviceActive ||
           !this.captureRequested ||
           this.inputMuted ||
-          this.captureContext !== context ||
-          this.captureNode !== worklet ||
+          this.captureContext !== startedContext ||
+          this.captureNode !== startedWorklet ||
           this.captureEpoch !== epoch
         ) {
           return;
@@ -669,26 +755,55 @@ export class HostAudioEngine {
             this.onDiagnostic('capture_first_frame', {
               epoch,
               bytes: pcm16.byteLength,
-              contextState: context.state,
+              contextState: startedContext.state,
             });
           }
         }
       };
+      stage = 'resume';
+      operation.stage = stage;
+      this.onDiagnostic('capture_start_stage', { epoch, stage });
+      if (startedContext.state === 'suspended')
+        await operation.wait(
+          () => startedContext.resume(),
+          () => closeAudioContext(startedContext),
+        );
+      operation.throwIfAborted();
+      if (!current())
+        throw new DOMException('audio_capture_start_cancelled', 'AbortError');
+      if (startedContext.state !== 'running')
+        throw new Error('audio_input_unavailable');
       this.captureStream = stream;
-      this.captureOutputStream = destination.stream;
+      this.captureOutputStream = outputStream;
       this.captureSource = source;
-      this.captureContext = context;
-      this.captureNode = worklet;
+      this.captureContext = startedContext;
+      this.captureNode = startedWorklet;
+      adopted = true;
       this.monitorInputTracks(stream, generation);
-      if (context.state === 'suspended') await context.resume();
+      return true;
     } catch (error) {
-      for (const track of stream.getTracks()) track.stop();
-      await context.close().catch(() => undefined);
+      this.onDiagnostic('capture_start_failed', {
+        epoch,
+        stage,
+        code: errorCode(error),
+      });
       throw error;
+    } finally {
+      operation.dispose();
+      if (this.captureOperation === operation)
+        this.captureOperation = undefined;
+      if (!adopted) {
+        source?.disconnect();
+        worklet?.disconnect();
+        if (stream) stopAudioStream(stream);
+        if (outputStream) stopAudioStream(outputStream);
+        await closeAudioContext(context);
+      }
     }
   }
 
   private async stopCapture(): Promise<void> {
+    this.captureOperation?.cancel();
     this.captureGeneration += 1;
     this.firstCaptureFrameEpoch = undefined;
     const source = this.captureSource;
@@ -705,7 +820,7 @@ export class HostAudioEngine {
     node?.disconnect();
     for (const track of stream?.getTracks() ?? []) track.stop();
     for (const track of outputStream?.getTracks() ?? []) track.stop();
-    await context?.close().catch(() => undefined);
+    await closeAudioContext(context);
   }
 
   private async refreshCaptureInput(): Promise<void> {
@@ -714,26 +829,41 @@ export class HostAudioEngine {
     if (!context || !worklet || !this.captureRequested || this.inputMuted)
       return;
     const generation = ++this.captureGeneration;
-    const stream = await this.openInputStream();
-    if (
-      generation !== this.captureGeneration ||
-      !this.captureRequested ||
-      this.inputMuted ||
-      context !== this.captureContext ||
-      worklet !== this.captureNode
-    ) {
-      for (const track of stream.getTracks()) track.stop();
-      return;
+    const operation = new AudioOperation('audio_input_switch');
+    this.captureOperation = operation;
+    let stream: MediaStream | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let adopted = false;
+    try {
+      stream = await this.openInputStream(operation);
+      operation.throwIfAborted();
+      if (
+        generation !== this.captureGeneration ||
+        !this.captureRequested ||
+        this.inputMuted ||
+        context !== this.captureContext ||
+        worklet !== this.captureNode
+      )
+        return;
+      source = context.createMediaStreamSource(stream);
+      source.connect(worklet);
+      this.monitorInputTracks(stream, generation);
+      const previousSource = this.captureSource;
+      const previousStream = this.captureStream;
+      this.captureSource = source;
+      this.captureStream = stream;
+      adopted = true;
+      previousSource?.disconnect();
+      if (previousStream) stopAudioStream(previousStream);
+    } finally {
+      operation.dispose();
+      if (this.captureOperation === operation)
+        this.captureOperation = undefined;
+      if (!adopted) {
+        source?.disconnect();
+        if (stream) stopAudioStream(stream);
+      }
     }
-    const source = context.createMediaStreamSource(stream);
-    source.connect(worklet);
-    this.monitorInputTracks(stream, generation);
-    const previousSource = this.captureSource;
-    const previousStream = this.captureStream;
-    this.captureSource = source;
-    this.captureStream = stream;
-    previousSource?.disconnect();
-    for (const track of previousStream?.getTracks() ?? []) track.stop();
   }
 
   private monitorInputTracks(stream: MediaStream, generation: number): void {
@@ -747,8 +877,9 @@ export class HostAudioEngine {
     }
   }
 
-  private reportCaptureError(): void {
+  private reportCaptureError(epoch: number | undefined): void {
     ipcRenderer.send('live:audio:capture-error', {
+      epoch,
       code: 'audio_input_unavailable',
     });
   }
@@ -760,23 +891,28 @@ export class HostAudioEngine {
     return selected || undefined;
   }
 
-  private async openInputStream(): Promise<MediaStream> {
+  private async openInputStream(
+    operation: AudioOperation,
+  ): Promise<MediaStream> {
+    const open = (deviceId?: string) =>
+      operation.wait(
+        () =>
+          navigator.mediaDevices.getUserMedia({
+            audio: audioInputConstraints(deviceId),
+            video: false,
+          }),
+        stopAudioStream,
+      );
     const selectedDeviceId = this.selectedInputDeviceId();
     if (selectedDeviceId) {
       try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: audioInputConstraints(selectedDeviceId),
-          video: false,
-        });
+        return await open(selectedDeviceId);
       } catch (error) {
         if (!isUnavailableDevicePreference(error)) throw error;
       }
     }
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: audioInputConstraints(),
-        video: false,
-      });
+      return await open();
     } catch (error) {
       if (
         !(error instanceof DOMException) ||
@@ -784,17 +920,16 @@ export class HostAudioEngine {
       ) {
         throw error;
       }
-      const fallback = (await navigator.mediaDevices.enumerateDevices()).find(
+      const fallback = (
+        await operation.wait(() => navigator.mediaDevices.enumerateDevices())
+      ).find(
         (device) =>
           device.kind === 'audioinput' &&
           device.deviceId.length > 0 &&
           device.deviceId !== 'default',
       );
       if (!fallback) throw error;
-      return navigator.mediaDevices.getUserMedia({
-        audio: audioInputConstraints(fallback.deviceId),
-        video: false,
-      });
+      return await open(fallback.deviceId);
     }
   }
 
@@ -804,7 +939,7 @@ export class HostAudioEngine {
     const outputContext = this.outputContext;
     this.outputContext = undefined;
     this.outputCursor = 0;
-    await outputContext?.close().catch(() => undefined);
+    await closeAudioContext(outputContext);
   }
 
   private installMediaDeviceListener(): void {

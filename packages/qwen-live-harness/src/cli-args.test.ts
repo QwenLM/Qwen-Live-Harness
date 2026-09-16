@@ -35,6 +35,18 @@ describe('parseLiveCliArgs', () => {
       expect(() => parseLiveCliArgs(args)).toThrow();
     }
   });
+  it('allows source setup only for the initialization command', () => {
+    expect(parseLiveCliArgs(['init', '--source'])).toEqual({
+      command: 'init',
+      debug: false,
+      daemonOnly: false,
+      source: true,
+    });
+    expect(() => parseLiveCliArgs(['--source'])).toThrow();
+    expect(() =>
+      parseLiveCliArgs(['init', '--source', '--daemon-only']),
+    ).toThrow();
+  });
   it('enables debug logging for either debug spelling', () => {
     expect(parseLiveCliArgs(['--debug'])).toEqual({
       command: 'start',

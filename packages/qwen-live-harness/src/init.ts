@@ -74,22 +74,58 @@ interface RawConfig {
   memory?: ReturnType<typeof initialMemoryConfig>;
 }
 
-export async function runInit(): Promise<void> {
+const REALTIME_ENDPOINTS = {
+  beijing: 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+  singapore: 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime',
+};
+
+function knownEndpointRegion(
+  value: string | undefined,
+): keyof typeof REALTIME_ENDPOINTS | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (
+      !['https:', 'wss:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash ||
+      !['/', '/api-ws/v1/realtime', '/api-ws/v1/realtime/'].includes(
+        url.pathname,
+      )
+    )
+      return undefined;
+    if (url.hostname === 'dashscope.aliyuncs.com') return 'beijing';
+    if (url.hostname === 'dashscope-intl.aliyuncs.com') return 'singapore';
+  } catch {
+    // A custom or invalid existing endpoint is replaced only after an explicit choice.
+  }
+  return undefined;
+}
+
+export async function runInit(
+  options: { source?: boolean } = {},
+): Promise<void> {
   const configDirectory = resolveLiveDataDirectory();
   const configPath = join(configDirectory, 'config.json');
   let previousLanguage: LiveLanguage | undefined;
+  let previousEndpoint: string | undefined;
   if (existsSync(configPath)) {
     try {
       const existing: unknown = JSON.parse(
         readFileSync(configPath, 'utf8').replace(/^\uFEFF/u, ''),
       );
-      if (
-        existing &&
-        typeof existing === 'object' &&
-        'language' in existing &&
-        isLiveLanguage(existing.language)
-      )
-        previousLanguage = existing.language;
+      if (existing && typeof existing === 'object') {
+        if ('language' in existing && isLiveLanguage(existing.language))
+          previousLanguage = existing.language;
+        if (
+          'realtimeEndpoint' in existing &&
+          typeof existing.realtimeEndpoint === 'string'
+        )
+          previousEndpoint = existing.realtimeEndpoint.trim();
+      }
     } catch {
       /* The overwrite prompt still protects the existing file. */
     }
@@ -106,11 +142,9 @@ export async function runInit(): Promise<void> {
   const language: LiveLanguage = languageAnswer.value ? 'en' : 'zh-CN';
   const t = (key: LiveMessageKey, params?: LiveMessageParams) =>
     liveText(language, key, params);
-  const confirmLabels = {
-    yes: t('init.yes'),
-    no: t('init.no'),
-    yesOption: t('init.yesOption'),
-    noOption: t('init.noOption'),
+  const toggleLabels = {
+    active: t('init.yes'),
+    inactive: t('init.no'),
   };
   const selectLabels = {
     hint: t('init.selectHint'),
@@ -121,14 +155,20 @@ export async function runInit(): Promise<void> {
   // 1. Check existing config
   if (existsSync(configPath)) {
     const overwrite = await prompts({
-      type: 'confirm',
-      ...confirmLabels,
+      type: 'toggle',
+      ...toggleLabels,
       name: 'value',
       message: t('init.overwrite'),
-      initial: false,
+      initial: true,
     });
+    if (typeof overwrite.value !== 'boolean') {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
     if (!overwrite.value) {
-      console.log(`\n  ${t('init.keep')}\n`);
+      console.log(
+        `\n  ${t(options.source ? 'init.sourceKeep' : 'init.keep')}\n`,
+      );
       return;
     }
   }
@@ -136,34 +176,69 @@ export async function runInit(): Promise<void> {
   // 2. Scan for agents
   console.log(`  ${t('init.scanning')}\n`);
   const agents = detectAgents();
+  let defaultAgent: DetectedAgent | undefined;
   if (agents.length === 0) {
     console.log(`  ${t('init.noAgents')}`);
-    console.log(`  ${t('init.installAgent')}\n`);
-    console.log(`  ${t('init.manualConfig', { path: configPath })}\n`);
-    return;
-  }
-  for (const agent of agents) {
-    console.log(`  ✓ ${agent.label} (${agent.version})`);
-  }
-  console.log();
+    const action = await prompts({
+      type: 'select',
+      ...selectLabels,
+      name: 'value',
+      message: t('init.noAgentAction'),
+      choices: [
+        {
+          title: t('init.noBackendOption'),
+          value: 'continue',
+          description: t('init.noBackendHint'),
+        },
+        { title: t('init.installAgentFirst'), value: 'install' },
+      ],
+      initial: 0,
+    });
+    if (action.value === 'install') {
+      console.log(
+        `\n  ${t(options.source ? 'init.sourceInstallAgent' : 'init.installAgent')}\n`,
+      );
+      return;
+    }
+    if (action.value !== 'continue') {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+  } else {
+    for (const agent of agents) {
+      console.log(`  ✓ ${agent.label} (${agent.version})`);
+    }
+    console.log();
 
-  // 3. Select default backend
-  console.log(`  ${t('init.agentHint')}\n`);
-  const defaultChoice = await prompts({
-    type: 'select',
-    ...selectLabels,
-    name: 'value',
-    message: t('init.defaultAgent'),
-    choices: agents.map((agent) => ({
-      title: `${agent.label} (${agent.version})`,
-      value: agent.name,
-    })),
-    initial: 0,
-  });
-  if (defaultChoice.value === undefined) {
-    console.log(`\n  ${t('init.cancelled')}\n`);
-    return;
+    console.log(`  ${t('init.agentHint')}\n`);
+    // 3. Select a default backend, or explicitly leave delegation disabled.
+    const defaultChoice = await prompts({
+      type: 'select',
+      ...selectLabels,
+      name: 'value',
+      message: t('init.defaultAgent'),
+      choices: [
+        ...agents.map((agent) => ({
+          title: `${agent.label} (${agent.version})`,
+          value: agent.name,
+        })),
+        {
+          title: t('init.noBackendOption'),
+          value: null,
+          description: t('init.noBackendHint'),
+        },
+      ],
+      initial: 0,
+    });
+    if (defaultChoice.value !== null) {
+      defaultAgent = agents.find((agent) => agent.name === defaultChoice.value);
+      if (!defaultAgent) {
+        console.log(`\n  ${t('init.cancelled')}\n`);
+        return;
+      }
+    }
   }
+  if (!defaultAgent) console.log(`\n  ${t('init.noBackendHint')}\n`);
 
   async function configureBackend(
     agent: DetectedAgent,
@@ -219,24 +294,28 @@ export async function runInit(): Promise<void> {
     };
   }
 
-  const defaultAgent = agents.find((a) => a.name === defaultChoice.value)!;
-  const defaultBackend = await configureBackend(defaultAgent, true);
-  if (!defaultBackend) {
-    console.log(`\n  ${t('init.cancelled')}\n`);
-    return;
+  const backends: Record<string, unknown>[] = [];
+  if (defaultAgent) {
+    const defaultBackend = await configureBackend(defaultAgent, true);
+    if (!defaultBackend) {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    backends.push(defaultBackend);
   }
   // 4. Add additional backends
-  const backends: Record<string, unknown>[] = [defaultBackend];
-  const remaining = agents.filter((a) => a.name !== defaultChoice.value);
+  const remaining = defaultAgent
+    ? agents.filter((agent) => agent !== defaultAgent)
+    : [];
   let addMore = remaining.length > 0;
   const available = [...remaining];
   while (addMore && available.length > 0) {
     const more = await prompts({
-      type: 'confirm',
-      ...confirmLabels,
+      type: 'toggle',
+      ...toggleLabels,
       name: 'value',
       message: t('init.addAgent', { count: available.length }),
-      initial: false,
+      initial: true,
     });
     if (typeof more.value !== 'boolean') {
       console.log(`\n  ${t('init.cancelled')}\n`);
@@ -282,8 +361,8 @@ export async function runInit(): Promise<void> {
   let apiKey: string | undefined;
   if (envKey) {
     const useEnv = await prompts({
-      type: 'confirm',
-      ...confirmLabels,
+      type: 'toggle',
+      ...toggleLabels,
       name: 'value',
       message: t('init.useEnv', { name: envKeyName! }),
       initial: true,
@@ -331,9 +410,33 @@ export async function runInit(): Promise<void> {
     return;
   }
 
+  // 7. Select the service region for the API key and model just configured.
+  const previousRegion = knownEndpointRegion(previousEndpoint);
+  if (previousEndpoint && !previousRegion)
+    console.log(`\n  ${t('init.customEndpointHint')}\n`);
+  const endpointPrompt = await prompts({
+    type: 'toggle',
+    name: 'value',
+    message: t('init.endpoint'),
+    inactive: t('init.endpointBeijing'),
+    active: t('init.endpointSingapore'),
+    initial: previousRegion === 'singapore',
+  });
+  if (typeof endpointPrompt.value !== 'boolean') {
+    console.log(`\n  ${t('init.cancelled')}\n`);
+    return;
+  }
+  const realtimeEndpoint = endpointPrompt.value
+    ? REALTIME_ENDPOINTS.singapore
+    : REALTIME_ENDPOINTS.beijing;
+  if (process.env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']?.trim())
+    console.log(`\n  ${t('init.endpointEnvOverride')}\n`);
+  console.log(`\n  ${t('init.endpointKeyHint')}\n`);
+
+  // 8. Memory
   const memoryPrompt = await prompts({
-    type: 'confirm',
-    ...confirmLabels,
+    type: 'toggle',
+    ...toggleLabels,
     name: 'value',
     message: t('init.memoryEnabled'),
     initial: true,
@@ -365,29 +468,35 @@ export async function runInit(): Promise<void> {
     memoryModel = memoryModelPrompt.value.trim();
   }
 
-  // 7. Working directory
-  const cwdPrompt = await prompts({
-    type: 'text',
-    name: 'value',
-    message: t('init.cwd'),
-    initial: process.cwd(),
-  });
-  if (cwdPrompt.value === undefined) {
-    console.log(`\n  ${t('init.cancelled')}\n`);
-    return;
+  // 9. A coding workspace is only needed when delegation is enabled.
+  let defaultCwd = resolve(process.cwd());
+  if (defaultAgent) {
+    const cwdPrompt = await prompts({
+      type: 'text',
+      name: 'value',
+      message: t('init.cwd'),
+      initial: process.cwd(),
+    });
+    if (cwdPrompt.value === undefined) {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    const selectedCwd = String(cwdPrompt.value).trim();
+    defaultCwd = resolve(
+      selectedCwd === '~'
+        ? homedir()
+        : /^~[/\\]/u.test(selectedCwd)
+          ? join(homedir(), selectedCwd.slice(2))
+          : selectedCwd || process.cwd(),
+    );
   }
-  const selectedCwd = String(cwdPrompt.value).trim();
-  const defaultCwd = resolve(
-    selectedCwd === '~'
-      ? homedir()
-      : /^~[/\\]/u.test(selectedCwd)
-        ? join(homedir(), selectedCwd.slice(2))
-        : selectedCwd || process.cwd(),
-  );
 
-  // 8. Host app (macOS only)
+  // 10. Host app (macOS only)
   let hostStatus = t('init.hostSkipped');
-  if (process.platform === 'darwin') {
+  if (options.source) {
+    console.log(`\n  ${t('init.sourceHostHint')}`);
+    hostStatus = t('init.hostSource');
+  } else if (process.platform === 'darwin') {
     console.log(`\n  ${t('init.hostChecking')}`);
     const installer = new LiveHostInstaller();
     const status = await installer.refresh();
@@ -398,8 +507,8 @@ export async function runInit(): Promise<void> {
       hostStatus = t('init.hostReady');
     } else if (status.state === 'missing') {
       const install = await prompts({
-        type: 'confirm',
-        ...confirmLabels,
+        type: 'toggle',
+        ...toggleLabels,
         name: 'value',
         message: t('init.hostInstall'),
         initial: true,
@@ -438,10 +547,11 @@ export async function runInit(): Promise<void> {
     hostStatus = t('init.hostUnsupported');
   }
 
-  // 9. Write config
+  // 11. Write config
   const config: RawConfig = {
     language,
     realtimeApiKey: apiKey,
+    realtimeEndpoint,
     realtimeModel,
     visualInput: {
       source: 'screen',
@@ -467,22 +577,29 @@ export async function runInit(): Promise<void> {
 
   // Desktop startup must only see this runtime after its config is complete.
   // This registers the executable; it does not launch the Host or daemon.
-  await registerCurrentRuntime({
-    dataDir: configDirectory,
-    discoveryDir: resolveLiveDiscoveryDirectory(),
-    cwd: defaultCwd,
-  });
+  if (!options.source)
+    await registerCurrentRuntime({
+      dataDir: configDirectory,
+      discoveryDir: resolveLiveDiscoveryDirectory(),
+      cwd: defaultCwd,
+    });
 
-  // 10. Done
+  // 12. Done
   console.log(`\n  ✓ ${t('init.saved', { path: configPath })}`);
-  console.log(`  ✓ ${t('init.backendSummary', { name: defaultAgent.label })}`);
+  console.log(
+    `  ✓ ${defaultAgent ? t('init.backendSummary', { name: defaultAgent.label }) : t('init.noBackendSummary')}`,
+  );
   console.log(`  ✓ ${t('init.apiSummary', { name: realtimeModel })}`);
+  console.log(
+    `  ✓ ${t('init.endpointSummary', { endpoint: realtimeEndpoint })}`,
+  );
   console.log(
     `  ✓ ${t('init.memorySummary', { name: memoryPrompt.value ? memoryModel : t('init.disabled') })}`,
   );
   console.log(`  ✓ ${t('init.hostSummary', { status: hostStatus })}`);
-  console.log(`\n  ${t('init.run')}\n`);
-  console.log(t('peerSetup.initHint'));
+  console.log(`\n  ${t(options.source ? 'init.sourceRun' : 'init.run')}\n`);
+  if (backends.some((backend) => backend['kind'] === 'qwen-code'))
+    console.log(t('peerSetup.initHint'));
 }
 
 function toRawBackend(agent: DetectedAgent, isDefault: boolean): RawBackend {

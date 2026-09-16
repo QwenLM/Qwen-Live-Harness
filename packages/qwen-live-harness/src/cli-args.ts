@@ -13,6 +13,7 @@ export interface LiveCliArgs {
   debug: boolean;
   daemonOnly: boolean;
   peers?: true;
+  source?: boolean;
 }
 
 export const LIVE_CLI_USAGE = liveText('en', 'cli.usage');
@@ -22,6 +23,7 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
   let debug = false;
   let daemonOnly = false;
   let peers = false;
+  let source = false;
   for (const argument of args) {
     if (argument === '--debug' || argument === '-d') {
       debug = true;
@@ -29,6 +31,10 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
     }
     if (argument === '--daemon-only') {
       daemonOnly = true;
+      continue;
+    }
+    if (argument === '--source') {
+      source = true;
       continue;
     }
     if (argument === '--peers') {
@@ -60,10 +66,15 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
             : '--peers (use init --peers or doctor --peers)',
       }),
     );
+  if (source && command !== 'init')
+    throw new Error(
+      liveMessage('cli.unknownArgument', { argument: '--source without init' }),
+    );
   return {
     command,
     debug,
     daemonOnly,
+    ...(source ? { source: true } : {}),
     ...(peers ? { peers: true as const } : {}),
   };
 }

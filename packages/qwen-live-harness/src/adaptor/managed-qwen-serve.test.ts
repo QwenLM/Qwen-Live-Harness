@@ -6,7 +6,7 @@
 import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QwenCodeAdaptor } from './qwen-code-adaptor.js';
 import type { DaemonClientLike } from './qwen-code-adaptor.js';
 import { ManagedQwenServe } from './managed-qwen-serve.js';
@@ -74,6 +74,68 @@ server.listen(0, '127.0.0.1', () => {
       await service.close();
       expect(alive(observed.pid)).toBe(false);
       await expect(service.start()).rejects.toThrow('closed');
+    });
+
+    it('verifies the group is absent when a post-exit probe reports EPERM', async () => {
+      const { service, cwd } = await fixture(`
+require('node:fs').writeFileSync('pid', String(process.pid));
+const server = require('node:http').createServer();
+server.listen(0, '127.0.0.1', () => console.log('qwen serve listening on http://127.0.0.1:' + server.address().port + ' (mode=test)'));
+`);
+      await service.start();
+      const pid = Number(await readFile(join(cwd, 'pid'), 'utf8'));
+      const kill = process.kill.bind(process);
+      let deniedProbe = false;
+      const spy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((target, signal) => {
+          try {
+            return kill(target, signal);
+          } catch (error) {
+            if (
+              target === -pid &&
+              signal === 0 &&
+              (error as NodeJS.ErrnoException).code === 'ESRCH'
+            ) {
+              deniedProbe = true;
+              throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+            }
+            throw error;
+          }
+        });
+      try {
+        await service.close();
+        expect(deniedProbe).toBe(true);
+        expect(alive(pid)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('reports a real denied signal and allows a later Quit to retry cleanup', async () => {
+      const { service, cwd } = await fixture(`
+require('node:fs').writeFileSync('pid', String(process.pid));
+const server = require('node:http').createServer();
+server.listen(0, '127.0.0.1', () => console.log('qwen serve listening on http://127.0.0.1:' + server.address().port + ' (mode=test)'));
+`);
+      await service.start();
+      const pid = Number(await readFile(join(cwd, 'pid'), 'utf8'));
+      const kill = process.kill.bind(process);
+      const spy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((target, signal) => {
+          if (target === -pid)
+            throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+          return kill(target, signal);
+        });
+      try {
+        await expect(service.close()).rejects.toMatchObject({ code: 'EPERM' });
+        expect(alive(pid)).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+      await service.close();
+      expect(alive(pid)).toBe(false);
     });
 
     it('reports early exit without leaking stdout or stderr', async () => {

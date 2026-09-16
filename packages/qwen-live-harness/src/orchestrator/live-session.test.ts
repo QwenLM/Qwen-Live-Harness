@@ -31,7 +31,7 @@ import type {
 } from '../adaptor/types.js';
 import { BackendRegistry } from '../adaptor/registry.js';
 import { AsyncEventQueue } from '../adaptor/async-event-queue.js';
-import { displayLiveMessage, liveMessage } from '../i18n/messages.js';
+import { displayLiveMessage, liveMessage, liveText } from '../i18n/messages.js';
 import { DEFAULT_PROACTIVE_CONFIG, type ProactiveConfig } from '../config.js';
 import type { LiveVisualCapture } from '../host/qwen-live-harness-host-coordinator.js';
 import type { LiveState, LiveVisualInput } from '../host/types.js';
@@ -72,6 +72,7 @@ import {
 } from '../tools/definitions.js';
 import { LiveSession } from './live-session.js';
 import { buildLiveInstructions } from '../realtime/instructions.js';
+import type { searchQwenRealtime } from '../realtime/web-search.js';
 
 const PERMISSION_OPTIONS: readonly PermissionOption[] = [
   { optionId: 'allow', kind: 'proceed' },
@@ -316,6 +317,9 @@ function createFakeRealtime() {
 type FakeRealtime = ReturnType<typeof createFakeRealtime>;
 
 interface StartSessionOptions {
+  withoutBackends?: boolean;
+  realtimeModel?: string;
+  searchRealtime?: typeof searchQwenRealtime;
   logger?: LiveLogger;
   visualInput?: LiveVisualInput;
   capture?: LiveVisualCapture;
@@ -524,21 +528,26 @@ async function startSession(
   const session = new LiveSession({
     host,
     registry: new BackendRegistry(
-      secondary
-        ? [
-            { adaptor, isDefault: true },
-            { adaptor: secondary, isDefault: false },
-          ]
-        : [{ adaptor, isDefault: true }],
+      options.withoutBackends
+        ? []
+        : secondary
+          ? [
+              { adaptor, isDefault: true },
+              { adaptor: secondary, isDefault: false },
+            ]
+          : [{ adaptor, isDefault: true }],
     ),
     realtime: {
       endpoint: 'https://dashscope.example.com',
-      model: 'qwen-omni-turbo-realtime',
+      model: options.realtimeModel ?? 'qwen-omni-turbo-realtime',
       voice: 'Cherry',
     },
     log: log as unknown as SessionLog,
     ...(options.logger ? { logger: options.logger } : {}),
     openRealtime,
+    ...(options.searchRealtime
+      ? { searchRealtime: options.searchRealtime }
+      : {}),
     ...(options.proactive ? { proactive: options.proactive } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onSubagentsChanged
@@ -620,6 +629,341 @@ async function awaitReceipts(
 }
 
 // -- tests --------------------------------------------------------------------
+
+describe('LiveSession without a background Harness', () => {
+  it('uses an isolated read-only search and sends only the query', async () => {
+    const search = vi.fn<typeof searchQwenRealtime>().mockResolvedValue({
+      answer: 'An untrusted web answer',
+      searchStatus: 'performed',
+    });
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+    });
+    try {
+      expect(rig.config.tools.map((tool) => tool.function.name)).toEqual(
+        expect.arrayContaining([
+          'web_search',
+          'appshot',
+          'create_proactive_monitor',
+        ]),
+      );
+      expect(rig.config).not.toHaveProperty('enable_search');
+      callTool(rig.callbacks, 'web_search', { query: 'Only this query' }, [
+        { role: 'user', text: 'PRIVATE-VOICE-CONTEXT' },
+      ]);
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      expect(receipt).toMatchObject({
+        status: 'ok',
+        searchStatus: 'performed',
+        answer: 'An untrusted web answer',
+      });
+      expect(search).toHaveBeenCalledOnce();
+      const request = search.mock.calls[0]![0];
+      expect(Object.keys(request).sort()).toEqual([
+        'endpoint',
+        'model',
+        'query',
+        'signal',
+      ]);
+      expect(request.query).toBe('Only this query');
+      expect(request.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+        'Only this query',
+      );
+      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+        'An untrusted web answer',
+      );
+      expect(JSON.stringify(search.mock.calls)).not.toContain(
+        'PRIVATE-VOICE-CONTEXT',
+      );
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it.each([
+    { withoutBackends: false, realtimeModel: 'qwen3.5-omni-plus-realtime' },
+    { withoutBackends: true, realtimeModel: 'qwen-omni-turbo-realtime' },
+  ])(
+    'does not expose or execute unavailable native search (%j)',
+    async (options) => {
+      const search = vi.fn<typeof searchQwenRealtime>();
+      const rig = await startSession(undefined, {
+        ...options,
+        searchRealtime: search,
+      });
+      try {
+        expect(
+          rig.config.tools.some((tool) => tool.function.name === 'web_search'),
+        ).toBe(false);
+        callTool(rig.callbacks, 'web_search', {
+          query: 'not authorized for this mode',
+        });
+        expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
+          status: 'error',
+          code: 'web_search_unavailable',
+        });
+        expect(search).not.toHaveBeenCalled();
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('bounds concurrent searches and does not fail the call when a search fails', async () => {
+    let resolveSearch!: (
+      result: Awaited<ReturnType<typeof searchQwenRealtime>>,
+    ) => void;
+    const search = vi.fn<typeof searchQwenRealtime>().mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve;
+        }),
+    );
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'web_search', { query: 'first' });
+      await vi.waitFor(() => expect(search).toHaveBeenCalledOnce());
+      callTool(rig.callbacks, 'web_search', { query: 'second' });
+      expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
+        code: 'web_search_busy',
+      });
+      resolveSearch({
+        answer: 'A result without evidence of search',
+        searchStatus: 'unknown',
+      });
+      expect((await awaitReceipts(rig.realtime, 2))[1]).toMatchObject({
+        searchStatus: 'unknown',
+      });
+      search.mockRejectedValueOnce(
+        new QwenRealtimeError(
+          'PRIVATE-PROVIDER-ERROR',
+          'web_search_timeout',
+          false,
+        ),
+      );
+      callTool(rig.callbacks, 'web_search', { query: 'third' });
+      expect((await awaitReceipts(rig.realtime, 3))[2]).toMatchObject({
+        code: 'web_search_timeout',
+      });
+      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+        'PRIVATE-PROVIDER-ERROR',
+      );
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+      expect(rig.realtime.close).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('cancels a search on Stop and ignores a late result', async () => {
+    let resolveSearch!: (
+      result: Awaited<ReturnType<typeof searchQwenRealtime>>,
+    ) => void;
+    const search = vi.fn<typeof searchQwenRealtime>().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve;
+        }),
+    );
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'web_search', { query: 'cancel this' });
+      await vi.waitFor(() => expect(search).toHaveBeenCalledOnce());
+      const signal = search.mock.calls[0]![0].signal!;
+      await rig.session.stop({ epoch: 1, callId: 'call-1' });
+      expect(signal.aborted).toBe(true);
+      resolveSearch({ answer: 'too late', searchStatus: 'performed' });
+      await delay(0);
+      expect(rig.realtime.submitFunctionOutput).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('rejects empty, oversized, or augmented search requests before contacting a provider', async () => {
+    const search = vi.fn<typeof searchQwenRealtime>();
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      for (const args of [
+        { query: '' },
+        { query: 'x'.repeat(4097) },
+        { query: 'look up', memory: 'do not forward' },
+      ])
+        callTool(rig.callbacks, 'web_search', args);
+      for (const receipt of await awaitReceipts(rig.realtime, 3))
+        expect(receipt).toMatchObject({ code: 'web_search_invalid_query' });
+      expect(search).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('keeps direct audio and Live Feed functional with no background sessions', async () => {
+    const { session, realtime, host, adaptor, config, callbacks } =
+      await startSession(undefined, {
+        withoutBackends: true,
+        visualInput: { ...DEFAULT_VISUAL_INPUT, mode: 'live-feed' },
+      });
+    try {
+      expect(host.states.at(-1)).toBe('listening');
+      expect(config.instructions).toContain(
+        'No background Harness is configured.',
+      );
+      const pcm16 = Buffer.from([1, 0]);
+      expect(session.pushAudio({ epoch: 1, callId: 'call-1', pcm16 })).toBe(
+        true,
+      );
+      expect(
+        session.pushImage({
+          epoch: 1,
+          callId: 'call-1',
+          source: 'screen',
+          image: TEST_JPEG,
+        }),
+      ).toBe(true);
+      expect(realtime.pushAudio).toHaveBeenCalledWith(pcm16);
+      expect(realtime.pushImage).toHaveBeenCalledWith(TEST_JPEG);
+      callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'direct',
+        audio: pcm16,
+      });
+      expect(host.sendOutputAudio).toHaveBeenCalledWith(1, pcm16);
+      expect(adaptor.createSession).not.toHaveBeenCalled();
+      expect(adaptor.prompt).not.toHaveBeenCalled();
+      expect(session.getSubagentsSnapshot().counts.running).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it.each([
+    ['session_list', {}],
+    ['session_create', { backend: 'codex' }],
+    ['handoff', { task: 'Create a file' }],
+    ['handoff', { task: 'Continue work', session: 'session_1' }],
+    ['session_monitor', { session: 'session_1' }],
+    ['session_stop', { job: 'job_1' }],
+    ['respond_permission', { request_id: 'req_1', decision: 'allow' }],
+  ] as const)(
+    'returns a structured nonfatal error for %s without creating fake work',
+    async (name, args) => {
+      const { session, realtime, host, adaptor, callbacks } =
+        await startSession(undefined, { withoutBackends: true });
+      try {
+        callTool(callbacks, name, args);
+        const [receipt] = await awaitReceipts(realtime, 1);
+        expect(receipt).toEqual({
+          status: 'error',
+          code: 'no_backend',
+          note: liveText('en', 'runtime.noBackends'),
+        });
+        expect(adaptor.createSession).not.toHaveBeenCalled();
+        expect(adaptor.prompt).not.toHaveBeenCalled();
+        expect(adaptor.cancel).not.toHaveBeenCalled();
+        expect(adaptor.respondPermission).not.toHaveBeenCalled();
+        expect(host.failCall).not.toHaveBeenCalled();
+        expect(realtime.close).not.toHaveBeenCalled();
+        expect(session.getSubagentsSnapshot().counts.running).toBe(0);
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it.each(['screen', 'camera'] as const)(
+    'keeps %s Appshot metadata receipts without changing the pixel protocol',
+    async (source) => {
+      const { session, realtime, host, adaptor, callbacks } =
+        await startSession(undefined, {
+          withoutBackends: true,
+          visualInput: { ...DEFAULT_VISUAL_INPUT, source },
+          capture: {
+            source,
+            image: TEST_JPEG,
+            width: 1280,
+            height: 720,
+            screenshotPath: pngPath,
+            ...(source === 'screen'
+              ? { accessibilityText: 'Visible document' }
+              : {}),
+          },
+        });
+      try {
+        callTool(callbacks, 'appshot', {});
+        const [receipt] = await awaitReceipts(realtime, 1);
+        expect(receipt).toMatchObject({
+          status: 'ok',
+          source,
+          asset: 'asset_1',
+        });
+        expect(host.captureVisualContext).toHaveBeenCalledOnce();
+        expect(realtime.pushImage).not.toHaveBeenCalled();
+        expect(realtime.commitInputAudio).not.toHaveBeenCalled();
+        expect(adaptor.createSession).not.toHaveBeenCalled();
+        expect(host.failCall).not.toHaveBeenCalled();
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it('runs Proactive monitors and timers independently of background Harnesses', async () => {
+    const harness = createProactiveHarness();
+    const { session, realtime, adaptor, callbacks } = await startSession(
+      undefined,
+      {
+        withoutBackends: true,
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+      },
+    );
+    try {
+      callTool(callbacks, CREATE_PROACTIVE_MONITOR_TOOL_NAME, {
+        title: 'Watch posture',
+        modalities: ['vision'],
+        condition: 'The user slouches',
+        trigger_response: 'Sit upright',
+        repeat: true,
+      });
+      callTool(callbacks, CREATE_PROACTIVE_TIMER_TOOL_NAME, {
+        title: 'Tea timer',
+        duration_sec: 300,
+        reminder_text: 'Tea is ready',
+      });
+      await vi.waitFor(() =>
+        expect(realtime.submitFunctionOutput).toHaveBeenCalledTimes(2),
+      );
+      for (const [, output] of realtime.submitFunctionOutput.mock.calls)
+        expect(output).not.toContain('no_backend');
+      expect(harness.scheduler.createPerceptionMonitor).toHaveBeenCalledOnce();
+      expect(harness.scheduler.createTimer).toHaveBeenCalledOnce();
+      expect(adaptor.createSession).not.toHaveBeenCalled();
+      expect(adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
+  });
+});
 
 describe('standalone subagent controls', () => {
   it('signals unassigned approvals in the summary, getter and page even without a task or call', async () => {
@@ -7588,6 +7932,51 @@ describe('LiveSession memory integration', () => {
     expect(off.config.tools.map((tool) => tool.function.name)).not.toContain(
       'omniretrieve',
     );
+  });
+
+  it('retains memory reads and writes without a configured backend', async () => {
+    const service = await memoryService();
+    const { config, callbacks, realtime, adaptor, host } = await startMemory(
+      service,
+      { withoutBackends: true },
+    );
+    expect(config.instructions).toContain(
+      'No background Harness is configured.',
+    );
+    expect(config.instructions).toContain(MEMORY_SYSTEM_PROMPT);
+    callTool(callbacks, 'omnibio', {
+      operations: { add: ['The user prefers concise replies.'] },
+    });
+    expect(await waitMemoryReceipt(realtime, 1)).toBe(
+      'Successfully updated memory.',
+    );
+    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+      'The user prefers concise replies.',
+    );
+    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+      'No background Harness is configured.',
+    );
+    beginDialogue(callbacks, 'without-backend-dialogue', '辣椒间距多少');
+    callbacks.onDialogue?.({
+      callEpoch: 1,
+      inputItemId: 'without-backend-dialogue',
+      role: 'assistant',
+      text: '辣椒留三十到四十厘米。',
+      source: 'normal',
+    });
+    callTool(callbacks, 'omniretrieve', {
+      query: '辣椒 间距',
+      source: 'dialogue',
+    });
+    expect(await waitMemoryReceipt(realtime, 2)).toBe(
+      'Successfully searched past conversations. 1 matched.',
+    );
+    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+      '三十到四十厘米',
+    );
+    expect(adaptor.createSession).not.toHaveBeenCalled();
+    expect(adaptor.prompt).not.toHaveBeenCalled();
+    expect(host.failCall).not.toHaveBeenCalled();
   });
 
   it('records final dialogue exactly once even when an answer precedes late ASR', async () => {

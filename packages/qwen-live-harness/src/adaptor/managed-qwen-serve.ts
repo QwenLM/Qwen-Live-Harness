@@ -132,7 +132,11 @@ export class ManagedQwenServe {
 
   close(): Promise<void> {
     this.closed = true;
-    return (this.stopping ??= this.stopChild());
+    return (this.stopping ??= this.stopChild().catch((error: unknown) => {
+      // A failed cleanup must remain retryable from the Host's Quit action.
+      this.stopping = undefined;
+      throw error;
+    }));
   }
 
   private async stopChild(): Promise<void> {
@@ -149,26 +153,30 @@ export class ManagedQwenServe {
       }
       return;
     }
-    const signalGroup = (signal: NodeJS.Signals) => {
+    const signalGroup = async (
+      signal: NodeJS.Signals | 0,
+    ): Promise<boolean> => {
       try {
         process.kill(-child.pid!, signal);
+        return true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ESRCH') return false;
+        // Some hosts deny group signals/probes even after the group is gone.
+        // EPERM alone is not evidence of exit: verify absence independently.
+        if (code === 'EPERM' && !(await processGroupExists(child.pid!)))
+          return false;
+        throw error;
       }
     };
-    signalGroup('SIGTERM');
+    if (!(await signalGroup('SIGTERM'))) return;
     // Workers can outlive the leader; check the owned group, not just exitCode.
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline) {
-      try {
-        process.kill(-child.pid!, 0);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
-        throw error;
-      }
+      if (!(await signalGroup(0))) return;
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }
-    signalGroup('SIGKILL');
+    await signalGroup('SIGKILL');
     if (child.exitCode === null && child.signalCode === null) {
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 500);
@@ -179,4 +187,34 @@ export class ManagedQwenServe {
       });
     }
   }
+}
+
+/** Read process group identifiers only; never infer ownership from command text. */
+async function processGroupExists(group: number): Promise<boolean> {
+  const output = await new Promise<string>((resolve, reject) => {
+    execFile(
+      '/bin/ps',
+      ['-A', '-o', 'pgid='],
+      {
+        timeout: 2_000,
+        maxBuffer: 1024 * 1024,
+        encoding: 'utf8',
+      },
+      (error, stdout) => {
+        if (error)
+          reject(
+            new Error(
+              'Could not verify managed Qwen Serve process cleanup. Retry Quit.',
+            ),
+          );
+        else resolve(stdout);
+      },
+    );
+  });
+  const groups = output.trim().split(/\s+/u);
+  if (!groups.length || groups.some((value) => !/^\d+$/u.test(value)))
+    throw new Error(
+      'Could not verify managed Qwen Serve process cleanup. Retry Quit.',
+    );
+  return groups.some((value) => Number(value) === group);
 }
