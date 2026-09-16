@@ -326,6 +326,7 @@ interface CallContext {
   memory?: MemorySession;
   memoryDialogue?: MemoryDialogueCollector;
   stopping: boolean;
+  discoveryCleanup?: Promise<void>;
   webSearch?: AbortController;
   speechInProgress: boolean;
   responseInFlight: boolean;
@@ -596,6 +597,27 @@ export class LiveSession {
     });
 
     try {
+      const discoverers = this.registry
+        .all()
+        .filter(
+          (entry) => entry.status === 'ready' && entry.adaptor.startDiscovery,
+        );
+      if (discoverers.length) {
+        await Promise.all(
+          discoverers.map(async ({ adaptor }) => {
+            try {
+              await adaptor.startDiscovery?.(context.callId);
+            } catch (error) {
+              this.log.write('error', {
+                source: 'peer_discovery',
+                backend: adaptor.name,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }),
+        );
+        if (this.active !== context || context.stopping) return;
+      }
       this.attachMemory(context);
       const realtime = await this.openRealtime(
         {
@@ -720,6 +742,7 @@ export class LiveSession {
       });
     }
     context.stopping = true;
+    this.stopDiscovery(context);
     context.webSearch?.abort();
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
     context.proactive?.dispose();
@@ -1013,6 +1036,40 @@ export class LiveSession {
         .slice(0, 8)
         .map((pending) => this.permissionView(pending));
       page.unassignedPermissionsOmitted = Math.max(0, unassigned.length - 8);
+      if (this.active && !this.active.stopping) {
+        const context = this.active;
+        const discovered = [];
+        let discoveryEnabled = false;
+        for (const { adaptor } of this.registry.all()) {
+          if (!adaptor.listDiscoveredSessions) continue;
+          discoveryEnabled = true;
+          try {
+            for (const summary of await adaptor.listDiscoveredSessions()) {
+              if (!summary.discovery || !summary.handle.readOnly) continue;
+              discovered.push({
+                id: this.handles.session(summary.handle),
+                backend: adaptor.name,
+                sessionId: summary.discovery.sessionId,
+                title: summary.label ?? summary.discovery.address,
+                ...(summary.cwd ? { cwd: summary.cwd } : {}),
+                source: 'terminal' as const,
+                status: 'unknown' as const,
+                readOnly: true as const,
+              });
+            }
+          } catch (error) {
+            this.log.write('error', {
+              source: 'peer_discovery',
+              backend: adaptor.name,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (discoveryEnabled && this.active === context && !context.stopping) {
+          page.discoveredSessions = discovered.slice(0, 32);
+          page.discoveredSessionsOmitted = Math.max(0, discovered.length - 32);
+        }
+      }
       return { type: 'page', page };
     }
     if (request.action === 'permission') {
@@ -2354,6 +2411,7 @@ export class LiveSession {
           // A lost terminal event cannot prove success. Retire a stale job
           // as interrupted only when the backend also reports idle.
           if (
+            !summary.handle.readOnly &&
             summary.state !== 'busy' &&
             !entry.adaptor.isBusy(summary.handle)
           ) {
@@ -2365,11 +2423,15 @@ export class LiveSession {
             backend: entry.adaptor.name,
             ...(summary.label ? { label: summary.label } : {}),
             ...(summary.cwd ? { cwd: summary.cwd } : {}),
-            state: pending
-              ? 'waiting_for_permission'
-              : entry.adaptor.isBusy(summary.handle)
-                ? 'busy'
-                : summary.state,
+            ...(summary.discovery ? { source: summary.discovery.source } : {}),
+            ...(summary.handle.readOnly ? { read_only: true } : {}),
+            state: summary.handle.readOnly
+              ? 'unknown'
+              : pending
+                ? 'waiting_for_permission'
+                : entry.adaptor.isBusy(summary.handle)
+                  ? 'busy'
+                  : summary.state,
             ...(pending
               ? {
                   pending_permission: {
@@ -2425,6 +2487,13 @@ export class LiveSession {
           note: target.error,
         };
       const { handle, backend } = target;
+      if (backend.readOnly) {
+        return {
+          status: 'rejected',
+          session: handle,
+          note: 'This terminal session is read-only; sending instructions is not available yet.',
+        };
+      }
 
       const blocks = await this.buildHandoffBlocks(
         task,
@@ -2567,6 +2636,15 @@ export class LiveSession {
           note: 'unknown session; call session_list first.',
         };
       }
+      if (backend.readOnly) {
+        return {
+          status: 'ok',
+          session: sessionHandle,
+          state: 'unknown',
+          read_only: true,
+          note: 'Execution state is not observed for this terminal session.',
+        };
+      }
       if (!this.adaptorFor(backend).isBusy(backend)) {
         this.reconcileSubagentSession(sessionHandle);
       }
@@ -2640,6 +2718,13 @@ export class LiveSession {
         return {
           status: 'error',
           note: 'unknown session or job; call session_list first.',
+        };
+      }
+      if (backend.readOnly) {
+        return {
+          status: 'unsupported',
+          session: sessionHandle,
+          note: 'This terminal session is read-only; stopping is not supported.',
         };
       }
       await this.adaptorFor(backend).cancel(backend);
@@ -2802,7 +2887,12 @@ export class LiveSession {
   // -- backend event pump ---------------------------------------------------
 
   private ensurePump(sessionHandle: string, backend: BackendHandle): void {
-    if (this.disposed || this.backendPumps.has(sessionHandle)) return;
+    if (
+      this.disposed ||
+      backend.readOnly ||
+      this.backendPumps.has(sessionHandle)
+    )
+      return;
     const caps = this.adaptorFor(backend).capabilities();
     if (caps.eventDelivery !== 'stream') {
       // A per-turn/poll backend has no long-lived stream to pump; its
@@ -3833,10 +3923,28 @@ export class LiveSession {
       callId: context.callId,
       ...(outcome && 'error' in outcome ? { error: outcome.error } : {}),
     });
-    resolve?.(outcome);
+    void context.discoveryCleanup?.then(() => resolve?.(outcome));
+  }
+
+  private stopDiscovery(context: CallContext): void {
+    if (context.discoveryCleanup) return;
+    context.discoveryCleanup = Promise.all(
+      this.registry.all().map(async ({ adaptor }) => {
+        try {
+          await adaptor.stopDiscovery?.(context.callId);
+        } catch (error) {
+          this.log.write('error', {
+            source: 'peer_discovery',
+            backend: adaptor.name,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    ).then(() => undefined);
   }
 
   private cleanupContext(context: CallContext): void {
+    this.stopDiscovery(context);
     context.webSearch?.abort();
     context.webSearch = undefined;
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
@@ -3875,7 +3983,7 @@ export class LiveSession {
     // down through another path (daemon shutdown, fatal error).
     const resolve = context.stopResolve;
     context.stopResolve = undefined;
-    resolve?.(undefined);
+    void context.discoveryCleanup?.then(() => resolve?.(undefined));
   }
 
   private closeActive(): void {

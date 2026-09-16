@@ -1,0 +1,52 @@
+{
+  "repository": "https://github.com/QwenLM/qwen-code",
+  "commit": "af4dece3a73a545d45e5a81948ac1374f9068ea1",
+  "pullRequest": "https://github.com/QwenLM/qwen-code/pull/11560",
+  "license": "Apache-2.0",
+  "files": {
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "55367b61ccd2a016a0159ad886bd66a3ee6cb5e873d0c75c803c897dd245b075"
+    },
+    "client.ts": {
+      "source": "packages/sdk-typescript/src/peer/client.ts",
+      "sha256": "e3ee59f20bd43c29832516185787ba51457aca87b468fe1fd1d335e3b9c82134"
+    },
+    "directory.ts": {
+      "source": "packages/sdk-typescript/src/peer/directory.ts",
+      "sha256": "339d2e1e978e7d352c12bee39f8e4c5e63c242bdb1b1941e0d9b2dd41c1baa7e"
+    },
+    "endpoint.ts": {
+      "source": "packages/sdk-typescript/src/peer/endpoint.ts",
+      "sha256": "fe523439532ea590f93ab7d26dc4eb0b2b3b3a3ad899c39039b9b7ddfaac2e8c"
+    },
+    "errors.ts": {
+      "source": "packages/sdk-typescript/src/peer/errors.ts",
+      "sha256": "5947b5d5c1a2529bd3ccaa5828f932e59d94358fc67f447fab8da298fcbe3667"
+    },
+    "frames.ts": {
+      "source": "packages/sdk-typescript/src/peer/frames.ts",
+      "sha256": "653dfdc5fea38b02923a14f4b9bd864a4d428a3dea10314e33cc29cb5f5b99d9"
+    },
+    "identity.ts": {
+      "source": "packages/sdk-typescript/src/peer/identity.ts",
+      "sha256": "91b356fab9e16913c87148177a8a04df61d651c04ea7096dccfb7de706bdd405"
+    },
+    "inbox.ts": {
+      "source": "packages/sdk-typescript/src/peer/inbox.ts",
+      "sha256": "3eb87268b3f07a1054c1f60e6afa4da686a4a5c48f5af12927635784ee7f6337"
+    },
+    "index.ts": {
+      "source": "packages/sdk-typescript/src/peer/index.ts",
+      "sha256": "8e7142952193681a8f0c72caa5e5a4804114ff6ac8d39a109f2cc975c211b91e"
+    },
+    "label.ts": {
+      "source": "packages/sdk-typescript/src/peer/label.ts",
+      "sha256": "251be00680f39a962068e9e25b4c66efdd39beb479f6282e0115127e22958a42"
+    },
+    "registry.ts": {
+      "source": "packages/sdk-typescript/src/peer/registry.ts",
+      "sha256": "32ff391654a037bb57108f3a431bbb283d8baa63c8de6a7296dc590826fd2b7f"
+    }
+  }
+}

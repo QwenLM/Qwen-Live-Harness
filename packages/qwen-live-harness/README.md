@@ -515,6 +515,64 @@ Multiple backends can coexist — the voice model sees all sessions across
 all backends in `session_list` and can route `handoff` to a specific one by
 name.
 
+### Terminal session discovery (M3 stage 1)
+
+A `qwen-code` backend can additionally list existing Qwen terminal sessions
+from one explicitly configured, local Qwen home. Add `peerDiscovery` to that
+backend in `~/.qwen-live-harness/config.json` and restart Live:
+
+```json
+{
+  "backends": [
+    {
+      "name": "qwen-code",
+      "kind": "qwen-code",
+      "default": true,
+      "baseUrl": "http://127.0.0.1:4170",
+      "peerDiscovery": { "qwenHome": "~/.qwen" }
+    }
+  ]
+}
+```
+
+Retain the backend's existing authentication token if required. The Qwen
+terminal sessions must use that same home and have
+`agents.crossSessionMessaging: true` in their Qwen settings (restart those
+sessions after enabling it). Discovery is disabled when `peerDiscovery` is
+omitted. This setting applies only to the REST/SSE `qwen-code` backend;
+`AcpAdaptor` is unchanged and ACP entries reject this option.
+
+Start a voice call, then ask to list sessions. Existing reachable `tui`
+sessions appear alongside daemon sessions with `source: terminal`,
+`read_only: true`, and execution state `unknown`. Their peer address includes
+an identifying suffix when needed to distinguish equal names. In the Host's
+Subagents panel, a separate **Terminal sessions** section shows these entries;
+**Refresh** updates the inventory after a terminal starts or exits.
+They do not contribute to running/completed task counts.
+
+This stage supports discovery only. Handoff, image delivery, stop and tool
+approval are unavailable for these read-only entries. No controller token is
+accepted or created. The temporary Live peer refuses incoming application
+messages, and closes its socket and registry record when the call ends.
+Existing daemon/ACP tasks continue through their normal control and event
+paths. A terminal's unknown execution state is never treated as idle or as
+proof that its work finished.
+
+Only terminal records are added. Registry copies of serve/headless sessions
+are left to their existing REST/ACP routes. Names and directories are display
+metadata, not authority. A same-id terminal in another runtime is kept separate
+from a daemon session; a remote `baseUrl` does not make local discovery remote.
+The Node peer transport supports macOS/Linux; Windows peer discovery is not
+available. Failure to start discovery is recorded as `peer_discovery` in the
+Live log and does not prevent the ordinary voice/backend connection.
+
+The peer module is pinned to the official SDK implementation from
+[#11560](https://github.com/QwenLM/qwen-code/pull/11560), with source hashes and
+Apache-2.0 provenance. See [the vendor note](src/vendor/qwen-code-peer/README.md).
+Builds verify the source offline and the installed package includes only the
+required client code, not an embedded backend CLI. The published SDK 0.1.12
+continues to supply the HTTP client until a peer-capable SDK release is adopted.
+
 ## Memory
 
 If the default Memory HTTP endpoint cannot be derived from `realtimeEndpoint`,
@@ -730,8 +788,9 @@ tracking the [Live split roadmap](https://github.com/QwenLM/qwen-code/issues/101
 - **This extension**: protocol v9 visual input and fenced playback receipts,
   6 configurable Proactive tools, 2 Memory tools with local multi-library
   storage (both features enabled by default), and configurable desktop controls
-- **M3**: upstream session registry, controller authentication and peer SDK
-  have merged. Live integration is tracked separately from repository migration.
+- **M3 stage 1**: opt-in, read-only local terminal discovery is implemented.
+  Controller handoff and incoming peer report announcements remain follow-up
+  stages; full M3 voice acceptance is not implied by discovery support.
 - Built-in Live retirement is implemented in a companion qwen-code cleanup
   branch; the new repository owns daemon and Host builds and releases.
 

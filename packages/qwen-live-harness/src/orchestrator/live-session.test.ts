@@ -6221,6 +6221,124 @@ describe('LiveSession', () => {
     ]);
   });
 
+  it('keeps discovered terminals out of execution, permissions and task counts', async () => {
+    const { adaptor, session, callbacks, realtime } = await startSession();
+    adaptor.summaries = [
+      {
+        handle: { id: 'peer-only', adaptor: 'fake', readOnly: true },
+        label: 'Existing terminal [abcdef]',
+        cwd: '/terminal',
+        state: 'unknown',
+        discovery: {
+          source: 'terminal',
+          sessionId: 'actual-id',
+          address: 'Existing terminal [abcdef]',
+        },
+      },
+    ];
+    // A misleading backend boolean must not override explicit unknown/read-only.
+    adaptor.busy = true;
+    callTool(callbacks, 'session_list', {});
+    expect((await awaitReceipts(realtime, 1))[0]).toMatchObject({
+      sessions: [
+        {
+          handle: 'session_1',
+          state: 'unknown',
+          read_only: true,
+          source: 'terminal',
+        },
+      ],
+    });
+    callTool(callbacks, 'handoff', {
+      session: 'session_1',
+      task: 'edit the repo',
+      input_refs: ['asset_1'],
+    });
+    expect((await awaitReceipts(realtime, 2))[1]).toMatchObject({
+      status: 'rejected',
+    });
+    callTool(callbacks, 'session_monitor', { session: 'session_1' });
+    expect((await awaitReceipts(realtime, 3))[2]).toMatchObject({
+      state: 'unknown',
+      read_only: true,
+    });
+    callTool(callbacks, 'session_stop', { session: 'session_1' });
+    expect((await awaitReceipts(realtime, 4))[3]).toMatchObject({
+      status: 'unsupported',
+    });
+    expect(adaptor.prompt).not.toHaveBeenCalled();
+    expect(adaptor.cancel).not.toHaveBeenCalled();
+    expect(adaptor.respondPermission).not.toHaveBeenCalled();
+    expect(adaptor.queues.size).toBe(0);
+    expect(session.getSubagentsSnapshot()).toMatchObject({
+      tasks: [],
+      counts: { running: 0, completed: 0 },
+    });
+    // Omitted target still creates a normal managed session, never adopts a peer.
+    callTool(callbacks, 'handoff', { task: 'normal managed task' });
+    await awaitReceipts(realtime, 5);
+    expect(adaptor.createSession).toHaveBeenCalledOnce();
+    expect(adaptor.prompt.mock.calls[0]![0]).toEqual({
+      id: 's1',
+      adaptor: 'fake',
+    });
+  });
+
+  it('exposes discovery in the Host catalog without manufacturing jobs and clears it when the call stops', async () => {
+    const adaptor = new FakeAdaptor();
+    const discovery = {
+      listDiscoveredSessions: vi.fn(async (): Promise<SessionSummary[]> => [
+        {
+          handle: { id: 'peer', adaptor: 'fake', readOnly: true },
+          state: 'unknown',
+          label: 'Terminal',
+          discovery: {
+            source: 'terminal',
+            sessionId: 'peer-id',
+            address: 'Terminal [abcdef]',
+          },
+        },
+      ]),
+      startDiscovery: vi.fn(async () => {}),
+      stopDiscovery: vi.fn(async () => {}),
+    };
+    Object.assign(adaptor, discovery);
+    const { session } = await startSession(adaptor);
+    expect(discovery.startDiscovery).toHaveBeenCalledWith('call-1');
+    const page = await session.handleSubagentsRequest({ action: 'list' });
+    expect(page).toMatchObject({
+      type: 'page',
+      page: {
+        discoveredSessions: [
+          {
+            id: 'session_1',
+            backend: 'fake',
+            sessionId: 'peer-id',
+            status: 'unknown',
+            readOnly: true,
+          },
+        ],
+        snapshot: { tasks: [], counts: { running: 0, completed: 0 } },
+      },
+    });
+    session.dispose();
+    await vi.waitFor(() =>
+      expect(discovery.stopDiscovery).toHaveBeenCalledWith('call-1'),
+    );
+    expect(
+      await session.handleSubagentsRequest({ action: 'list' }),
+    ).toMatchObject({ type: 'error', code: 'unavailable' });
+  });
+
+  it('keeps the Host discovery section absent when no backend enables it', async () => {
+    const { session } = await startSession();
+    const result = await session.handleSubagentsRequest({ action: 'list' });
+    expect(result.type).toBe('page');
+    if (result.type !== 'page') throw new Error('Expected a page');
+    expect(result.page.discoveredSessions).toBeUndefined();
+    expect(result.page.discoveredSessionsOmitted).toBeUndefined();
+  });
+
   it('session_stop targets the exact job and awaits its terminal confirmation', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 

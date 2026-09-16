@@ -117,6 +117,101 @@ function setup(
 }
 
 describe('Subagents read-only surfaces', () => {
+  it('shows terminal discovery separately without inventing running tasks or session controls', async () => {
+    const value = snapshot([]);
+    value.omitted = 0;
+    value.counts = {
+      running: 0,
+      completed: 0,
+      needsAttention: 0,
+      failed: 0,
+      cancelled: 0,
+      interrupted: 0,
+    };
+    const session = {
+      id: 'session:terminal-1',
+      backend: 'qwen-code',
+      sessionId: 'peer-1',
+      title: '<b>Terminal project</b>',
+      cwd: '/project/with a long directory',
+      source: 'terminal' as const,
+      status: 'unknown' as const,
+      readOnly: true as const,
+    };
+    const h = setup(
+      {},
+      {
+        mode: 'list',
+        language: 'zh-CN',
+        connected: true,
+        controlsAvailable: true,
+        instanceId: 'live:1',
+        snapshot: value,
+        page: {
+          snapshot: value,
+          offset: 0,
+          total: 0,
+          discoveredSessions: [session],
+          discoveredSessionsOmitted: 2,
+        },
+      },
+    );
+    assert.equal(
+      h.get('.subagents-panel [data-count="running"]').textContent,
+      '0',
+    );
+    assert.equal(h.app.querySelectorAll('.subagent-row').length, 0);
+    assert.equal(h.get('.subagents-empty').hidden, true);
+    assert.equal(h.get('.discovered-sessions h2').textContent, '终端会话');
+    assert.equal(h.get('.discovered-session-title').textContent, session.title);
+    assert.equal(h.app.querySelector('.discovered-session-title b'), null);
+    assert.match(
+      h.get('.discovered-session-origin').textContent ?? '',
+      /终端.*qwen-code.*peer-1/,
+    );
+    assert.equal(h.get('.discovered-session-cwd').textContent, session.cwd);
+    assert.equal(
+      h.get('.discovered-session .subagent-status').textContent,
+      '执行状态未知',
+    );
+    assert.match(
+      h.get('.discovered-sessions-description').textContent ?? '',
+      /只读/,
+    );
+    assert.match(h.get('.discovered-sessions-omitted').textContent ?? '', /2/);
+    assert.equal(
+      h.app.querySelectorAll('.discovered-session button').length,
+      0,
+    );
+
+    const refresh = h.get<HTMLButtonElement>(
+      '.discovered-sessions-header button',
+    );
+    refresh.click();
+    await settled();
+    assert.deepEqual(
+      h.calls.find(([name]) => name === 'control'),
+      ['control', 'live:1', { action: 'list', offset: 0 }],
+    );
+    h.update({
+      page: { snapshot: value, offset: 0, total: 0, discoveredSessions: [] },
+    });
+    assert.equal(h.app.querySelectorAll('.discovered-session').length, 0);
+    assert.equal(h.get('.discovered-sessions-empty').hidden, false);
+    assert.equal(
+      h.get('.discovered-sessions-empty').textContent,
+      '未发现终端会话。',
+    );
+    h.update({ connected: false });
+    assert.equal(refresh.disabled, true);
+    h.update({
+      connected: true,
+      page: { snapshot: value, offset: 0, total: 0 },
+    });
+    assert.equal(h.app.querySelector('.discovered-sessions'), null);
+    assert.equal(h.get('.subagents-empty').hidden, false);
+  });
+
   it('marks an unassigned backend approval without inventing an active task', () => {
     const value = snapshot([]);
     value.counts = {

@@ -1369,6 +1369,31 @@ export const LIVE_MESSAGES = {
   // SUBAGENTS_MESSAGES
   'subagents.back': { en: 'Back', 'zh-CN': '返回' },
   'subagents.title': { en: 'Subagents', 'zh-CN': '子智能体' },
+  'subagents.terminalSessions': {
+    en: 'Terminal sessions',
+    'zh-CN': '终端会话',
+  },
+  'subagents.refreshSessions': { en: 'Refresh', 'zh-CN': '刷新' },
+  'subagents.sessionsReadOnly': {
+    en: 'Read only · Instructions and task controls are not available here yet.',
+    'zh-CN': '只读 · 暂不支持在这里发送指令或管理任务。',
+  },
+  'subagents.executionUnknown': {
+    en: 'Execution status unknown',
+    'zh-CN': '执行状态未知',
+  },
+  'subagents.terminalOrigin': {
+    en: 'Terminal · {backend} · {session}',
+    'zh-CN': '终端 · {backend} · {session}',
+  },
+  'subagents.noTerminalSessions': {
+    en: 'No terminal sessions were discovered.',
+    'zh-CN': '未发现终端会话。',
+  },
+  'subagents.sessionsOmitted': {
+    en: '{count} other terminal sessions are not shown.',
+    'zh-CN': '另有 {count} 个终端会话未显示。',
+  },
   'subagents.details': { en: 'Task details', 'zh-CN': '任务详情' },
   'subagents.stop': { en: 'Stop', 'zh-CN': '停止' },
   'subagents.stopTask': {

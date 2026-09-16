@@ -119,10 +119,12 @@ not modify any remote release feed. See [migration details](docs/migration.md).
 See the [daemon guide](packages/qwen-live-harness/README.md) for backend configuration,
 visual input, Memory, diagnostics and capability limits.
 
-This migration does not implement M3 peer integration. Backend completion and
-permission announcements remain supported, but the former private injected
-mid-turn speech channel is retired. Discovering and controlling existing terminal
-sessions through peer messaging is separate follow-up work.
+M3 now has opt-in, read-only discovery of existing local Qwen terminal sessions.
+Configure `peerDiscovery` on a `qwen-code` backend as described in the
+[terminal discovery guide](packages/qwen-live-harness/README.md#terminal-session-discovery-m3-stage-1).
+Sending instructions and receiving peer reports are later stages. Ordinary
+backend completion and permission announcements remain supported; the retired
+private injected speech channel is not used.
 
 ## Tests and compatibility
 

@@ -4,6 +4,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
+import {
+  hostProcessBoundary,
+  rendererProcessBoundary,
+} from './process-boundary.mjs';
 
 const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const distDir = join(appDir, 'dist');
@@ -87,6 +91,7 @@ execFileSync(
 
 await esbuild({
   entryPoints: [join(appDir, 'src', 'main', 'index.ts')],
+  plugins: [hostProcessBoundary({ allowDaemonStartup: true })],
   alias: liveTextAlias,
   bundle: true,
   platform: 'node',
@@ -99,6 +104,7 @@ await esbuild({
 
 await esbuild({
   entryPoints: [join(appDir, 'src', 'preload', 'index.ts')],
+  plugins: [hostProcessBoundary()],
   alias: liveTextAlias,
   bundle: true,
   platform: 'node',
@@ -109,9 +115,13 @@ await esbuild({
   sourcemap: true,
 });
 
-await viteBuild({ configFile: join(appDir, 'vite.config.ts') });
+await viteBuild({
+  configFile: join(appDir, 'vite.config.ts'),
+  plugins: [rendererProcessBoundary()],
+});
 await esbuild({
   entryPoints: [join(appDir, 'src', 'preload', 'subagents.ts')],
+  plugins: [hostProcessBoundary()],
   bundle: true,
   platform: 'node',
   target: 'node22',

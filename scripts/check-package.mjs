@@ -79,6 +79,14 @@ try {
       ({ path }) => path === 'dist/vendor/qwen-code-sdk-LICENSE',
     ),
   );
+  for (const name of ['LICENSE', 'upstream.json', 'README.md']) {
+    assert(
+      packed.files.some(
+        ({ path }) => path === `dist/vendor/qwen-code-peer/${name}`,
+      ),
+      `Pinned peer SDK notice absent from tarball: ${name}`,
+    );
+  }
   const cliEnv = {
     ...process.env,
     QWEN_LIVE_HARNESS_DATA_DIR: join(temporary, 'data'),

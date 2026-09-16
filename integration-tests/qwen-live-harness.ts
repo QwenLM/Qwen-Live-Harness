@@ -698,6 +698,8 @@ export interface BootLiveStackOptions {
    * handlers can reference paths inside the workspace.
    */
   makeOpenAIHandler: (info: { workspaceDir: string }) => FakeOpenAIHandler;
+  /** Join only this fixture's isolated Qwen home for terminal discovery. */
+  peerDiscovery?: boolean;
 }
 
 export interface LiveStack {
@@ -808,6 +810,20 @@ export async function bootLiveStack(
     const live = await spawnQwenLiveHarness({
       serveUrl: serve.base,
       serveToken: SERVE_TOKEN,
+      ...(options.peerDiscovery
+        ? {
+            backends: JSON.stringify([
+              {
+                kind: 'qwen-code',
+                name: 'qwen-code',
+                default: true,
+                baseUrl: serve.base,
+                token: SERVE_TOKEN,
+                peerDiscovery: { qwenHome },
+              },
+            ]),
+          }
+        : {}),
       realtimeEndpoint: fakeDash.url,
       dataDir,
       discoveryDir,

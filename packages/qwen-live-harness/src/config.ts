@@ -33,6 +33,8 @@ export type BackendConfig =
       kind: 'qwen-code';
       baseUrl: string;
       token?: string;
+      /** Opt-in local terminal discovery; no controller grant. */
+      peerDiscovery?: { qwenHome: string };
       isDefault: boolean;
     }
   | {
@@ -735,16 +737,32 @@ function parseBackend(
     }
     const baseUrl = str(raw['serveUrl'] ?? raw['baseUrl']) ?? DEFAULT_SERVE_URL;
     const token = str(raw['token']);
+    let peerDiscovery: { qwenHome: string } | undefined;
+    if (raw['peerDiscovery'] !== undefined) {
+      const peer = raw['peerDiscovery'];
+      if (
+        !isRecordLike(peer) ||
+        Object.keys(peer).some((key) => key !== 'qwenHome') ||
+        typeof peer['qwenHome'] !== 'string' ||
+        !peer['qwenHome'].trim()
+      ) {
+        throw new Error(
+          `Invalid peerDiscovery in ${where}: expected { qwenHome: string }`,
+        );
+      }
+      peerDiscovery = { qwenHome: peer['qwenHome'].trim() };
+    }
     return {
       name,
       kind,
       baseUrl,
       ...(token ? { token } : {}),
+      ...(peerDiscovery ? { peerDiscovery } : {}),
       isDefault: raw['default'] === true,
     };
   }
   if (kind === 'acp') {
-    for (const banned of ['serveUrl', 'baseUrl', 'token']) {
+    for (const banned of ['serveUrl', 'baseUrl', 'token', 'peerDiscovery']) {
       if (raw[banned] !== undefined) {
         throw new Error(`"${banned}" is not valid for kind acp (${where})`);
       }
