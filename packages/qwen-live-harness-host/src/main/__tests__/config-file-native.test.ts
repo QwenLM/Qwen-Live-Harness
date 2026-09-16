@@ -63,6 +63,8 @@ function fixture() {
   };
   const handlers = new Map<string, Handler>();
   const context = {
+    audioError: undefined,
+    audioRetryPending: false,
     daemonBootstrap: undefined,
     startupInvocationError: undefined,
     ipcMain: {

@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import ts from 'typescript';
 import type { HostAudioEngine } from '../../preload/audio-engine.ts';
 import { HostAudioLifecycle } from '../../preload/audio-lifecycle.ts';
+import * as audioOperation from '../../preload/audio-operation.ts';
 import * as inputPolicy from '../../preload/audio-input-policy.ts';
 import * as outputQueue from '../../preload/audio-output-queue.ts';
 import * as outputResampler from '../../preload/audio-output-resampler.ts';
@@ -78,6 +79,11 @@ function fixture(contextSampleRate = 48_000) {
   }> = [];
   const started: Array<{ epoch: number; outputId: number }> = [];
   const completed: Array<{ epoch: number; outputId: number }> = [];
+  const controls: {
+    addModule?: () => Promise<void>;
+    resume?: (context: Context) => Promise<void>;
+    close?: (context: Context) => Promise<void>;
+  } = {};
   class Context {
     state = 'suspended';
     readonly sampleRate = contextSampleRate;
@@ -90,15 +96,21 @@ function fixture(contextSampleRate = 48_000) {
       data: Float32Array;
     }> = [];
     readonly sources: BufferSource[] = [];
-    readonly audioWorklet = { addModule: async () => {} };
+    readonly audioWorklet = {
+      addModule: async () => await controls.addModule?.(),
+    };
     readonly virtualStreams: Stream[] = [];
+    closeCalls = 0;
     constructor(readonly options: AudioContextOptions) {
       contexts.push(this);
     }
     async resume() {
+      if (controls.resume) await controls.resume(this);
       this.state = 'running';
     }
     async close() {
+      this.closeCalls += 1;
+      if (controls.close) await controls.close(this);
       this.state = 'closed';
     }
     createBuffer(channels: number, length: number, rate: number) {
@@ -157,6 +169,7 @@ function fixture(contextSampleRate = 48_000) {
     },
     'qwen-live-harness/i18n': { liveMessage: (key: string) => key },
     './audio-lifecycle.ts': { HostAudioLifecycle },
+    './audio-operation.ts': audioOperation,
     './audio-input-policy.ts': inputPolicy,
     './audio-output-queue.ts': outputQueue,
     './audio-output-resampler.ts': outputResampler,
@@ -200,7 +213,21 @@ function fixture(contextSampleRate = 48_000) {
     diagnostics,
     started,
     completed,
+    controls,
+    Stream,
   };
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function flushAudioPromises(): Promise<void> {
+  for (let index = 0; index < 40; index++) await Promise.resolve();
 }
 
 describe('Qwen Live Harness Host audio engine', () => {
@@ -642,6 +669,251 @@ describe('Qwen Live Harness Host audio engine', () => {
         h.ipc.filter((entry) => entry.channel === 'live:audio:input').length,
         0,
       );
+    } finally {
+      await h.engine.dispose();
+    }
+  });
+
+  it('bounds a stuck microphone request and stops its late stream before retrying', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = fixture();
+    const microphone = deferred<InstanceType<typeof h.Stream>>();
+    const open = h.mediaDevices.getUserMedia;
+    h.mediaDevices.getUserMedia = () => microphone.promise;
+    try {
+      await h.engine.initialize(true);
+      const starting = h.engine.setCapture(true, false, 1);
+      const failed = assert.rejects(starting, {
+        name: 'AudioOperationTimeoutError',
+        code: 'audio_capture_start_timeout',
+        stage: 'microphone',
+      });
+      await flushAudioPromises();
+      t.mock.timers.tick(audioOperation.AUDIO_START_TIMEOUT_MS);
+      await failed;
+      assert.equal(h.contexts.length, 0);
+      const late = new h.Stream();
+      microphone.resolve(late);
+      await flushAudioPromises();
+      assert.equal(late.track.stopped, true);
+      assert.equal(
+        h.diagnostics.some(({ event }) => event === 'capture_ready'),
+        false,
+      );
+      h.mediaDevices.getUserMedia = open;
+      await h.engine.setCapture(true, false, 2);
+      assert.equal(h.streams[0].track.stopped, false);
+      assert.equal(h.contexts[0].state, 'running');
+    } finally {
+      await h.engine.dispose();
+    }
+  });
+
+  for (const action of ['stop', 'mute', 'recheck', 'dispose'] as const) {
+    it(`${action} interrupts a pending microphone acquisition and leaves late input stopped`, async () => {
+      const h = fixture();
+      const microphone = deferred<InstanceType<typeof h.Stream>>();
+      h.mediaDevices.getUserMedia = () => microphone.promise;
+      try {
+        await h.engine.initialize(true);
+        const starting = h.engine.setCapture(true, false, 1);
+        const cancelled = assert.rejects(starting, { name: 'AbortError' });
+        await flushAudioPromises();
+        const stopping =
+          action === 'dispose'
+            ? h.engine.dispose()
+            : action === 'recheck'
+              ? h.engine.recheck('manual_retry')
+              : h.engine.setCapture(action === 'mute', action === 'mute', 1);
+        await Promise.all([stopping, cancelled]);
+        const late = new h.Stream();
+        microphone.resolve(late);
+        await flushAudioPromises();
+        assert.equal(late.track.stopped, true);
+        assert.equal(h.contexts.length, 0);
+        assert.equal(
+          h.diagnostics.some(
+            ({ event, details }) =>
+              event === 'capture_ready' && details.capturing === true,
+          ),
+          false,
+        );
+      } finally {
+        await h.engine.dispose();
+      }
+    });
+  }
+
+  for (const action of ['dispose', 'recheck'] as const) {
+    it(`rejects a queued capture that ${action} skips before it can execute`, async () => {
+      const h = fixture();
+      const devices =
+        deferred<Awaited<ReturnType<typeof h.mediaDevices.enumerateDevices>>>();
+      const enumerate = h.mediaDevices.enumerateDevices;
+      h.mediaDevices.enumerateDevices = () => devices.promise;
+      const initializing = h.engine.initialize(true);
+      await flushAudioPromises();
+      const capture = h.engine.setCapture(true, false, 1);
+      const cancelled = assert.rejects(capture, { name: 'AbortError' });
+      h.mediaDevices.enumerateDevices = enumerate;
+      const stopping =
+        action === 'dispose'
+          ? h.engine.dispose()
+          : h.engine.recheck('manual_retry');
+      await Promise.all([initializing, stopping, cancelled]);
+      devices.resolve([]);
+      await flushAudioPromises();
+      assert.equal(h.constraints.length, 0);
+      assert.equal(
+        h.diagnostics.some(({ event }) => event === 'capture_ready'),
+        false,
+      );
+      await h.engine.dispose();
+    });
+  }
+
+  for (const stage of ['worklet', 'resume'] as const) {
+    it(`times out a stuck ${stage}, releases both streams and closes a late context again`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const h = fixture();
+      const pending = deferred<void>();
+      if (stage === 'worklet') h.controls.addModule = () => pending.promise;
+      else h.controls.resume = () => pending.promise;
+      try {
+        await h.engine.initialize(true);
+        const failed = assert.rejects(h.engine.setCapture(true, false, 1), {
+          name: 'AudioOperationTimeoutError',
+          code: 'audio_capture_start_timeout',
+          stage,
+        });
+        await flushAudioPromises();
+        const staleContext = h.contexts[0];
+        assert(staleContext);
+        t.mock.timers.tick(audioOperation.AUDIO_START_TIMEOUT_MS);
+        await failed;
+        assert.equal(h.streams[0].track.stopped, true);
+        assert.equal(staleContext.state, 'closed');
+        assert(staleContext.virtualStreams.every(({ track }) => track.stopped));
+        pending.resolve();
+        await flushAudioPromises();
+        assert.equal(staleContext.state, 'closed');
+        assert(staleContext.closeCalls >= 2);
+        h.worklets[0]?.frame();
+        assert.equal(
+          h.ipc.filter(({ channel }) => channel === 'live:audio:input').length,
+          0,
+        );
+        h.controls.addModule = undefined;
+        h.controls.resume = undefined;
+        await h.engine.setCapture(true, false, 2);
+        assert.equal(h.contexts[1].state, 'running');
+        assert.equal(h.streams[1].track.stopped, false);
+      } finally {
+        await h.engine.dispose();
+      }
+    });
+  }
+
+  it('uses one startup deadline across microphone acquisition and worklet loading', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = fixture();
+    const microphone = deferred<InstanceType<typeof h.Stream>>();
+    const worklet = deferred<void>();
+    h.mediaDevices.getUserMedia = () => microphone.promise;
+    h.controls.addModule = () => worklet.promise;
+    try {
+      await h.engine.initialize(true);
+      const failed = assert.rejects(h.engine.setCapture(true, false, 1), {
+        code: 'audio_capture_start_timeout',
+        stage: 'worklet',
+      });
+      await flushAudioPromises();
+      t.mock.timers.tick(6_000);
+      const stream = new h.Stream();
+      microphone.resolve(stream);
+      await flushAudioPromises();
+      t.mock.timers.tick(4_000);
+      await failed;
+      assert.equal(stream.track.stopped, true);
+      assert.equal(h.contexts[0].state, 'closed');
+    } finally {
+      await h.engine.dispose();
+    }
+  });
+
+  it('finishes Stop when context.close hangs and isolates its eventual completion from retry', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = fixture();
+    const closing = deferred<void>();
+    try {
+      await h.engine.initialize(true);
+      await h.engine.setCapture(true, false, 1);
+      const staleContext = h.contexts[0];
+      h.controls.close = (context) =>
+        context === staleContext ? closing.promise : Promise.resolve();
+      const stopping = h.engine.setCapture(false, false, 1);
+      await flushAudioPromises();
+      assert.equal(h.streams[0].track.stopped, true);
+      assert.equal(staleContext.virtualStreams[0].track.stopped, true);
+      t.mock.timers.tick(audioOperation.AUDIO_CLOSE_TIMEOUT_MS);
+      await stopping;
+      await h.engine.setCapture(true, false, 2);
+      closing.resolve();
+      await flushAudioPromises();
+      assert.equal(staleContext.state, 'closed');
+      assert.equal(h.contexts[1].state, 'running');
+      assert.equal(h.streams[1].track.stopped, false);
+    } finally {
+      await h.engine.dispose();
+    }
+  });
+
+  it('can dispose and initialize again while a readiness enumeration is stuck', async () => {
+    const h = fixture();
+    const pending =
+      deferred<Awaited<ReturnType<typeof h.mediaDevices.enumerateDevices>>>();
+    const enumerate = h.mediaDevices.enumerateDevices;
+    h.mediaDevices.enumerateDevices = () => pending.promise;
+    const initializing = h.engine.initialize(true);
+    await flushAudioPromises();
+    await h.engine.dispose();
+    await initializing;
+    h.mediaDevices.enumerateDevices = enumerate;
+    await h.engine.initialize(true);
+    pending.resolve([]);
+    await flushAudioPromises();
+    const state = h.ipc.findLast(
+      ({ channel }) => channel === 'live:audio:self-check',
+    )?.value;
+    assert.deepEqual(JSON.parse(JSON.stringify(state)), {
+      audioInput: true,
+      audioOutput: true,
+    });
+    await h.engine.dispose();
+  });
+
+  it('cancels a stuck output resume on clear and ignores its late completion', async () => {
+    const h = fixture();
+    const pending = deferred<void>();
+    h.controls.resume = () => pending.promise;
+    try {
+      await h.engine.initialize(false);
+      const stale = h.engine.play(new Uint8Array(960), {
+        epoch: 1,
+        outputId: 1,
+      });
+      await flushAudioPromises();
+      const old = h.contexts[0];
+      h.engine.clearOutput();
+      await stale;
+      h.controls.resume = undefined;
+      await h.engine.play(new Uint8Array(960), { epoch: 2, outputId: 1 });
+      pending.resolve();
+      await flushAudioPromises();
+      assert.equal(old.state, 'closed');
+      assert.equal(old.sources.length, 0);
+      assert.equal(h.contexts[1].sources.length, 1);
+      assert.equal(h.contexts[1].state, 'running');
     } finally {
       await h.engine.dispose();
     }

@@ -42,6 +42,8 @@ export interface ToolDispatchResult {
 export interface ToolDispatcherOptions {
   handlers: ReadonlyMap<string, ToolHandler>;
   timeoutMs?: number;
+  /** Guidance must match the capabilities available in the current call. */
+  timeoutNote?: string;
 }
 
 function parseArguments(raw: string): Record<string, unknown> {
@@ -66,10 +68,12 @@ class ToolTimeoutError extends Error {
 export class ToolDispatcher {
   private readonly handlers: ReadonlyMap<string, ToolHandler>;
   private readonly timeoutMs: number;
+  private readonly timeoutNote: string;
 
   constructor(options: ToolDispatcherOptions) {
     this.handlers = options.handlers;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS;
+    this.timeoutNote = options.timeoutNote ?? TIMEOUT_NOTE;
   }
 
   async dispatch(
@@ -104,7 +108,10 @@ export class ToolDispatcher {
       if (error instanceof ToolTimeoutError) {
         return {
           ok: false,
-          receipt: JSON.stringify({ status: 'pending', note: TIMEOUT_NOTE }),
+          receipt: JSON.stringify({
+            status: 'pending',
+            note: this.timeoutNote,
+          }),
         };
       }
       return {

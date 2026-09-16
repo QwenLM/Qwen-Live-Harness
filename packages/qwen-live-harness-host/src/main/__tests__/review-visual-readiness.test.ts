@@ -66,6 +66,8 @@ function fixture() {
     return value;
   };
   const context = {
+    audioError: undefined,
+    audioRetryPending: false,
     liveMessage,
     canChangeLiveVisualInput,
     shouldRequestVisualSourceChange,

@@ -97,7 +97,7 @@ export interface LiveConfig {
     model: string;
     voice?: string;
   };
-  /** Every configured backend; exactly one is the default. */
+  /** Explicit [] disables delegation; otherwise exactly one backend is the default. */
   backends: BackendConfig[];
   /** Default working directory for handoff-created sessions. */
   defaultCwd?: string;
@@ -898,9 +898,9 @@ function parseBackends(
       },
     ];
   }
-  if (!Array.isArray(entries) || entries.length === 0) {
+  if (!Array.isArray(entries)) {
     throw new Error(
-      `${source}: "backends" must be a non-empty array, got ${JSON.stringify(entries)}`,
+      `${source}: "backends" must be an array, got ${JSON.stringify(entries)}`,
     );
   }
   const backends = entries.map((entry, index) => {

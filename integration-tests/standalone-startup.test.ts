@@ -14,6 +14,9 @@ const execute = promisify(execFile);
 const startup = (await import(
   pathToFileURL(join(dirname(cli), 'startup.js')).href
 )) as typeof import('../packages/qwen-live-harness/src/startup.js');
+const lifecycle = (await import(
+  pathToFileURL(join(dirname(cli), 'lifecycle.js')).href
+)) as typeof import('../packages/qwen-live-harness/src/lifecycle.js');
 const version = (
   JSON.parse(await readFile(join(dirname(cli), '../package.json'), 'utf8')) as {
     version: string;
@@ -116,7 +119,36 @@ describe('installed desktop bootstrap with the real daemon CLI', () => {
     });
     expect(duplicate.stdout).not.toContain('listening on');
     expect((await startup.probeDaemon(discoveryPath)).kind).toBe('ready');
+    expect(
+      await lifecycle.readDaemonStopMarker(discoveryPath, owner.record),
+    ).toBe(false);
     await quitOwner();
+    expect(await startup.probeDaemon(discoveryPath)).toEqual({
+      kind: 'missing',
+    });
+
+    // Exercise the real CLI signal handler after a fresh launch. A Host that
+    // opens late or loses its WebSocket must still observe this exact exit.
+    owner = await startup.launchRegisteredDaemon(options);
+    const stoppedIdentity = {
+      pid: owner.record.pid,
+      instanceNonce: owner.record.instanceNonce,
+    };
+    process.kill(owner.record.pid, 'SIGINT');
+    await vi.waitFor(
+      () => expect(() => process.kill(stoppedIdentity.pid, 0)).toThrow(),
+      { timeout: 10_000 },
+    );
+    owner = undefined;
+    expect(
+      await lifecycle.readDaemonStopMarker(discoveryPath, stoppedIdentity),
+    ).toBe(true);
+    expect(
+      await lifecycle.readDaemonStopMarker(discoveryPath, {
+        ...stoppedIdentity,
+        instanceNonce: 'unrelated_instance_nonce',
+      }),
+    ).toBe(false);
     expect(await startup.probeDaemon(discoveryPath)).toEqual({
       kind: 'missing',
     });

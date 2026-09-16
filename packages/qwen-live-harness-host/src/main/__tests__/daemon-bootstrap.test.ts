@@ -44,7 +44,9 @@ describe('explicit Host daemon bootstrap', () => {
         debug: true,
       },
       {
-        onReady: (result) => targets.push(result),
+        onReady: (result) => {
+          targets.push(result);
+        },
         onChange: () => phases.push(bootstrap.snapshot.phase),
       },
       async (options) => {
@@ -148,7 +150,12 @@ describe('explicit Host daemon bootstrap', () => {
     const targets: LaunchResult[] = [];
     const bootstrap = new HostDaemonBootstrap(
       { discoveryPath: '/fixture/daemon.json', expectedVersion: ready.version },
-      { onReady: (result) => targets.push(result), onChange: () => {} },
+      {
+        onReady: (result) => {
+          targets.push(result);
+        },
+        onChange: () => {},
+      },
       async () => pending.promise,
     );
     void bootstrap.start();
@@ -196,5 +203,44 @@ describe('explicit Host daemon bootstrap', () => {
     assert.equal(bootstrap.snapshot.phase, 'failed');
     bootstrap.markConnected();
     assert.equal(bootstrap.snapshot.phase, 'ready');
+  });
+
+  it('waits for asynchronous ready-target validation before Quit can finish', async () => {
+    const pending = pendingLaunch();
+    let completeValidation!: () => void;
+    const validating = new Promise<void>((resolve) => {
+      completeValidation = resolve;
+    });
+    let validationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      validationStarted = resolve;
+    });
+    const targets: LaunchResult[] = [];
+    const bootstrap = new HostDaemonBootstrap(
+      { discoveryPath: '/fixture/daemon.json', expectedVersion: ready.version },
+      {
+        onReady: async (result) => {
+          validationStarted();
+          await validating;
+          targets.push(result);
+        },
+        onChange: () => {},
+      },
+      async () => pending.promise,
+    );
+    void bootstrap.start();
+    pending.resolve(ready);
+    await started;
+    let stopped = false;
+    const stopping = bootstrap.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    assert.equal(stopped, false);
+    assert.deepEqual(targets, []);
+    completeValidation();
+    await stopping;
+    assert.deepEqual(targets, [ready]);
+    assert.equal(stopped, true);
   });
 });

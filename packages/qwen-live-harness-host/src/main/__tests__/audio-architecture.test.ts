@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
+import ts from 'typescript';
 
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const audioEngine = readFileSync(
@@ -11,6 +12,10 @@ const audioEngine = readFileSync(
 );
 const audioOutputQueue = readFileSync(
   join(appRoot, 'src', 'preload', 'audio-output-queue.ts'),
+  'utf8',
+);
+const audioOperation = readFileSync(
+  join(appRoot, 'src', 'preload', 'audio-operation.ts'),
   'utf8',
 );
 const preload = readFileSync(
@@ -23,11 +28,33 @@ const daemonConnection = readFileSync(
   'utf8',
 );
 
+function engineMethod(name: string): string {
+  const source = ts.createSourceFile(
+    'audio-engine.ts',
+    audioEngine,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const engine = source.statements.find(
+    (node): node is ts.ClassDeclaration =>
+      ts.isClassDeclaration(node) && node.name?.text === 'HostAudioEngine',
+  );
+  const method = engine?.members.find(
+    (node) =>
+      ts.isMethodDeclaration(node) && node.name.getText(source) === name,
+  );
+  assert(method, `HostAudioEngine.${name} must exist`);
+  return method.getText(source);
+}
+
 describe('Qwen Live Harness Host audio architecture', () => {
   it('matches the Codex virtual microphone graph for capture', () => {
-    assert.match(audioEngine, /createMediaStreamDestination\(\)/);
-    assert.match(audioEngine, /worklet\.connect\(destination\)/);
-    assert.doesNotMatch(audioEngine, /silent\.connect\(context\.destination\)/);
+    const capture = engineMethod('startCapture');
+    assert.match(
+      capture,
+      /const (?<destination>\w+) = \w+\.createMediaStreamDestination\(\);[\s\S]*?\w+\.connect\((?<worklet>\w+)\);\s*\k<worklet>\.connect\(\k<destination>\)/u,
+    );
+    assert.doesNotMatch(capture, /\w+\.connect\(\w+\.destination\)/u);
   });
 
   it('plays provider PCM on the device clock without a second media clock', () => {
@@ -44,7 +71,14 @@ describe('Qwen Live Harness Host audio architecture', () => {
   });
 
   it('fully releases the device-clock playback context when output is cleared', () => {
-    assert.match(audioEngine, /context\?\.close\(\)/);
+    assert.match(
+      engineMethod('clearOutput'),
+      /const context = this\.outputContext;\s*this\.outputContext = undefined;[\s\S]*closeAudioContext\(context\)/u,
+    );
+    assert.match(
+      audioOperation,
+      /async function closeAudioContext\([\s\S]*new AudioOperation\('audio_close', AUDIO_CLOSE_TIMEOUT_MS\)[\s\S]*await operation\.wait\(\(\) => context\.close\(\)\)/u,
+    );
   });
 
   it('preserves output identity from the wire through playback receipts', () => {
@@ -128,8 +162,8 @@ describe('Qwen Live Harness Host audio architecture', () => {
       /output\.activeFrames !== 0[\s\S]*this\.endMarkerRequired && !output\.finished/u,
     );
     assert.match(
-      audioEngine,
-      /this\.outputGeneration \+= 1;\s*this\.outputPlayback\.clear\(\);[\s\S]*source\.stop\(\)/u,
+      engineMethod('clearOutput'),
+      /this\.outputGeneration \+= 1;[\s\S]*this\.outputOperation\?\.cancel\(\);[\s\S]*this\.outputPlayback\.clear\(\);[\s\S]*source\.stop\(\)/u,
     );
     assert.match(audioOutputQueue, /private readonly outputs = new Map/u);
   });
