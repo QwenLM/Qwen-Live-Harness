@@ -241,6 +241,70 @@ describe('loadConfig', () => {
     expect(defaults.port).toBe(0);
   });
 
+  it('parses an ACP backend sessionMode and rejects invalid values', async () => {
+    const acpBackend = (sessionMode?: unknown) => ({
+      name: 'qwen',
+      kind: 'acp',
+      command: '/bin/echo',
+      args: ['--acp'],
+      ...(sessionMode === undefined ? {} : { sessionMode }),
+      default: true,
+    });
+
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [acpBackend('auto-edit')],
+    });
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).backends,
+    ).toEqual([
+      {
+        name: 'qwen',
+        kind: 'acp',
+        command: '/bin/echo',
+        args: ['--acp'],
+        env: {},
+        sessionMode: 'auto-edit',
+        isDefault: true,
+      },
+    ]);
+
+    const unsetDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [acpBackend()],
+    });
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: unsetDir }).backends[0],
+    ).not.toHaveProperty('sessionMode');
+
+    for (const invalid of [1, {}, '', 'yolo mode']) {
+      const invalidDir = await dataDirWithConfig({
+        realtimeApiKey: 'test',
+        backends: [acpBackend(invalid)],
+      });
+      expect(() =>
+        loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: invalidDir }),
+      ).toThrow('Invalid acp backend "sessionMode"');
+    }
+  });
+
+  it('rejects sessionMode on a qwen-code backend', async () => {
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'test',
+      backends: [
+        {
+          name: 'qwen',
+          kind: 'qwen-code',
+          serveUrl: 'http://127.0.0.1:4170',
+          sessionMode: 'yolo',
+        },
+      ],
+    });
+    expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+      '"sessionMode" is not valid for kind qwen-code',
+    );
+  });
+
   it('fails fast when no realtime API key is configured anywhere', async () => {
     const dataDir = await temporaryDataDir();
     const message = thrownMessage(() =>

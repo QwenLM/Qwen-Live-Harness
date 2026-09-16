@@ -116,6 +116,13 @@ export interface AcpAdaptorOptions {
   env?: Record<string, string>;
   cwd?: string;
   defaultCwd?: string;
+  /**
+   * Approval mode to select after `session/new` (config `sessionMode`).
+   * Omitted → the advertised asking mode is forced. A configured mode the
+   * agent does not advertise falls back to the asking mode rather than
+   * running unapproved.
+   */
+  sessionMode?: string;
   logger?: LiveLogger;
   /** Test seam: build the connection instead of spawning. */
   connect?: (
@@ -225,18 +232,49 @@ export class AcpAdaptor implements BackendAdaptor {
     const available = Array.isArray(modes['availableModes'])
       ? modes['availableModes'].filter(isRecord)
       : [];
+    // An explicitly configured mode wins (the user asked for fewer
+    // approvals); anything else forces the advertised asking mode so no
+    // action runs unapproved.
+    const configured = this.options.sessionMode;
+    const configuredMode = configured
+      ? available.find((mode) => mode['id'] === configured)
+      : undefined;
+    if (configured && !configuredMode) {
+      this.logger.warn(
+        `[acp ${this.name}] configured sessionMode ${JSON.stringify(configured)} ` +
+          `is not advertised (available: ${available
+            .map((mode) => String(mode['id']))
+            .join(', ')}); falling back to the asking mode`,
+      );
+    }
     const askingMode =
       available.find((mode) => mode['id'] === 'default') ??
       available.find(
         (mode) =>
           mode['id'] === 'read-only' && mode['name'] === 'Ask for approval',
       );
-    if (askingMode) {
+    const selected = configuredMode ?? askingMode;
+    if (selected) {
       try {
-        await conn.setSessionMode({ sessionId, modeId: askingMode['id'] });
+        await conn.setSessionMode({ sessionId, modeId: selected['id'] });
+        if (configuredMode) {
+          this.logger.info(
+            `[acp ${this.name}] session ${sessionId} approval mode ` +
+              `"${configuredMode['id']}": actions run without per-action approval`,
+          );
+        } else {
+          this.logger.info(
+            `[acp ${this.name}] session ${sessionId} approval mode ` +
+              `"${selected['id']}": every action needs approval`,
+          );
+        }
       } catch {
         this.logger.warn(
-          `[acp ${this.name}] could not select the advertised asking mode; manual approval is not guaranteed`,
+          `[acp ${this.name}] could not select approval mode ` +
+            `${JSON.stringify(selected['id'])}; ` +
+            (configuredMode
+              ? 'the agent keeps its own default mode'
+              : 'manual approval is not guaranteed'),
         );
       }
     } else {
