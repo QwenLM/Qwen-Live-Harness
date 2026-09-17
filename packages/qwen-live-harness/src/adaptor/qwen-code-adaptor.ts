@@ -257,6 +257,22 @@ function pickLeastEscalating(
 }
 
 /**
+ * The broadest persistent grant of the wanted kind, or undefined when the
+ * backend offered none. Mirrors `pickPersistentGrant` in adaptor-utils.ts:
+ * always-options are advertised narrowest first (serve offers
+ * [proceed_always_project, proceed_always_user, ...]), and nothing else
+ * ranks two of them, so offer order is the tiebreak.
+ */
+function pickPersistentGrant(
+  options: readonly PermissionOption[],
+  wanted: PermissionOptionKind,
+): PermissionOption | undefined {
+  return options.find(
+    (option) => option.kind === wanted && option.escalation === 'always',
+  );
+}
+
+/**
  * Compose the human-readable permission title. Control sequences are
  * stripped (the title flows verbatim into the spoken ask and keys the
  * broker's standing rule — raw ESC/OSC bytes must not reach speech or
@@ -752,8 +768,13 @@ export class QwenCodeAdaptor implements BackendAdaptor {
       response = { outcome: { outcome: 'cancelled' } };
     } else {
       const wanted: PermissionOptionKind =
-        decision === 'allow' ? 'proceed' : 'reject';
-      const option = pickLeastEscalating(options, wanted);
+        decision === 'deny' ? 'reject' : 'proceed';
+      // See the ACP adaptor: "allow always" prefers the backend's own
+      // persistent grant and degrades to the one-shot one, never to cancel.
+      const option =
+        (decision === 'allow_always'
+          ? pickPersistentGrant(options, wanted)
+          : undefined) ?? pickLeastEscalating(options, wanted);
       response = option
         ? { outcome: { outcome: 'selected', optionId: option.optionId } }
         : { outcome: { outcome: 'cancelled' } };

@@ -82,6 +82,28 @@ export function pickLeastEscalating(
 }
 
 /**
+ * The broadest persistent grant of the wanted kind, or undefined when the
+ * backend offered none.
+ *
+ * Only a deliberate "allow always" reaches this. Agents advertise the
+ * always-options narrowest first (qwen-code offers
+ * [ProceedAlwaysProject, ProceedAlwaysUser, ...] for exec, so project
+ * scope precedes machine-wide user scope), and ACP gives no other signal
+ * to rank two `allow_always` entries by, so offer order is the tiebreak
+ * and the FIRST match wins. An agent that omits always-options entirely
+ * (qwen-code hides them under `forceHideAlwaysAllow`) yields undefined and
+ * the caller must fall back to a one-shot grant rather than cancel.
+ */
+export function pickPersistentGrant(
+  options: readonly PermissionOption[],
+  wanted: PermissionOptionKind,
+): PermissionOption | undefined {
+  return options.find(
+    (option) => option.kind === wanted && option.escalation === 'always',
+  );
+}
+
+/**
  * Compose the human-readable permission title. Control sequences are
  * stripped (the title flows verbatim into the spoken ask and keys the
  * broker's standing rule — raw ESC/OSC bytes must not reach speech or

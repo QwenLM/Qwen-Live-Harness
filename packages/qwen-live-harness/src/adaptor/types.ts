@@ -158,7 +158,14 @@ export type BackendEvent =
   | { type: 'turn_error'; jobRef?: string; error: string }
   | { type: 'session_closed' };
 
-export type PermissionDecision = 'allow' | 'deny' | 'cancel';
+/**
+ * `allow` is a one-shot grant. `allow_always` asks the backend to remember
+ * the grant itself — the agent knows each tool's real scope ("all edits",
+ * "this command in this project") far better than any key the harness
+ * could derive from a title string. Backends that offer no always-option
+ * must degrade to a one-shot allow, never to a cancel.
+ */
+export type PermissionDecision = 'allow' | 'allow_always' | 'deny' | 'cancel';
 
 export type CancelJobResult = 'stopping' | 'stopped' | 'not_found';
 

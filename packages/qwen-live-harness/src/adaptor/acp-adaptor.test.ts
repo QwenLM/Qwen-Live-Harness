@@ -528,6 +528,139 @@ describe('AcpAdaptor sessions and receipts', () => {
   });
 
   /**
+   * The repro this guards: qwen-code offers "Allow All Edits"
+   * (kind `allow_always`) alongside the one-shot grant. Voting the one-shot
+   * option for a spoken "allow always" leaves the agent asking again for the
+   * very next file, which is the behaviour users hit constantly.
+   */
+  it('votes the backend persistent grant for allow_always', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    const collector = eventCollector(adaptor, handle.id);
+
+    void adaptor.prompt(handle, [{ type: 'text', text: 'edit files' }]);
+    const vote = connection.client.requestPermission({
+      sessionId: handle.id,
+      toolCall: { title: 'Writing to src/a.ts' },
+      options: [
+        {
+          optionId: 'proceed_always',
+          name: 'Allow All Edits',
+          kind: 'allow_always',
+        },
+        { optionId: 'proceed_once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'cancel', name: 'No', kind: 'reject_once' },
+      ],
+    } as never);
+    await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'permission_request'),
+    );
+
+    await adaptor.respondPermission(handle, 'perm-1', 'allow_always');
+    await expect(vote).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'proceed_always' },
+    });
+    connection.settle();
+  });
+
+  it('picks the narrowest persistent grant when several are offered', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    const collector = eventCollector(adaptor, handle.id);
+
+    void adaptor.prompt(handle, [{ type: 'text', text: 'run it' }]);
+    // Agents advertise always-options narrowest first; machine-wide user
+    // scope must never win over project scope on a bare "allow always".
+    const vote = connection.client.requestPermission({
+      sessionId: handle.id,
+      toolCall: { title: 'npm test' },
+      options: [
+        {
+          optionId: 'always_project',
+          name: 'Always in project',
+          kind: 'allow_always',
+        },
+        {
+          optionId: 'always_user',
+          name: 'Always for user',
+          kind: 'allow_always',
+        },
+        { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+      ],
+    } as never);
+    await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'permission_request'),
+    );
+
+    await adaptor.respondPermission(handle, 'perm-1', 'allow_always');
+    await expect(vote).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'always_project' },
+    });
+    connection.settle();
+  });
+
+  it('degrades allow_always to a one-shot allow, never to a cancel', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    const collector = eventCollector(adaptor, handle.id);
+
+    void adaptor.prompt(handle, [{ type: 'text', text: 'go' }]);
+    // qwen-code hides always-options under forceHideAlwaysAllow. Cancelling
+    // would read back as a refusal the user never gave.
+    const vote = connection.client.requestPermission({
+      sessionId: handle.id,
+      toolCall: { title: 'Writing to src/a.ts' },
+      options: [
+        { optionId: 'proceed_once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'cancel', name: 'No', kind: 'reject_once' },
+      ],
+    } as never);
+    await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'permission_request'),
+    );
+
+    await adaptor.respondPermission(handle, 'perm-1', 'allow_always');
+    await expect(vote).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'proceed_once' },
+    });
+    connection.settle();
+  });
+
+  it('keeps deny on the narrowest refusal after the allow_always split', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: '/ws' });
+    const collector = eventCollector(adaptor, handle.id);
+
+    void adaptor.prompt(handle, [{ type: 'text', text: 'go' }]);
+    const vote = connection.client.requestPermission({
+      sessionId: handle.id,
+      toolCall: { title: 'rm -rf /' },
+      options: [
+        { optionId: 'reject_always', name: 'Never', kind: 'reject_always' },
+        { optionId: 'reject_once', name: 'No', kind: 'reject_once' },
+        { optionId: 'proceed_once', name: 'Yes', kind: 'allow_once' },
+      ],
+    } as never);
+    await collector.waitFor((collected) =>
+      collected.some((event) => event.type === 'permission_request'),
+    );
+
+    await adaptor.respondPermission(handle, 'perm-1', 'deny');
+    await expect(vote).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject_once' },
+    });
+    connection.settle();
+  });
+
+  /**
    * A steer receipt names a message the model has already told the user
    * about. Dropping that message on cancel without ever reporting an owner
    * strands the orchestrator's task at 'accepted' — it is waiting for a

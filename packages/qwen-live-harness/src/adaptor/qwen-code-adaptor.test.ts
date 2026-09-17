@@ -1180,6 +1180,131 @@ describe('QwenCodeAdaptor.respondPermission', () => {
     expect(result).toBe('delivered');
   });
 
+  it('votes the backend persistent grant for allow_always', async () => {
+    // The serve mirror of the ACP vote: a spoken "allow always" must take
+    // the agent's own persistent grant, project scope before user scope.
+    // Without this the mirror could drift back to mapping the decision
+    // through `allow`/`reject` and vote a refusal the user never gave.
+    const client = makeClient();
+    const adaptor = makeAdaptor(client);
+    await adaptor.createSession();
+    vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+      envelopeStream([
+        envelope('permission_request', {
+          requestId: 'req-1',
+          toolCall: { name: 'Bash', command: 'git push' },
+          options: [
+            {
+              optionId: 'proceed_always_project',
+              name: 'Always Allow in project: git',
+              kind: 'allow_always',
+            },
+            {
+              optionId: 'proceed_always_user',
+              name: 'Always Allow for user: git',
+              kind: 'allow_always',
+            },
+            { optionId: 'proceed_once', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'cancel', name: 'Reject', kind: 'reject_once' },
+          ],
+        }),
+      ]),
+    );
+    await collect(adaptor, handleFor());
+
+    const result = await adaptor.respondPermission(
+      handleFor(),
+      'req-1',
+      'allow_always',
+    );
+
+    expect(client.respondToSessionPermission).toHaveBeenCalledWith(
+      SESSION_ID,
+      'req-1',
+      { outcome: { outcome: 'selected', optionId: 'proceed_always_project' } },
+      ISSUED_CLIENT_ID,
+    );
+    expect(result).toBe('delivered');
+  });
+
+  it('degrades allow_always to a one-shot allow, never to a cancel', async () => {
+    // The agent hid its always-options (forceHideAlwaysAllow). Cancelling
+    // would read back as a refusal the user never gave — and the broker,
+    // which saw no always-option either, is counting on the one-shot grant
+    // to pair with the local standing rule it installed.
+    const client = makeClient();
+    const adaptor = makeAdaptor(client);
+    await adaptor.createSession();
+    vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+      envelopeStream([
+        envelope('permission_request', {
+          requestId: 'req-1',
+          toolCall: { name: 'write_file' },
+          options: [
+            { optionId: 'proceed_once', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'cancel', name: 'Reject', kind: 'reject_once' },
+          ],
+        }),
+      ]),
+    );
+    await collect(adaptor, handleFor());
+
+    const result = await adaptor.respondPermission(
+      handleFor(),
+      'req-1',
+      'allow_always',
+    );
+
+    expect(client.respondToSessionPermission).toHaveBeenCalledWith(
+      SESSION_ID,
+      'req-1',
+      { outcome: { outcome: 'selected', optionId: 'proceed_once' } },
+      ISSUED_CLIENT_ID,
+    );
+    expect(result).toBe('delivered');
+  });
+
+  it('never answers allow_always with a persistent refusal', async () => {
+    // A reject_always on the wire is the exact opposite of what was asked
+    // for, and it sticks: the wanted kind must gate the vote before any
+    // ranking does.
+    const client = makeClient();
+    const adaptor = makeAdaptor(client);
+    await adaptor.createSession();
+    vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+      envelopeStream([
+        envelope('permission_request', {
+          requestId: 'req-1',
+          toolCall: { name: 'Bash', command: 'git push --force' },
+          options: [
+            {
+              optionId: 'reject_always',
+              name: 'Never',
+              kind: 'reject_always',
+            },
+            { optionId: 'proceed_once', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'cancel', name: 'Reject', kind: 'reject_once' },
+          ],
+        }),
+      ]),
+    );
+    await collect(adaptor, handleFor());
+
+    const result = await adaptor.respondPermission(
+      handleFor(),
+      'req-1',
+      'allow_always',
+    );
+
+    expect(client.respondToSessionPermission).toHaveBeenCalledWith(
+      SESSION_ID,
+      'req-1',
+      { outcome: { outcome: 'selected', optionId: 'proceed_once' } },
+      ISSUED_CLIENT_ID,
+    );
+    expect(result).toBe('delivered');
+  });
+
   it('votes the least-escalating reject option for a deny decision', async () => {
     const client = makeClient();
     const adaptor = makeAdaptor(client);

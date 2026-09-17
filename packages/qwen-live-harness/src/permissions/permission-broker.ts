@@ -8,10 +8,17 @@
  * Voice-side permission handling.
  *
  * Design points carried over from the split design doc (§7):
- * - "allow always" never reaches the backend as a persistent grant. The
- *   protocol vote is always a one-shot allow; the standing rule lives here
- *   with a TTL and is applied by silently auto-answering similar requests.
  * - A request resolved elsewhere (WebShell) retracts the queued spoken ask.
+ *
+ * REVISED (see the always-allow fix): the design doc kept "allow always"
+ * off the wire and reimplemented it here as a TTL'd standing rule keyed on
+ * the request title. That key can only ever match the IDENTICAL action, so
+ * the rule never fires for the case users actually hit — approving one file
+ * edit and being asked again for the next one. Agents already model the
+ * real scope ("Allow All Edits", "Always Allow in project: <cmd>"), so a
+ * deliberate "allow always" is now forwarded as the backend's own
+ * persistent grant. The standing rule stays as the fallback for backends
+ * that offer no always-option, and an explicit "deny" still revokes it.
  */
 
 import type {
@@ -88,6 +95,17 @@ function titleKeyOf(title: string): string {
   const detail = separator === -1 ? '' : title.slice(separator + 1);
   const normalized = detail.trim().split(/\s+/).join(' ');
   return `${head.trim()}:${normalized}`;
+}
+
+/**
+ * Whether the backend offered a grant it will remember itself. Mirrors the
+ * adaptors' `pickPersistentGrant` over the same option list, so the broker
+ * and the vote agree on which path a deliberate "allow always" took.
+ */
+function offersPersistentGrant(pending: PendingPermission): boolean {
+  return pending.options.some(
+    (option) => option.kind === 'proceed' && option.escalation === 'always',
+  );
 }
 
 export class PermissionBroker {
@@ -186,7 +204,12 @@ export class PermissionBroker {
   ): Promise<'delivered' | 'already_resolved' | 'not_found'> {
     const pending = this.pending.get(requestHandle.trim());
     if (!pending) return 'not_found';
-    if (decision === 'allow_always') {
+    if (decision === 'allow_always' && !offersPersistentGrant(pending)) {
+      // Only a backend with no always-option to take needs the local rule.
+      // When it had one, the agent records the real scope itself and stops
+      // asking, so a rule keyed on this request's title would be dead
+      // weight — it can only ever match an identical repeat the agent is
+      // no longer going to raise.
       this.remember(pending);
     }
     if (decision === 'deny') {
@@ -201,12 +224,7 @@ export class PermissionBroker {
           rule.sessionHandle !== pending.sessionHandle || rule.titleKey !== key,
       );
     }
-    return await this.deliver(
-      pending,
-      decision === 'deny' ? 'deny' : 'allow',
-      false,
-      note,
-    );
+    return await this.deliver(pending, decision, false, note);
   }
 
   /** A resolution arrived from the event stream (possibly our own vote). */
@@ -296,7 +314,7 @@ export class PermissionBroker {
 
   private async deliver(
     pending: PendingPermission,
-    decision: 'allow' | 'deny',
+    decision: 'allow' | 'allow_always' | 'deny',
     auto: boolean,
     note?: string,
   ): Promise<'delivered' | 'already_resolved'> {

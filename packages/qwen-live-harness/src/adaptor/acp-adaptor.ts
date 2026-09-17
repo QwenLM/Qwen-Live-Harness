@@ -62,6 +62,7 @@ import {
   MAX_DETAIL_CHARS,
   MAX_SUMMARY_CHARS,
   pickLeastEscalating,
+  pickPersistentGrant,
   sanitizeTitleLine,
   stripControlSequences,
   tailSlice,
@@ -457,8 +458,16 @@ export class AcpAdaptor implements BackendAdaptor {
       response = { outcome: { outcome: 'cancelled' } };
     } else {
       const wanted: PermissionOptionKind =
-        decision === 'allow' ? 'proceed' : 'reject';
-      const option = pickLeastEscalating(parked.options, wanted);
+        decision === 'deny' ? 'reject' : 'proceed';
+      // "allow always" takes the backend's own persistent grant when one is
+      // on offer, so the agent stops re-asking for the same class of action.
+      // No always-option (the agent hid them, or this is a deny) falls back
+      // to the narrowest grant — never to a cancel, which would read as a
+      // refusal the user never gave.
+      const option =
+        (decision === 'allow_always'
+          ? pickPersistentGrant(parked.options, wanted)
+          : undefined) ?? pickLeastEscalating(parked.options, wanted);
       response = option
         ? { outcome: { outcome: 'selected', optionId: option.optionId } }
         : { outcome: { outcome: 'cancelled' } };
