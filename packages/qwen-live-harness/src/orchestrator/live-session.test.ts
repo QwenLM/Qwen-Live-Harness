@@ -329,6 +329,7 @@ interface StartSessionOptions {
   createProactiveScheduler?: (
     options: ProactiveSchedulerOptions,
   ) => ProactiveSchedulerControl;
+  registry?: BackendRegistry;
 }
 
 const MONITOR_TASK: ProactiveTask = {
@@ -527,16 +528,18 @@ async function startSession(
   const log = { write: vi.fn(), close: async () => {} };
   const session = new LiveSession({
     host,
-    registry: new BackendRegistry(
-      options.withoutBackends
-        ? []
-        : secondary
-          ? [
-              { adaptor, isDefault: true },
-              { adaptor: secondary, isDefault: false },
-            ]
-          : [{ adaptor, isDefault: true }],
-    ),
+    registry:
+      options.registry ??
+      new BackendRegistry(
+        options.withoutBackends
+          ? []
+          : secondary
+            ? [
+                { adaptor, isDefault: true },
+                { adaptor: secondary, isDefault: false },
+              ]
+            : [{ adaptor, isDefault: true }],
+      ),
     realtime: {
       endpoint: 'https://dashscope.example.com',
       model: options.realtimeModel ?? 'qwen-omni-turbo-realtime',
@@ -6544,6 +6547,32 @@ describe('LiveSession', () => {
     });
   });
 
+  it('clamps an oversized turn detail instead of letting it overrun the injection', async () => {
+    const { adaptor, callbacks, realtime } = await startSession();
+
+    callTool(callbacks, 'handoff', { task: 'convert the suite' });
+    await awaitReceipts(realtime, 1);
+
+    // Backends clamp a turn buffer at MAX_DETAIL_CHARS (48k), well past what
+    // one context injection can carry, so the body has to be budgeted here.
+    // The tail is what is kept: an agent's conclusion is at the end.
+    const detail = `${'x'.repeat(50_000)} and the suite now passes.`;
+    adaptor.queue('s1').push({
+      type: 'turn_complete',
+      jobRef: 'p1',
+      summary: 'the suite now passes',
+      detail,
+    });
+    await vi.waitFor(() => {
+      expect(realtime.sendBackendContext).toHaveBeenCalledTimes(1);
+    });
+
+    const injected = realtime.sendBackendContext.mock.calls[0]?.[0] as string;
+    expect(injected.length).toBeLessThan(5_000);
+    expect(injected).toMatch(/^\[COMPLETE job_1\] …/);
+    expect(injected.endsWith('and the suite now passes.')).toBe(true);
+  });
+
   it('injects turn_complete and turn_error events as context plus speech', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
@@ -7766,6 +7795,62 @@ describe('LiveSession', () => {
     expect(list?.['sessions']).toEqual([
       { handle: 'session_1', backend: 'serve', state: 'idle' },
     ]);
+  });
+
+  it('waits for a warming-up backend instead of failing a named create', async () => {
+    const primary = new FakeAdaptor('serve');
+    const secondary = new FakeAdaptor('acp');
+    let release!: () => void;
+    secondary.preflight = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const registry = new BackendRegistry([
+      { adaptor: primary, isDefault: true },
+      { adaptor: secondary, isDefault: false },
+    ]);
+    const { callbacks, realtime } = await startSession(undefined, { registry });
+
+    // Readiness does not wait for the secondary; the daemon is already up.
+    await registry.preflight(vi.fn());
+    expect(registry.byAdaptorName('acp')?.status).toBe('starting');
+
+    callTool(callbacks, 'session_create', { backend: 'acp' });
+    release();
+    await awaitReceipts(realtime, 1);
+    expect(receipts(realtime)[0]?.['status']).toBe('ok');
+    expect(secondary.createSession).toHaveBeenCalledTimes(1);
+    expect(primary.createSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a named create whose backend warm-up failed', async () => {
+    const primary = new FakeAdaptor('serve');
+    const secondary = new FakeAdaptor('acp');
+    let refuse!: (error: Error) => void;
+    secondary.preflight = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          refuse = reject;
+        }),
+    );
+    const registry = new BackendRegistry([
+      { adaptor: primary, isDefault: true },
+      { adaptor: secondary, isDefault: false },
+    ]);
+    const { callbacks, realtime } = await startSession(undefined, { registry });
+
+    await registry.preflight(vi.fn());
+    callTool(callbacks, 'session_create', { backend: 'acp' });
+    refuse(new Error('missing executable'));
+    await awaitReceipts(realtime, 1);
+    const receipt = receipts(realtime)[0];
+    expect(receipt?.['status']).toBe('error');
+    expect(receipt?.['note']).toBe(
+      "backend 'acp' is unavailable: missing executable.",
+    );
+    expect(secondary.createSession).not.toHaveBeenCalled();
   });
 
   it('strips image blocks for an image-incapable backend and notes it', async () => {

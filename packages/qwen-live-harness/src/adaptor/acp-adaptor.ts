@@ -20,7 +20,11 @@
  *   a -32601 reply or three consecutive timeouts permanently disables
  *   draining for the session). Our drain handler answers synchronously
  *   from local state, so we can never trip that latch. Until the agent
- *   has drained once, steering honestly reports 'queued'.
+ *   has drained once, steering honestly reports 'queued'. A steer receipt
+ *   names its MESSAGE, never the running turn: the agent may not pull it
+ *   before that turn ends, in which case it runs in the next one. A
+ *   `turn_joined` event reports whichever turn actually carried it, so the
+ *   orchestrator can bind the task to the right one.
  * - `session/request_permission` is an inbound RPC: park the resolver
  *   until the user answers aloud. The reply MUST select an offered
  *   optionId (the agent validates); pick the least-escalating one.
@@ -132,6 +136,17 @@ export interface AcpAdaptorOptions {
   ) => Promise<AcpConnectionLike>;
 }
 
+/**
+ * One steering instruction waiting to be pulled into a turn. The id is what
+ * the receipt names, so a later `turn_joined` can tell the orchestrator
+ * which turn actually ran it — the agent may not drain it before the
+ * current turn ends.
+ */
+interface SteerMessage {
+  messageId: string;
+  text: string;
+}
+
 interface ParkedPermission {
   resolve: (response: Record<string, unknown>) => void;
   options: readonly PermissionOption[];
@@ -145,7 +160,7 @@ interface AcpSessionState {
   activeJobRef?: string;
   cancellingJobRef?: string;
   turnBuffer: string;
-  steerQueue: string[];
+  steerQueue: SteerMessage[];
   pendingPrompts: Array<{ jobRef: string; blocks: ContentBlock[] }>;
   parkedPermissions: Map<string, ParkedPermission>;
   label?: string;
@@ -165,6 +180,7 @@ export class AcpAdaptor implements BackendAdaptor {
   private generation = 0;
   private turnSeq = 0;
   private permSeq = 0;
+  private steerSeq = 0;
   /** Flip on first inbound drain; resets on respawn. See header. */
   private drainObserved = false;
   private imageInput = false;
@@ -328,11 +344,26 @@ export class AcpAdaptor implements BackendAdaptor {
     }
     // Busy: never send directly (it would preempt the running turn).
     if (opts?.steer && !hasImages && this.drainObserved) {
-      for (const text of texts) state.steerQueue.push(text.text);
+      // One message per steer, mirroring the serve adaptor: the blocks are
+      // one instruction, and a 1:1 receipt-to-message mapping is what the
+      // orchestrator's joinedTasks bookkeeping expects.
+      // Distinct from the `turn-N` jobRef namespace on purpose: the
+      // orchestrator also looks a jobRef up in its messageId map (to catch
+      // the serve adaptor's promoted messages, which reuse their id as the
+      // ref), so an overlap here would silently bind the wrong task.
+      const messageId = `steer-${++this.steerSeq}`;
+      state.steerQueue.push({
+        messageId,
+        text: texts.map((block) => block.text).join('\n\n'),
+      });
+      // Name the MESSAGE, not the turn. Reporting activeJobRef here would
+      // bind the task to the running turn even when that turn ends before
+      // the agent drains, leaving the instruction to run in the next one.
+      // turn_joined reports the real owner once it is known.
       return {
         status: 'accepted',
         joinedActiveTurn: true,
-        jobRef: state.activeJobRef,
+        joinedMessageId: messageId,
         note: 'joined the currently running task',
       };
     }
@@ -371,8 +402,9 @@ export class AcpAdaptor implements BackendAdaptor {
     const conn = this.connection;
     if (!state || state.generation !== this.generation || !conn) return;
     // The instruction was addressed to the dying turn; queued prompts
-    // survive (same contract as the serve adaptor).
-    state.steerQueue = [];
+    // survive (same contract as the serve adaptor). Binding it to that turn
+    // before dropping it is what lets the cancellation reach it.
+    this.bindPendingSteers(state, state.activeJobRef);
     for (const [requestId, parked] of state.parkedPermissions) {
       parked.resolve({ outcome: { outcome: 'cancelled' } });
       state.parkedPermissions.delete(requestId);
@@ -650,12 +682,44 @@ export class AcpAdaptor implements BackendAdaptor {
     const next = state.pendingPrompts.shift();
     if (!steers.length && !next) return;
     const jobRef = next?.jobRef ?? this.mintJobRef();
-    const blocks: ContentBlock[] = steers.map((text) => ({
+    const blocks: ContentBlock[] = steers.map((message) => ({
       type: 'text' as const,
-      text,
+      text: message.text,
     }));
     if (next) blocks.push(...next.blocks);
+    // Steering the agent never drained rolls into the NEXT turn. The receipt
+    // already told the model the instruction joined running work, so report
+    // the turn that actually carries it or the task stays bound to a turn
+    // that never ran it.
+    for (const message of steers) {
+      state.queue.push({
+        type: 'turn_joined',
+        messageId: message.messageId,
+        jobRef,
+      });
+    }
     void this.sendPromptNow(state, jobRef, blocks);
+  }
+
+  /**
+   * Report the owner of every steering message still waiting, then drop
+   * them. Each message was named in a receipt the model has already
+   * relayed, so it must be attributed to SOME turn: a message that never
+   * binds leaves the orchestrator holding a task stuck at 'accepted'
+   * forever. When the turn it was addressed to is dying, that turn is the
+   * honest owner — the instruction shares its fate, and the turn's own
+   * error or cancellation then covers it.
+   */
+  private bindPendingSteers(state: AcpSessionState, jobRef?: string): void {
+    const steers = state.steerQueue.splice(0);
+    if (jobRef === undefined) return;
+    for (const message of steers) {
+      state.queue.push({
+        type: 'turn_joined',
+        messageId: message.messageId,
+        jobRef,
+      });
+    }
   }
 
   private sessionIdOf(state: AcpSessionState): string {
@@ -875,6 +939,9 @@ export class AcpAdaptor implements BackendAdaptor {
       state.parkedPermissions.delete(requestId);
       state.queue.push({ type: 'permission_resolved', requestId, byUs: false });
     }
+    // Before the turn's own failure, so the error covers the steering that
+    // was riding on it rather than leaving those messages unattributed.
+    this.bindPendingSteers(state, state.activeJobRef);
     if (busyError && state.busy && state.activeJobRef) {
       state.queue.push({
         type: 'turn_error',
@@ -884,7 +951,6 @@ export class AcpAdaptor implements BackendAdaptor {
     }
     state.closed = true;
     state.busy = false;
-    state.steerQueue = [];
     state.pendingPrompts = [];
     state.queue.push({ type: 'session_closed' });
     state.queue.end();
@@ -1005,9 +1071,21 @@ export class AcpAdaptor implements BackendAdaptor {
           ? this.sessions.get(sessionId)
           : undefined;
       if (!state) return { messages: [], hasQueuedPrompt: false };
-      const messages = state.steerQueue.splice(0, DRAIN_BATCH);
+      const drained = state.steerQueue.splice(0, DRAIN_BATCH);
+      // The agent pulled these into the turn running right now, so that
+      // turn is the real owner. Queue pushes are synchronous local state:
+      // this handler still cannot stall or throw (see the header note).
+      if (state.activeJobRef !== undefined) {
+        for (const message of drained) {
+          state.queue.push({
+            type: 'turn_joined',
+            messageId: message.messageId,
+            jobRef: state.activeJobRef,
+          });
+        }
+      }
       return {
-        messages,
+        messages: drained.map((message) => message.text),
         hasQueuedPrompt: state.pendingPrompts.length > 0,
       };
     }

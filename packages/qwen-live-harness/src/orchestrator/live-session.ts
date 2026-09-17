@@ -19,6 +19,7 @@
 import { readFile } from 'node:fs/promises';
 import { SessionReports } from './session-reports.js';
 import {
+  clampTail,
   pickLeastEscalating,
   stripControlSequences,
 } from '../adaptor/adaptor-utils.js';
@@ -141,6 +142,16 @@ const MAX_ACCESSIBILITY_CHARS = 8_000;
 const MAX_VOICE_CONTEXT_ENTRIES = 12;
 const MAX_VOICE_CONTEXT_CHARS = 4_000;
 const MAX_SPOKEN_SUMMARY_CHARS = 200;
+/**
+ * Budget for one [COMPLETE] body. A backend turn detail runs to
+ * MAX_DETAIL_CHARS (48k), far past what the injector can hand to one
+ * context injection, so clamp here rather than letting the batch slice cut
+ * an unmarked hole mid-sentence. The tail is kept: an agent's conclusion —
+ * what it did, what still needs the user — is at the end of its turn. The
+ * untruncated detail stays on the Subagents task row and in the session
+ * log.
+ */
+const MAX_COMPLETE_CONTEXT_CHARS = 4_000;
 const PERMISSION_REMINDER_DELAY_MS = 1_000;
 const PROACTIVE_CANCELLATION_GRACE_MS = 250;
 
@@ -2833,6 +2844,13 @@ export class LiveSession {
             note: `unknown backend '${args['backend']}'; configured backends: ${this.registry.names().join(', ')}.`,
           };
         }
+        if (named.status === 'starting') {
+          // Secondary backends warm up off the daemon's ready path, so a call
+          // that names one waits for it instead of failing on a race the user
+          // never sees. The status is re-read below: a warm-up that failed
+          // reports the same stored error as before.
+          await this.registry.whenReady(named.adaptor.name);
+        }
         if (named.status !== 'ready') {
           return {
             status: 'error',
@@ -3632,7 +3650,10 @@ export class LiveSession {
         );
         context.injector.enqueue({
           kind: 'complete',
-          context: `[COMPLETE ${label}] ${event.detail ?? event.summary}`,
+          context: `[COMPLETE ${label}] ${clampTail(
+            event.detail ?? event.summary,
+            MAX_COMPLETE_CONTEXT_CHARS,
+          )}`,
           spoken: spokenSummary
             ? `${this.spokenTaskLabel(job)} finished. ${spokenSummary}`
             : `${this.spokenTaskLabel(job)} finished.`,
