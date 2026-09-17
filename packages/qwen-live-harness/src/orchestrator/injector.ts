@@ -460,16 +460,42 @@ export class Injector {
     ];
     this.queue = this.queue.slice(batchEnd);
 
-    // One combined silent context injection for the whole batch.
-    const context = batch
-      .map((item) => item.context)
-      .join('\n')
-      .slice(0, MAX_CONTEXT_CHARS);
+    // One combined silent context injection, budgeted per ITEM. Slicing the
+    // joined text instead would let one oversized item push every later one
+    // out of the injection entirely — silently, since those items are
+    // already dequeued and onInjected still reports them delivered. Whole
+    // items that do not fit go back at the head of the queue for the next
+    // flush; only a lone item larger than the whole budget is truncated, so
+    // that it can never wedge the lane.
+    const fitted: InjectorItem[] = [];
+    let used = 0;
+    for (const item of batch) {
+      const cost = item.context.length + (fitted.length > 0 ? 1 : 0);
+      if (fitted.length > 0 && used + cost > MAX_CONTEXT_CHARS) break;
+      fitted.push(item);
+      used += cost;
+    }
+    const deferred = batch.slice(fitted.length);
+    // The lone-item backstop keeps the HEAD, unlike the tail-keeping clamps
+    // callers apply to a message BODY. An item's correlation tag is its
+    // first characters ("[COMPLETE job_1]", "[PERMISSION req_1]"), and a
+    // tail cut would take the tag with it — leaving the model an untagged
+    // fragment, or a permission ask with no handle to vote on.
+    const context = fitted
+      .map((item, index) =>
+        index === 0 && item.context.length > MAX_CONTEXT_CHARS
+          ? `${item.context.slice(0, MAX_CONTEXT_CHARS - 1)}…`
+          : item.context,
+      )
+      .join('\n');
     const contextAccepted = this.sink.injectContext(context);
 
     // One combined spoken line for the speech-worthy items — whole lines
-    // only, since the model is told to read the text verbatim.
-    const spokenLines = batch
+    // only, since the model is told to read the text verbatim. Drawn from
+    // the FITTED items, never the whole batch: speaking for an item whose
+    // context was deferred would announce a result the model cannot back
+    // up, and would then say it again when that item really lands.
+    const spokenLines = fitted
       .map((item) => item.spoken)
       .filter((line): line is string => typeof line === 'string' && !!line);
     let spoken = '';
@@ -498,7 +524,10 @@ export class Injector {
       this.timer.unref?.();
       return;
     }
-    for (const item of batch) {
+    // Back at the head, so poke()'s flush loop picks them up on its next
+    // pass — a deferred item becomes its own injection, never a lost one.
+    if (deferred.length > 0) this.queue = [...deferred, ...this.queue];
+    for (const item of fitted) {
       this.sink.onInjected?.(item, spokenLines.length > 0);
     }
     this.poke();

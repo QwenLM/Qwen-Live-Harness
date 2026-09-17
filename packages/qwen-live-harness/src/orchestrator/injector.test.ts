@@ -76,6 +76,80 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('Injector context budget', () => {
+  // Mirrors MAX_CONTEXT_CHARS in injector.ts.
+  const BUDGET = 6_000;
+
+  it('defers whole items past the budget instead of slicing them away', () => {
+    // A backend turn detail can run far past one injection's budget. Slicing
+    // the joined batch would drop everything after it with no trace, while
+    // still reporting those items delivered.
+    const big = complete('B'.repeat(BUDGET));
+    const after = complete('[COMPLETE job_2] second task finished');
+    injector.noteSpeechStarted();
+    injector.enqueue(big);
+    injector.enqueue(after);
+    injector.noteInputCommitted();
+
+    // Two injections, both whole. Before this, the joined slice kept the
+    // first and silently swallowed the second while still reporting it
+    // delivered.
+    expect(sink.contextCalls).toEqual([big.context, after.context]);
+    expect(sink.injected.map((entry) => entry.item)).toEqual([big, after]);
+  });
+
+  it('does not speak for an item whose context was deferred', () => {
+    // Speaking about a result the model has no context for is the exact
+    // "claimed without evidence" failure the instructions warn against —
+    // and the line would then be spoken a second time when the deferred
+    // item really lands.
+    const big = complete('B'.repeat(BUDGET), 'The first task finished.');
+    const after = complete('[COMPLETE job_2] lint done', 'Lint finished.');
+    injector.noteSpeechStarted();
+    injector.enqueue(big);
+    injector.enqueue(after);
+    injector.noteInputCommitted();
+
+    expect(sink.contextCalls).toEqual([big.context, after.context]);
+    expect(sink.speechCalls).toEqual([
+      'The first task finished.',
+      'Lint finished.',
+    ]);
+    // Exactly once each, in step with the context that backs it.
+    expect(
+      sink.speechCalls.filter((line) => line === 'Lint finished.'),
+    ).toHaveLength(1);
+  });
+
+  it('truncates a lone oversized item rather than wedging the lane', () => {
+    const huge = complete('H'.repeat(BUDGET * 3));
+    injector.enqueue(huge);
+
+    expect(sink.contextCalls).toHaveLength(1);
+    expect(sink.contextCalls[0]).toHaveLength(BUDGET);
+    expect(sink.contextCalls[0]?.endsWith('…')).toBe(true);
+    expect(sink.injected.map((entry) => entry.item)).toEqual([huge]);
+    expect(injector.pendingCount).toBe(0);
+  });
+
+  it('keeps a permission ask whole when a large completion shares the batch', () => {
+    const permission: InjectorItem = {
+      kind: 'permission',
+      requestId: 'acp:perm-1',
+      context: '[PERMISSION req_1] Session session_1 wants to run: rm -rf /a',
+    };
+    const big = complete('B'.repeat(BUDGET));
+    injector.noteSpeechStarted();
+    injector.enqueue(big);
+    injector.enqueue(permission);
+    injector.noteInputCommitted();
+
+    // Permissions sort first, so the handle the model needs is never the
+    // part that gets deferred.
+    expect(sink.contextCalls[0]).toBe(permission.context);
+  });
+});
+
 describe('Injector external peer reports', () => {
   function report(id: string): InjectorItem {
     return { kind: 'peer_report', reportId: id, context: `External ${id}` };
@@ -682,10 +756,10 @@ describe('Injector size caps', () => {
     injector.enqueue(complete('b'.repeat(4_000)));
     injector.noteInputCommitted();
 
-    expect(sink.contextCalls).toHaveLength(1);
-    expect(sink.contextCalls[0]).toHaveLength(6_000);
-    // The first item survives whole; the second is what the cap trims.
-    expect(sink.contextCalls[0]!.startsWith('a'.repeat(4_000))).toBe(true);
+    // Whole items only, like the spoken lane below: neither is cut in half
+    // by a slice of the joined text. The overflow becomes its own
+    // injection on the same flush pass.
+    expect(sink.contextCalls).toEqual(['a'.repeat(4_000), 'b'.repeat(4_000)]);
   });
 
   it('joins spoken lines whole and stops before breaching 280 chars', () => {
