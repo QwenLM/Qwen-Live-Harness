@@ -2833,6 +2833,13 @@ export class LiveSession {
             note: `unknown backend '${args['backend']}'; configured backends: ${this.registry.names().join(', ')}.`,
           };
         }
+        if (named.status === 'starting') {
+          // Secondary backends warm up off the daemon's ready path, so a call
+          // that names one waits for it instead of failing on a race the user
+          // never sees. The status is re-read below: a warm-up that failed
+          // reports the same stored error as before.
+          await this.registry.whenReady(named.adaptor.name);
+        }
         if (named.status !== 'ready') {
           return {
             status: 'error',

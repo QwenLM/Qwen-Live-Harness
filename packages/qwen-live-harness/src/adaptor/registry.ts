@@ -12,9 +12,11 @@
  * Preflight policy: the DEFAULT backend's failure aborts daemon start
  * before the discovery file is claimed. An explicitly empty registry supports
  * direct voice, visual input, Memory, and Proactive without task delegation.
- * Secondary backends are best-effort — a failure marks them
- * unavailable with the last error; the daemon still starts, session_list
- * omits them, and session_create naming them returns the stored error.
+ * Secondary backends are best-effort AND off the ready path: their warm-up
+ * starts once the default is ready, but the daemon never waits for it (a cold
+ * package-runner install can take minutes). Until a warm-up settles the entry
+ * reads 'starting'; a failure marks it unavailable with the last error, and
+ * session_create naming it awaits that warm-up before reporting the error.
  */
 
 import type { BackendAdaptor, BackendHandle } from './types.js';
@@ -22,7 +24,8 @@ import type { BackendAdaptor, BackendHandle } from './types.js';
 export interface RegisteredBackend {
   readonly adaptor: BackendAdaptor;
   readonly isDefault: boolean;
-  status: 'ready' | 'unavailable';
+  /** 'starting' until a secondary's background warm-up settles. */
+  status: 'starting' | 'ready' | 'unavailable';
   lastError?: string;
 }
 
@@ -35,6 +38,9 @@ export type RegistryProgress = (event: {
 export class BackendRegistry {
   private readonly entries: RegisteredBackend[];
   private readonly byName: Map<string, RegisteredBackend>;
+  /** In-flight secondary warm-ups by backend name; settled ones drop out. */
+  private readonly warmups = new Map<string, Promise<void>>();
+  private closing = false;
 
   constructor(
     entries: ReadonlyArray<{ adaptor: BackendAdaptor; isDefault: boolean }>,
@@ -104,27 +110,61 @@ export class BackendRegistry {
     progress?.({ backend: this.defaultAdaptor.name, stage: 'starting' });
     await this.defaultAdaptor.preflight();
     progress?.({ backend: this.defaultAdaptor.name, stage: 'ready' });
-    const secondaries = this.entries.filter((entry) => !entry.isDefault);
-    await Promise.allSettled(
-      secondaries.map(async (entry) => {
-        try {
-          progress?.({ backend: entry.adaptor.name, stage: 'starting' });
-          await entry.adaptor.preflight();
-          progress?.({ backend: entry.adaptor.name, stage: 'ready' });
-        } catch (error) {
-          entry.status = 'unavailable';
-          progress?.({ backend: entry.adaptor.name, stage: 'unavailable' });
-          entry.lastError =
-            error instanceof Error ? error.message : String(error);
-          log(
-            `backend '${entry.adaptor.name}' unavailable: ${entry.lastError}`,
-          );
-        }
-      }),
-    );
+    // Secondaries warm up in the background. Their readiness is best-effort,
+    // so it must never sit on the daemon's ready path: a package-runner
+    // install can take minutes, and the daemon is usable without them.
+    for (const entry of this.entries) {
+      if (entry.isDefault) continue;
+      void this.warmUp(entry, log, progress);
+    }
+  }
+
+  /**
+   * Await a secondary backend's in-flight warm-up, resolving immediately when
+   * none is pending. Only entries reading 'starting' have one; every other
+   * status is already settled.
+   */
+  async whenReady(name: string): Promise<void> {
+    await this.warmups.get(name);
+  }
+
+  private warmUp(
+    entry: RegisteredBackend,
+    log: RegistryLog,
+    progress?: RegistryProgress,
+  ): Promise<void> {
+    const name = entry.adaptor.name;
+    const inFlight = this.warmups.get(name);
+    if (inFlight) return inFlight;
+    entry.status = 'starting';
+    progress?.({ backend: name, stage: 'starting' });
+    const running = (async () => {
+      try {
+        await entry.adaptor.preflight();
+        entry.status = 'ready';
+        progress?.({ backend: name, stage: 'ready' });
+      } catch (error) {
+        entry.status = 'unavailable';
+        entry.lastError =
+          error instanceof Error ? error.message : String(error);
+        // A shutdown that interrupts a warm-up is not a broken backend; the
+        // adaptor reports itself closed, which would misread as a config fix.
+        if (this.closing) return;
+        progress?.({ backend: name, stage: 'unavailable' });
+        log(`backend '${name}' unavailable: ${entry.lastError}`);
+      } finally {
+        this.warmups.delete(name);
+      }
+      // Fire-and-forget: the outcome lives in status/lastError, so a warm-up
+      // must never reject — an unhandled rejection would kill the daemon, and
+      // whenReady() would surface a reporting fault as a backend failure.
+    })().catch(() => {});
+    this.warmups.set(name, running);
+    return running;
   }
 
   async closeAll(log: RegistryLog): Promise<void> {
+    this.closing = true;
     await Promise.allSettled(
       this.entries.map(async (entry) => {
         try {
