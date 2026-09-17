@@ -98,6 +98,7 @@ function fixture() {
     daemonBootstrap: undefined,
     startupInvocationError: undefined,
     theme: 'system',
+    themeColor: 'iris',
     resolvedTheme: () => 'light',
     language: 'en',
     overlayOffset: { x: 0, y: 0 },

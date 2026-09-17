@@ -95,6 +95,7 @@ function fixture() {
     },
     language: 'en',
     theme: 'system',
+    themeColor: 'iris',
     resolvedTheme: () => 'light',
     overlayOffset: { x: 0, y: 0 },
     visualInput: undefined,

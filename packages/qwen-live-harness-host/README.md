@@ -4,7 +4,7 @@
 
 [项目首页](../../README.md) · [配置与功能指南](../../docs/configuration.md) · [Daemon 开发指南](../qwen-live-harness/README.md)
 
-Host 是 Qwen-Live-Harness 的 macOS 桌面端，负责悬浮球、系统权限、麦克风、扬声器、摄像头、屏幕采集和全局快捷键。主 Omni 会话、工具调度、后台 Harness、Memory 和 Proactive 由 daemon 管理；Host 不直接调用模型 API，也不包含 Node 或 daemon 的安装包。
+Host 是 Qwen-Live-Harness 的 macOS 桌面端，负责语音卡片、系统权限、麦克风、扬声器、摄像头、屏幕采集和全局快捷键。主 Omni 会话、工具调度、后台 Harness、Memory 和 Proactive 由 daemon 管理；Host 不直接调用模型 API，也不包含 Node 或 daemon 的安装包。
 
 本文面向修改桌面端的开发者。安装产品、选择输入源、设置记忆和配置参数请阅读[配置与功能指南](../../docs/configuration.md)。
 
@@ -62,7 +62,7 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 | [`src/main/index.ts`](src/main/index.ts)                         | Electron 生命周期、原生窗口、权限、自检、快捷键和 IPC 路由 |
 | [`src/main/daemon-connection.ts`](src/main/daemon-connection.ts) | daemon 连接、v9 握手、音视频帧和状态同步                   |
 | [`src/preload/index.ts`](src/preload/index.ts)                   | 受限的 renderer bridge，以及音频、摄像头引擎               |
-| [`src/renderer/live-view.ts`](src/renderer/live-view.ts)         | 悬浮球、授权页、状态条；设置与子任务视图位于同目录         |
+| [`src/renderer/live-view.ts`](src/renderer/live-view.ts)         | 语音卡片、授权页、状态条；设置与子任务视图位于同目录       |
 | [`src/native/appshot.mm`](src/native/appshot.mm)                 | 前台窗口截图、辅助功能文本与完整显示器采集                 |
 | [`src/shared`](src/shared)                                       | 协议解析、IPC 类型、布局常量和主题                         |
 
@@ -70,9 +70,13 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 
 ### 布局与交互
 
-几何参数统一维护在 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)，原生位置约束在 [`overlay-position.ts`](src/main/overlay-position.ts)。透明窗口画布与实际可见内容不是同一个边界：初始化页、悬浮球、预览和设置应分别按可见区域限位。
+几何参数统一维护在 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)，原生位置约束在 [`overlay-position.ts`](src/main/overlay-position.ts)。透明窗口画布与实际可见内容不是同一个边界：初始化页、语音卡片、预览和设置应分别按可见区域限位。
 
-修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能挤压小球和状态条。
+修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能挤压主卡和状态条。
+
+主界面采用 Pebble 布局：234 × 194 px 主卡、常驻通话控件与任务摘要，设置显示在卡片旁；点击任务摘要打开已有任务窗口。终端会话、指令送达、会话报告和搜索任务继续通过原有列表访问。
+
+默认主题色为 Iris 雾紫。Host 在首次连接或重连时，从已认证 daemon 提供的配置路径读取顶层 `themeColor`；支持 `iris`、`clay`、`sage`、`tide`、`graphite`、`rose`、`berry`。缺省或非法值回落到 Iris，不影响通话。浅深色模式继续独立持久化，详见[配置指南](../../docs/configuration.md#主题配色)。
 
 ## 与 daemon 的边界
 
@@ -113,7 +117,7 @@ Appshot 是随 Host 构建的内置模块，不依赖外部截图 App、CLI、MC
 
 录音启动、设备切换和音频恢复使用有界等待。主进程在 10 秒内等待设备 ready 与首个输入帧；静音只需 ready。AudioContext 关闭最多等待 1 秒。Stop、静音、通话切换和退出会取消过时操作，迟到的媒体流与 AudioContext 必须释放，取消不能伪造就绪或报成新的播放错误。
 
-音频超时停止本轮通话并保留悬浮球、设置、拖拽和 Quit，不立即循环重试。用户可选择输入设备并按 Start／`Command+E` 重试。技术音频故障不撤销系统授权；真正缺少权限时，授权提示优先于音频错误。对应实现见 [`capture-readiness.ts`](src/main/capture-readiness.ts)、[`audio-operation.ts`](src/preload/audio-operation.ts) 和 [`audio-engine.ts`](src/preload/audio-engine.ts)。
+音频超时停止本轮通话并保留语音卡片、设置、拖拽和 Quit，不立即循环重试。用户可选择输入设备并按 Start／`Command+E` 重试。技术音频故障不撤销系统授权；真正缺少权限时，授权提示优先于音频错误。对应实现见 [`capture-readiness.ts`](src/main/capture-readiness.ts)、[`audio-operation.ts`](src/preload/audio-operation.ts) 和 [`audio-engine.ts`](src/preload/audio-engine.ts)。
 
 ## 日志与文案
 

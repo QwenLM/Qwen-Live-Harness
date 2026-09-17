@@ -4,20 +4,21 @@
 
 [返回项目首页](../README.md) · [开发者高级配置](../packages/qwen-live-harness/README.md#高级配置参考)
 
-完成初始化后，大部分日常操作都可以在悬浮球的 **Settings / 设置** 中完成。只有修改模型、API key、画面清晰度等参数时，才需要打开配置文件。
+完成初始化后，大部分日常操作都可以在Pebble 语音卡片的 **Settings / 设置** 中完成。只有修改模型、API key、画面清晰度等参数时，才需要打开配置文件。
 
 ## 想改什么，去哪里改
 
-| 我想……                           | 在哪里操作                                |
-| -------------------------------- | ----------------------------------------- |
-| 换一个麦克风                     | Settings → Audio Source                   |
-| 在屏幕和摄像头之间切换           | Settings → Video Source                   |
-| 让模型持续看画面                 | Settings → Capture Mode → Live Feed       |
-| 选择要看的显示器                 | Settings → Video Source → Display         |
-| 开关记忆、换记忆库、修改记忆名字 | Settings → Memory                         |
-| 切换中文／英文、浅色／深色       | Settings 最下方的 Language / Theme        |
-| 修改模型、API key、分辨率、帧率  | Settings → Open config.json ↗             |
-| 开始或结束交互                   | 小球上的 Start / End call，或 `Command+E` |
+| 我想……                           | 在哪里操作                                         |
+| -------------------------------- | -------------------------------------------------- |
+| 换一个麦克风                     | Settings → Sound → Microphone                      |
+| 在屏幕和摄像头之间切换           | Settings → Video Source                            |
+| 让模型持续看画面                 | Settings → Capture Mode → Live Feed                |
+| 选择要看的显示器                 | Settings → Video Source → Display                  |
+| 开关记忆、换记忆库、修改记忆名字 | Settings → Memory                                  |
+| 更换主题配色                     | 配置文件顶层 `themeColor`，重启 Host 后生效        |
+| 切换中文／英文、浅色／深色       | Settings → Personalization → Language / Appearance |
+| 修改模型、API key、分辨率、帧率  | Settings → Open configuration                      |
+| 开始或结束交互                   | 卡片上的 Start / End call，或 `Command+E`          |
 
 ## 修改配置，只需五步
 
@@ -89,6 +90,18 @@ qwen-live-harness init
 | `shortcut`         | `"Command+E"`                  | 修改开始／结束交互的快捷键                   |
 
 Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给它们分别设置 Endpoint。
+
+## 主题配色
+
+默认使用 Iris 雾紫。在现有配置文件顶层添加或修改：
+
+```json
+{
+  "themeColor": "iris"
+}
+```
+
+支持 `iris`（雾紫）、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。保存后重启 Host 或重新连接 daemon，主卡和任务窗口会同时应用新配色。缺省或非法值使用雾紫；浅色／深色／跟随系统仍在 Settings 中独立设置。
 
 ## 视觉输入
 

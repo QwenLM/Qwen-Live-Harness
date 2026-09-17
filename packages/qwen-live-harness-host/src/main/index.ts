@@ -10,10 +10,15 @@ import {
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 import { readHostLanguage, saveHostLanguage } from './language-store.ts';
-import { readHostTheme, saveHostTheme } from './theme-store.ts';
+import {
+  readHostTheme,
+  readHostThemeColor,
+  saveHostTheme,
+} from './theme-store.ts';
 import {
   isLiveTheme,
   type LiveTheme,
+  type LiveThemeColor,
   type ResolvedTheme,
 } from '../shared/theme.ts';
 import {
@@ -152,6 +157,7 @@ let mediaPermissionTimer: NodeJS.Timeout | undefined;
 let settingsOpen = false;
 let language: LiveLanguage = 'en';
 let theme: LiveTheme = 'system';
+let themeColor: LiveThemeColor = 'iris';
 
 function resolvedTheme(): ResolvedTheme {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
@@ -510,6 +516,7 @@ function publicState(): HostPublicState {
     status.state === 'unavailable' && status.blocker?.endsWith('_permission');
   return {
     theme,
+    themeColor,
     resolvedTheme: resolvedTheme(),
     language,
     connection:
@@ -566,7 +573,7 @@ function sameVisualInput(
 }
 
 function publishState(): void {
-  subagents?.setTheme(theme, resolvedTheme());
+  subagents?.setTheme(theme, resolvedTheme(), themeColor);
   subagents?.update(
     language,
     connection.phase === 'ready',
@@ -574,6 +581,12 @@ function publishState(): void {
     connection.instanceId,
     connection.subagentsControlV1 === true,
   );
+  publishOverlayState();
+  rebuildTrayMenu();
+  maybeStartStartupInteraction();
+}
+
+function publishOverlayState(): void {
   if (
     overlayReady &&
     overlay &&
@@ -586,8 +599,6 @@ function publishState(): void {
       overlayReady = false;
     }
   }
-  rebuildTrayMenu();
-  maybeStartStartupInteraction();
 }
 
 function maybeStartStartupInteraction(): void {
@@ -676,7 +687,9 @@ function clampOverlayToDisplays(reason = 'display-change'): void {
   const position = clampOverlayPosition(
     current,
     overlayWorkArea(current),
-    OVERLAY_GEOMETRY.bounds[settingsOpen ? 'setup' : overlayLayout],
+    settingsOpen
+      ? OVERLAY_GEOMETRY.settingsBounds
+      : OVERLAY_GEOMETRY.bounds[overlayLayout],
   );
   if (position.x === current.x && position.y === current.y) return;
   if (overlayDrag) persistOverlayPosition();
@@ -697,8 +710,9 @@ function overlayWorkArea(point: OverlayPosition): DisplayWorkArea {
 function applyOverlayPosition(reason: string): void {
   if (!overlay || overlay.isDestroyed() || !desiredOverlayPosition) return;
   const area = overlayWorkArea(desiredOverlayPosition);
-  const visible =
-    OVERLAY_GEOMETRY.bounds[settingsOpen ? 'setup' : overlayLayout];
+  const visible = settingsOpen
+    ? OVERLAY_GEOMETRY.settingsBounds
+    : OVERLAY_GEOMETRY.bounds[overlayLayout];
   const position = hasCustomOverlayPosition
     ? clampOverlayPosition(desiredOverlayPosition, area, visible)
     : overlayPosition(area, visible);
@@ -782,8 +796,7 @@ function syncPointerInteractivity(): void {
     pointerInteractive = false;
     return;
   }
-  const interactive =
-    pointerOverInteractive || settingsOpen || overlayDrag !== undefined;
+  const interactive = pointerOverInteractive || overlayDrag !== undefined;
   if (pointerInteractive === interactive) return;
   pointerInteractive = interactive;
   overlay.setIgnoreMouseEvents(!interactive, { forward: true });
@@ -810,7 +823,9 @@ function dragOverlay(
     const position = clampOverlayPosition(
       desired,
       overlayWorkArea(desired),
-      OVERLAY_GEOMETRY.bounds[settingsOpen ? 'setup' : overlayLayout],
+      settingsOpen
+        ? OVERLAY_GEOMETRY.settingsBounds
+        : OVERLAY_GEOMETRY.bounds[overlayLayout],
     );
     desiredOverlayPosition = position;
     hasCustomOverlayPosition = true;
@@ -1847,6 +1862,16 @@ async function captureOnDemandVisual(request: {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('live:subagents:open', (event) => {
+    if (
+      !isTrustedSender(event) ||
+      !rendererEventsEnabled ||
+      connection.phase !== 'ready' ||
+      quitState
+    )
+      return;
+    subagents?.openList();
+  });
   ipcMain.handle('live:open-config', async (event) => {
     if (
       !isTrustedSender(event) ||
@@ -3015,6 +3040,7 @@ void app.whenReady().then(() => {
           connection.instanceId,
           connection.subagentsControlV1 === true,
         );
+        publishOverlayState();
       },
       getReadiness: () => ({
         permissions: { ...permissions },
@@ -3031,6 +3057,12 @@ void app.whenReady().then(() => {
               }
             : {}),
         });
+        if (
+          snapshot.phase === 'ready' &&
+          (connection.phase !== 'ready' ||
+            connection.instanceId !== snapshot.instanceId)
+        )
+          themeColor = readHostThemeColor(daemon.getConfigFilePath());
         connection = snapshot;
         if (snapshot.phase === 'ready') daemonBootstrap?.markConnected();
         if (
