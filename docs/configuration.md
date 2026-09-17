@@ -112,7 +112,7 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 - **Capture Mode → On Demand**：需要时才截图，是默认模式。
 - **Capture Mode → Live Feed**：通话期间持续发送近期画面，适合直接询问“你现在看见什么”。
 
-**没有后台 Harness 时，想让 Omni 直接理解完整画面，建议用 Live Feed。** On Demand 可以提供一些屏幕文字，但完整截图通常需要后台 Harness 帮助分析；摄像头的按需截图也不能当成 Omni 已经看到了画面。
+**On Demand 和 Live Feed 都由当前 Omni 直接理解画面，无需后台 Harness。** On Demand 在视觉提问时采集一张当前 Screen / Camera 图片，提交后直接回答；Live Feed 持续发送近期画面。截图或图片提交失败会明确报错。只有用户明确委派的后台工作才需要转交图片附件。
 
 Screen 的 Live Feed 和视觉监控会看选定显示器的完整画面。On Demand 主要看当前前台窗口。使用多个显示器时，在 **Display** 里选择；默认跟随主显示器。
 

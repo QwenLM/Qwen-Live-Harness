@@ -231,6 +231,313 @@ async function connect(
   return opening;
 }
 
+describe('On Demand tool image delivery', () => {
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
+  const ref = { callEpoch: 7, callId: 'capture' };
+  async function rig(completeResponse = true) {
+    const socket = new FakeSocket();
+    const callbacks = {
+      onFunctionCall: vi.fn(),
+      onInputCommitted: vi.fn(),
+      onInputTranscriptDone: vi.fn(),
+      onInputTranscriptDelta: vi.fn(),
+      onDialogue: vi.fn(),
+      onError: vi.fn(),
+      onResponseCreated: vi.fn(),
+    };
+    const session = await connect(socket, callbacks);
+    commitFinalInput(socket, 'question', 'What is in the picture?');
+    responseCreated(socket, 'question-response');
+    functionCall(socket, 'question-response', ref.callId, 'appshot', '{}');
+    if (completeResponse) responseDone(socket, 'question-response');
+    expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
+    return { socket, callbacks, session };
+  }
+  function acknowledge(socket: FakeSocket, id = 'image-input') {
+    socket.message({ type: 'input_audio_buffer.committed', item_id: id });
+    conversationInputCreated(socket, id);
+  }
+  function ready(socket: FakeSocket, id = 'image-input') {
+    socket.message({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: id,
+      transcript: '',
+    });
+  }
+
+  it('commits pixels before continuing the original question and resumes buffered speech in order', async () => {
+    const { socket, callbacks, session } = await rig();
+    const start = socket.sent.length;
+    let settled = false;
+    const delivery = session.submitToolImage(ref, image).then((value) => {
+      settled = true;
+      return value;
+    });
+    expect(sentTypes(socket).slice(start)).toEqual([
+      'session.update',
+      'input_audio_buffer.append',
+      'input_image_buffer.append',
+      'input_audio_buffer.commit',
+    ]);
+    expect(sentJson(socket, start)).toMatchObject({
+      session: { turn_detection: null },
+    });
+    expect(
+      Buffer.from(sentJson(socket, start + 1)['audio'] as string, 'base64'),
+    ).toEqual(Buffer.alloc(32000));
+    expect(sentJson(socket, start + 2)).toMatchObject({ image });
+    const pcm = new Uint8Array([1, 2]);
+    expect(session.pushAudio(pcm)).toBe(true);
+    pcm[0] = 9;
+    expect(session.pushAudio(new Uint8Array([3, 4]))).toBe(true);
+    expect(session.pushImage(image)).toBe(false);
+    expect(session.commitInputAudio()).toBe(false);
+    expect(session.clearInputAudio()).toBe(false);
+    expect(socket.sent).toHaveLength(start + 4);
+    acknowledge(socket);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    ready(socket);
+    expect(await delivery).toBe(true);
+    expect(sentTypes(socket).slice(start + 4)).toEqual([
+      'session.update',
+      'input_audio_buffer.append',
+      'input_audio_buffer.append',
+    ]);
+    expect(sentJson(socket, start + 4)).toMatchObject({
+      session: {
+        turn_detection: {
+          type: 'semantic_vad',
+          create_response: false,
+          interrupt_response: true,
+        },
+      },
+    });
+    expect(sentJson(socket, start + 5)['audio']).toBe(
+      Buffer.from([1, 2]).toString('base64'),
+    );
+    expect(sentJson(socket, start + 6)['audio']).toBe(
+      Buffer.from([3, 4]).toString('base64'),
+    );
+    expect(callbacks.onInputCommitted).toHaveBeenCalledTimes(1);
+    expect(callbacks.onInputTranscriptDone).toHaveBeenCalledTimes(1);
+    expect(callbacks.onInputTranscriptDelta).not.toHaveBeenCalled();
+    expect(
+      session.submitFunctionOutput(
+        ref,
+        '{"status":"ok","image_delivery":"realtime"}',
+      ),
+    ).toBe(true);
+    responseCreated(socket, 'answer');
+    expect(callbacks.onResponseCreated).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        authority: 'tool_continuation',
+        inputItemId: 'question',
+      }),
+    );
+    responseDone(socket, 'answer');
+    sessionUpdated(socket, 'manual-vad');
+    sessionUpdated(socket, 'restored-vad');
+    socket.message({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'next-question',
+    });
+    commitFinalInput(socket, 'next-question', 'Another question');
+    responseCreated(socket, 'next-answer');
+    expect(callbacks.onResponseCreated).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        authority: 'direct',
+        inputItemId: 'next-question',
+      }),
+    );
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    expect(session.takeTranscriptTail()).not.toContainEqual(
+      expect.objectContaining({ text: '' }),
+    );
+    session.close({ discardPendingInput: true });
+  });
+
+  it('does not let a duplicate old media acknowledgement claim the next capture', async () => {
+    const { socket, callbacks, session } = await rig();
+    const first = session.submitToolImage(ref, image);
+    acknowledge(socket);
+    ready(socket);
+    expect(await first).toBe(true);
+    session.submitFunctionOutput(ref, '{}');
+    responseCreated(socket, 'answer');
+    responseDone(socket, 'answer');
+    commitFinalInput(socket, 'question-2', 'Look again');
+    responseCreated(socket, 'capture-2-response');
+    functionCall(socket, 'capture-2-response', 'capture-2', 'appshot', '{}');
+    responseDone(socket, 'capture-2-response');
+    const second = session.submitToolImage(
+      { callEpoch: 7, callId: 'capture-2' },
+      image,
+    );
+    acknowledge(socket);
+    ready(socket);
+    acknowledge(socket, 'image-input-2');
+    ready(socket, 'image-input-2');
+    expect(await second).toBe(true);
+    expect(callbacks.onInputCommitted).toHaveBeenCalledTimes(2);
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    session.close({ discardPendingInput: true });
+  });
+
+  it.each([
+    'epoch',
+    'missing-call',
+    'predicate',
+    'speech',
+    'backpressure',
+    'failed-response',
+  ] as const)('rejects %s before sending any media', async (reason) => {
+    const { socket, session } = await rig(reason !== 'failed-response');
+    if (reason === 'speech')
+      socket.message({
+        type: 'input_audio_buffer.speech_started',
+        item_id: 'new-speech',
+      });
+    if (reason === 'failed-response')
+      responseDone(socket, 'question-response', 'failed');
+    if (reason === 'backpressure')
+      socket.bufferedAmount = QWEN_REALTIME_LIMITS.maxBufferedSocketBytes + 1;
+    const start = socket.sent.length;
+    expect(
+      await session.submitToolImage(
+        {
+          ...ref,
+          ...(reason === 'epoch' ? { callEpoch: 8 } : {}),
+          ...(reason === 'missing-call' ? { callId: 'unknown' } : {}),
+        },
+        image,
+        () => reason !== 'predicate',
+      ),
+    ).toBe(false);
+    expect(socket.sent).toHaveLength(start);
+    session.close({ discardPendingInput: true });
+  });
+
+  it('rejects malformed pixels and concurrent submissions', async () => {
+    const { socket, session } = await rig();
+    await expect(session.submitToolImage(ref, 'invalid')).rejects.toThrow(
+      'bounded JPEG',
+    );
+    const delivery = session.submitToolImage(ref, image);
+    expect(await session.submitToolImage(ref, image)).toBe(false);
+    acknowledge(socket);
+    ready(socket);
+    expect(await delivery).toBe(true);
+    session.close({ discardPendingInput: true });
+  });
+
+  it.each(['predicate', 'failed-response', 'cancelled-response'] as const)(
+    'restores microphone delivery but rejects an image invalidated by %s',
+    async (reason) => {
+      const { socket, session } = await rig(reason === 'predicate');
+      let current = true;
+      const delivery = session.submitToolImage(ref, image, () => current);
+      session.pushAudio(new Uint8Array([1, 0]));
+      if (reason === 'predicate') current = false;
+      else
+        responseDone(
+          socket,
+          'question-response',
+          reason === 'failed-response' ? 'failed' : 'cancelled',
+        );
+      acknowledge(socket);
+      ready(socket);
+      expect(await delivery).toBe(false);
+      expect(sentTypes(socket).slice(-2)).toEqual([
+        'session.update',
+        'input_audio_buffer.append',
+      ]);
+      session.close({ discardPendingInput: true });
+    },
+  );
+
+  it.each([
+    'speech',
+    'transcript',
+    'asr-failed',
+    'missing-transcript',
+    'ambiguous-commit',
+    'overflow',
+  ] as const)(
+    'fails explicitly on %s during media delivery',
+    async (reason) => {
+      const { socket, callbacks, session } = await rig();
+      const delivery = session.submitToolImage(ref, image);
+      acknowledge(socket);
+      if (reason === 'speech')
+        socket.message({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'new-speech',
+        });
+      if (reason === 'transcript')
+        socket.message({
+          type: 'conversation.item.input_audio_transcription.delta',
+          item_id: 'image-input',
+          delta: 'Actual user speech',
+        });
+      if (reason === 'asr-failed')
+        socket.message({
+          type: 'conversation.item.input_audio_transcription.failed',
+          item_id: 'image-input',
+        });
+      if (reason === 'missing-transcript')
+        socket.message({
+          type: 'conversation.item.input_audio_transcription.completed',
+          item_id: 'image-input',
+        });
+      if (reason === 'ambiguous-commit')
+        socket.message({
+          type: 'input_audio_buffer.committed',
+          item_id: 'unexpected-input',
+        });
+      if (reason === 'overflow') {
+        const frame = new Uint8Array(
+          QWEN_REALTIME_LIMITS.maxInputAudioFrameBytes,
+        );
+        for (
+          let bytes = 0;
+          bytes <= QWEN_REALTIME_LIMITS.maxBufferedSocketBytes;
+          bytes += frame.length
+        )
+          session.pushAudio(frame);
+      }
+      expect(await delivery).toBe(false);
+      expect(callbacks.onError).toHaveBeenCalled();
+      expect(socket.readyState).toBe(3);
+      expect(callbacks.onInputCommitted).toHaveBeenCalledTimes(1);
+      expect(callbacks.onInputTranscriptDelta).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['timeout', 'close', 'remote-close', 'send-failed'] as const)(
+    'settles pending image delivery on %s',
+    async (reason) => {
+      vi.useFakeTimers();
+      try {
+        const { socket, callbacks, session } = await rig();
+        if (reason === 'send-failed')
+          vi.spyOn(socket, 'send').mockImplementation(() => {
+            throw new Error('socket failed');
+          });
+        const delivery = session.submitToolImage(ref, image);
+        if (reason === 'timeout') await vi.advanceTimersByTimeAsync(10000);
+        if (reason === 'close') session.close({ discardPendingInput: true });
+        if (reason === 'remote-close') socket.emit('close', 1006);
+        expect(await delivery).toBe(false);
+        if (reason !== 'close') expect(callbacks.onError).toHaveBeenCalled();
+        expect(await session.closed).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
 describe('Realtime asynchronous search result responses', () => {
   const evidence = (answer = 'Useful facts from the search.') =>
     JSON.stringify({
@@ -1479,10 +1786,11 @@ describe('realtime-session', () => {
     expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
   });
 
-  it('rejects an idless response.done when no response has completed', async () => {
+  it('rejects an idless response.done while a request awaits its first acknowledgement', async () => {
     const socket = new FakeSocket();
     const callbacks = { onError: vi.fn() } satisfies QwenRealtimeCallbacks;
     const session = await connect(socket, callbacks);
+    session.speakToUser('A requested announcement.');
 
     socket.message({
       type: 'response.done',
@@ -1639,38 +1947,42 @@ describe('realtime-session', () => {
     );
   });
 
-  it('rejects ordinary tools from Proactive and backend speech responses', async () => {
-    for (const authority of ['proactive', 'backend_speech'] as const) {
-      const socket = new FakeSocket();
-      const callbacks = { onFunctionCall: vi.fn() };
-      const session = await connect(socket, callbacks);
-      const accepted =
-        authority === 'proactive'
-          ? session.respondToProactiveEvent('A monitored event.')
-          : session.speakToUser('A backend update.');
-      expect(accepted).toBe(true);
+  it.each([false, true])(
+    'rejects ordinary tools from Proactive and backend speech responses (split: %s)',
+    async (split) => {
+      for (const authority of ['proactive', 'backend_speech'] as const) {
+        const socket = new FakeSocket();
+        const callbacks = { onFunctionCall: vi.fn() };
+        const session = await connect(socket, callbacks);
+        const accepted =
+          authority === 'proactive'
+            ? session.respondToProactiveEvent('A monitored event.')
+            : session.speakToUser('A backend update.');
+        expect(accepted).toBe(true);
 
-      const responseId = `response-${authority}-ordinary-tool`;
-      const callId = `call-${authority}-session-list`;
-      responseCreated(socket, responseId);
-      functionCall(socket, responseId, callId, 'session_list', '{}');
-      responseDone(socket, responseId);
-      await Promise.resolve();
+        const responseId = `response-${authority}-ordinary-tool`;
+        const callId = `call-${authority}-session-list`;
+        if (split) responseCreated(socket, `${responseId}-first`);
+        responseCreated(socket, responseId);
+        functionCall(socket, responseId, callId, 'session_list', '{}');
+        responseDone(socket, responseId);
+        await Promise.resolve();
 
-      expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
-      const rejection = socket.sent
-        .map(sentJsonEntry)
-        .map((entry) => entry['item'] as Record<string, unknown> | undefined)
-        .find((item) => item?.['call_id'] === callId);
-      expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
-        status: 'error',
-      });
-      expect(
-        sentTypes(socket).filter((type) => type === 'response.create'),
-      ).toHaveLength(1);
-      session.close({ discardPendingInput: true });
-    }
-  });
+        expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
+        const rejection = socket.sent
+          .map(sentJsonEntry)
+          .map((entry) => entry['item'] as Record<string, unknown> | undefined)
+          .find((item) => item?.['call_id'] === callId);
+        expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
+          status: 'error',
+        });
+        expect(
+          sentTypes(socket).filter((type) => type === 'response.create'),
+        ).toHaveLength(1);
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
 
   it('rejects ordinary tools from an unsolicited response without microphone input', async () => {
     const socket = new FakeSocket();
@@ -2713,6 +3025,129 @@ describe('realtime-session', () => {
     ).toHaveLength(2);
   });
 
+  it.each(['session_create', 'appshot'])(
+    'retains handoff authority after repeated provider splits of a %s continuation',
+    async (toolName) => {
+      const socket = new FakeSocket();
+      const callbacks = { onFunctionCall: vi.fn(), onError: vi.fn() };
+      const session = await connect(socket, callbacks, {}, LIVE_SESSION_TOOLS);
+
+      commitFinalInput(socket, 'input-task', '检查这张照片');
+      responseCreated(socket, 'response-tool');
+      functionCall(socket, 'response-tool', 'call-tool', toolName, '{}');
+      expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
+      expect(
+        session.submitFunctionOutput(
+          { callEpoch: 7, callId: 'call-tool' },
+          JSON.stringify({
+            status: 'ok',
+            ...(toolName === 'appshot'
+              ? { source: 'camera', asset: 'asset_1' }
+              : { session: 'session_1' }),
+          }),
+        ),
+      ).toBe(true);
+      responseDone(socket, 'response-tool');
+      await Promise.resolve();
+      callbacks.onFunctionCall.mockClear();
+
+      responseCreated(socket, 'response-continuation');
+      responseCreated(socket, 'response-split-first');
+      responseCreated(socket, 'response-split-second');
+      const args = JSON.stringify({
+        task: '检查这张照片',
+        session: 'session_1',
+        input_refs: ['asset_1'],
+      });
+      functionCall(
+        socket,
+        'response-split-second',
+        'call-task',
+        'handoff',
+        args,
+      );
+      responseDone(socket, 'response-split-second');
+
+      expect(callbacks.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          responseId: 'response-split-second',
+          inputItemId: 'input-task',
+          name: 'handoff',
+          arguments: args,
+        }),
+      );
+
+      responseCreated(socket, 'response-unrelated');
+      functionCall(
+        socket,
+        'response-unrelated',
+        'call-unrelated',
+        'handoff',
+        args,
+      );
+      responseDone(socket, 'response-unrelated');
+      expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
+      const rejection = socket.sent
+        .map(sentJsonEntry)
+        .map((event) => event['item'] as Record<string, unknown> | undefined)
+        .find((item) => item?.['call_id'] === 'call-unrelated');
+      expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
+        status: 'error',
+      });
+      expect(callbacks.onError).not.toHaveBeenCalled();
+      session.close({ discardPendingInput: true });
+    },
+  );
+
+  it.each([false, true])(
+    'binds replacement to newer user input after a tool continuation (speech started: %s)',
+    async (speechStarted) => {
+      const socket = new FakeSocket();
+      const callbacks = { onFunctionCall: vi.fn(), onError: vi.fn() };
+      const session = await connect(socket, callbacks);
+      commitFinalInput(socket, 'input-first', '检查照片');
+      responseCreated(socket, 'response-first');
+      functionCall(socket, 'response-first', 'call-list', 'session_list', '{}');
+      expect(
+        session.submitFunctionOutput(
+          { callEpoch: 7, callId: 'call-list' },
+          '{"sessions":[]}',
+        ),
+      ).toBe(true);
+      responseDone(socket, 'response-first');
+      await Promise.resolve();
+      responseCreated(socket, 'response-continuation');
+      callbacks.onFunctionCall.mockClear();
+
+      if (speechStarted) {
+        socket.message({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'input-new',
+        });
+      }
+      commitFinalInput(socket, 'input-new', '改为检查文件');
+      responseCreated(socket, 'response-new');
+      functionCall(
+        socket,
+        'response-new',
+        'call-new',
+        'handoff',
+        '{"task":"检查文件"}',
+      );
+      responseDone(socket, 'response-new');
+
+      expect(callbacks.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          responseId: 'response-new',
+          inputItemId: 'input-new',
+          callId: 'call-new',
+        }),
+      );
+      expect(callbacks.onError).not.toHaveBeenCalled();
+      session.close({ discardPendingInput: true });
+    },
+  );
+
   it('blocks independent speech admission while a split response is replacing the active response', async () => {
     const socket = new FakeSocket();
     const admissions: boolean[] = [];
@@ -3072,57 +3507,61 @@ describe('realtime-session', () => {
     );
   });
 
-  it('does not grant tool authority to a Proactive repair receipt continuation', async () => {
-    const socket = new FakeSocket();
-    const callbacks = { onFunctionCall: vi.fn() };
-    const session = await connect(socket, callbacks);
+  it.each([false, true])(
+    'does not grant tool authority to a Proactive repair receipt continuation (split: %s)',
+    async (split) => {
+      const socket = new FakeSocket();
+      const callbacks = { onFunctionCall: vi.fn() };
+      const session = await connect(socket, callbacks);
 
-    expect(
-      session.requestProactiveRepair('Call one allowed tool only.', [
+      expect(
+        session.requestProactiveRepair('Call one allowed tool only.', [
+          'create_proactive_monitor',
+        ]),
+      ).toBe(true);
+      responseCreated(socket, 'response-repair-capability');
+      functionCall(
+        socket,
+        'response-repair-capability',
+        'call-repair-capability',
         'create_proactive_monitor',
-      ]),
-    ).toBe(true);
-    responseCreated(socket, 'response-repair-capability');
-    functionCall(
-      socket,
-      'response-repair-capability',
-      'call-repair-capability',
-      'create_proactive_monitor',
-      JSON.stringify({ title: 'Watch the build' }),
-    );
-    responseDone(socket, 'response-repair-capability');
-    expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
-    expect(
-      session.submitFunctionOutput(
-        { callEpoch: 7, callId: 'call-repair-capability' },
-        JSON.stringify({ status: 'ok' }),
-      ),
-    ).toBe(true);
+        JSON.stringify({ title: 'Watch the build' }),
+      );
+      responseDone(socket, 'response-repair-capability');
+      expect(callbacks.onFunctionCall).toHaveBeenCalledOnce();
+      expect(
+        session.submitFunctionOutput(
+          { callEpoch: 7, callId: 'call-repair-capability' },
+          JSON.stringify({ status: 'ok' }),
+        ),
+      ).toBe(true);
 
-    responseCreated(socket, 'response-repair-capability-receipt');
-    callbacks.onFunctionCall.mockClear();
-    functionCall(
-      socket,
-      'response-repair-capability-receipt',
-      'call-repair-receipt-handoff',
-      'handoff',
-      JSON.stringify({ task: 'must not run' }),
-    );
-    responseDone(socket, 'response-repair-capability-receipt');
-    await Promise.resolve();
+      if (split) responseCreated(socket, 'response-repair-capability-first');
+      responseCreated(socket, 'response-repair-capability-receipt');
+      callbacks.onFunctionCall.mockClear();
+      functionCall(
+        socket,
+        'response-repair-capability-receipt',
+        'call-repair-receipt-handoff',
+        'handoff',
+        JSON.stringify({ task: 'must not run' }),
+      );
+      responseDone(socket, 'response-repair-capability-receipt');
+      await Promise.resolve();
 
-    expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
-    const rejection = socket.sent
-      .map(sentJsonEntry)
-      .map((entry) => entry['item'] as Record<string, unknown> | undefined)
-      .find((item) => item?.['call_id'] === 'call-repair-receipt-handoff');
-    expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
-      status: 'error',
-    });
-    expect(
-      sentTypes(socket).filter((type) => type === 'response.create'),
-    ).toHaveLength(2);
-  });
+      expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
+      const rejection = socket.sent
+        .map(sentJsonEntry)
+        .map((entry) => entry['item'] as Record<string, unknown> | undefined)
+        .find((item) => item?.['call_id'] === 'call-repair-receipt-handoff');
+      expect(JSON.parse(String(rejection?.['output']))).toMatchObject({
+        status: 'error',
+      });
+      expect(
+        sentTypes(socket).filter((type) => type === 'response.create'),
+      ).toHaveLength(2);
+    },
+  );
 
   it('rejects unauthorized and additional Proactive repair calls without dispatching them', async () => {
     const socket = new FakeSocket();
@@ -3326,6 +3765,101 @@ describe('realtime-session', () => {
     ).toThrow(RangeError);
     expect(sentTypes(socket)).toEqual(['session.update']);
   });
+
+  it('ignores an unowned completion on a fresh connection and still handles the next user turn', async () => {
+    const socket = new FakeSocket();
+    const callbacks = {
+      onError: vi.fn(),
+      onFunctionCall: vi.fn(),
+      onIgnoredEvent: vi.fn(),
+    };
+    const session = await connect(socket, callbacks, {}, LIVE_SESSION_TOOLS);
+    session.sendBackendContext('A prior task stopped.');
+    session.sendBackendContext('A prior approval expired.');
+    socket.message({
+      type: 'response.done',
+      response: { status: 'cancelled' },
+    });
+
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    expect(callbacks.onIgnoredEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'stale_response' }),
+    );
+    commitFinalInput(socket, 'input-after-resume', '继续当前任务');
+    responseCreated(socket, 'response-after-resume');
+    functionCall(
+      socket,
+      'response-after-resume',
+      'call-list',
+      'session_list',
+      '{}',
+    );
+    expect(callbacks.onFunctionCall).toHaveBeenCalledWith(
+      expect.objectContaining({ inputItemId: 'input-after-resume' }),
+    );
+    responseDone(socket, 'response-after-resume');
+    session.close({ discardPendingInput: true });
+  });
+
+  it.each(['created', 'done'] as const)(
+    'retires an interrupted notification socket on the %s watchdog before admitting queued user input',
+    async (phase) => {
+      vi.useFakeTimers();
+      try {
+        const socket = new FakeSocket();
+        const callbacks = {
+          onError: vi.fn(),
+          onFunctionCall: vi.fn(),
+          onOutputAudioDelta: vi.fn(),
+        };
+        const session = await connect(
+          socket,
+          callbacks,
+          {
+            responseCreatedTimeoutMs: 25,
+            responseDoneTimeoutMs: 25,
+          },
+          LIVE_SESSION_TOOLS,
+        );
+        session.speakToUser('A pending approval.');
+        socket.message({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'new-input',
+        });
+        commitFinalInput(socket, 'new-input', '继续任务');
+        if (phase === 'done') responseCreated(socket, 'late-announcement');
+        await vi.advanceTimersByTimeAsync(25);
+        expect(callbacks.onError).toHaveBeenCalledWith(
+          expect.objectContaining({
+            code: 'response_cancelled_timeout',
+            fatal: true,
+          }),
+        );
+        expect(socket.readyState).toBe(3);
+        expect(
+          sentTypes(socket).filter((type) => type === 'response.create'),
+        ).toHaveLength(1);
+        responseCreated(socket, 'late-announcement');
+        functionCall(
+          socket,
+          'late-announcement',
+          'late-tool',
+          'handoff',
+          '{"task":"must not run"}',
+        );
+        socket.message({
+          type: 'response.audio.delta',
+          response_id: 'late-announcement',
+          delta: 'AAA=',
+        });
+        responseDone(socket, 'late-announcement');
+        expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
+        expect(callbacks.onOutputAudioDelta).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('fails an unacknowledged non-direct response.create through a bounded terminal callback', async () => {
     vi.useFakeTimers();

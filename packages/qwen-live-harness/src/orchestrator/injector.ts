@@ -146,6 +146,18 @@ export class Injector {
 
   // -- window state signals (fed by the orchestrator) ----------------------
 
+  resetConnection(): void {
+    this.speechInProgress = false;
+    this.responseInFlight = false;
+    this.directResponsePending = false;
+    this.responseRequestPending = false;
+    this.playbackInProgress = false;
+    this.playbackCompletedAt = 0;
+    this.proactiveCycle = undefined;
+    this.peerReportCycle = undefined;
+    this.searchResultCycle = undefined;
+  }
+
   noteSpeechStarted(): boolean {
     const outputWasPlaying = this.playbackInProgress;
     this.playbackInProgress = false;

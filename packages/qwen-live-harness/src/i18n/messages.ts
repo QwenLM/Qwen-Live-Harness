@@ -1143,6 +1143,14 @@ export const LIVE_MESSAGES = {
     en: 'Qwen Live Harness voice failed.{detail}',
     'zh-CN': 'Qwen Live Harness 语音运行失败。{detail}',
   },
+  'runtime.realtimeRecovering': {
+    en: 'Restoring the voice connection…',
+    'zh-CN': '正在恢复语音连接…',
+  },
+  'runtime.realtimeRecovered': {
+    en: 'The voice connection is restored. Please repeat your last request; I have not repeated any earlier actions.',
+    'zh-CN': '语音连接已恢复，请再说一遍刚才的请求；之前的操作没有重复执行。',
+  },
   'runtime.realtimeDisconnected': {
     en: 'Qwen Live Harness voice disconnected.{detail}',
     'zh-CN': 'Qwen Live Harness 语音已断开。{detail}',
@@ -1168,6 +1176,10 @@ export const LIVE_MESSAGES = {
   },
   'runtime.invalidKey': { en: 'invalid API key.', 'zh-CN': 'API key 无效。' },
   'runtime.invalidSettings': { en: 'invalid settings.', 'zh-CN': '设置无效。' },
+  'runtime.imageUnavailable': {
+    en: 'The image is no longer available. The task was not sent; capture a new image and try again.',
+    'zh-CN': '图片已不可用，任务尚未发送，请重新截图后再试。',
+  },
   'runtime.toolResultFailed': {
     en: 'Qwen Live Harness voice could not return a tool result.',
     'zh-CN': 'Qwen Live Harness 语音无法返回工具结果。',

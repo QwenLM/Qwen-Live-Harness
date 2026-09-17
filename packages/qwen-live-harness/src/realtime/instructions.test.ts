@@ -210,9 +210,11 @@ describe('live instructions visual routing', () => {
           `[VISUAL_INPUT] source=${source} mode=${mode}.`,
         );
         expect(instructions).toContain(
-          'it does not inject pixels into your Realtime context',
+          'places that image in your Realtime context before returning success',
         );
-        expect(instructions).toContain('Settings → Capture Mode to Live Feed');
+        expect(instructions).toContain(
+          'Answer directly from that newest image without a background Harness',
+        );
         expect(instructions).toContain(
           'Never claim to see the unselected source',
         );
@@ -249,12 +251,12 @@ describe('live instructions visual routing', () => {
     expect(instructions).toContain(
       'Mode `on-demand` supplies no continuous frames',
     );
-    expect(instructions).toContain('call `appshot` first');
+    expect(instructions).toContain('call `appshot` once');
     expect(instructions).toContain(
-      'it does not inject pixels into your Realtime context',
+      'places that image in your Realtime context before returning success',
     );
     expect(instructions).toContain(
-      "call `handoff` with the user's request and the returned asset",
+      'Do not delegate ordinary visual questions to a backend',
     );
     expect(instructions).toContain(
       '[VISUAL_INPUT] source=camera mode=live-feed.',
@@ -322,9 +324,11 @@ describe('live instructions visual routing', () => {
     );
     expect(instructions).not.toContain('NEVER refuse a request yourself');
     expect(instructions).toContain(
-      'it does not inject pixels into your Realtime context',
+      'places that image in your Realtime context before returning success',
     );
-    expect(instructions).toContain('Settings → Capture Mode to Live Feed');
+    expect(instructions).toContain(
+      'Answer directly from that newest image without a background Harness',
+    );
     expect(instructions).not.toContain(
       "call `handoff` with the user's request and the returned asset",
     );

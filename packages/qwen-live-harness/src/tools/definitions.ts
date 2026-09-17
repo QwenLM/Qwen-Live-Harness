@@ -58,9 +58,13 @@ const APPSHOT_TOOL: RealtimeToolDefinition = {
     name: APPSHOT_TOOL_NAME,
     description:
       'Capture one current frame from the visual source selected in the ' +
-      'Qwen Live Harness orb. Returns source metadata and an asset reference that can ' +
-      'be attached to a handoff via input_refs; Screen may also return window ' +
-      'and accessibility text. Use this only in On Demand mode when the answer ' +
+      'Qwen Live Harness orb and deliver the image directly to your Realtime context. ' +
+      'After success, answer directly from the newest image without a backend, ' +
+      'for both Screen and Camera. Returns source metadata and an optional asset ' +
+      'for work the user explicitly delegates via handoff input_refs; Screen may ' +
+      'also return window and accessibility text. On failure or an unreadable image, ' +
+      'say you cannot read it; do not guess, retry automatically, or delegate. ' +
+      'Use this once per visual question, only in On Demand mode when the answer ' +
       'requires current visual information. Never substitute the unselected ' +
       'Screen or Camera source.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -77,7 +81,7 @@ const WEB_SEARCH_TOOL: RealtimeToolDefinition = {
       'Start an asynchronous, read-only search task for a simple current public-information query. ' +
       'Prefer this for simple lookups even when a background Harness is configured; ' +
       'use Harness for file/command work, webpage interaction, artifacts, long or complex work, ' +
-      'or a user explicitly requesting a particular coding agent. ' +
+      'or a user explicitly requesting a new task or a particular coding agent. ' +
       'Before the first tool call in the user turn, say one brief natural preamble without promising a result. ' +
       'Returns an accepted task receipt immediately, not an answer or proof of search. ' +
       'Do not read the receipt aloud or repeat the preamble; results arrive later as [SEARCH_RESULT]. ' +
@@ -132,10 +136,10 @@ const SESSION_CREATE_TOOL: RealtimeToolDefinition = {
   function: {
     name: SESSION_CREATE_TOOL_NAME,
     description:
-      'Create a new coding session. Only needed when the user explicitly ' +
-      'wants separate parallel workstreams; handoff without a session picks ' +
+      'Create a new coding session; this does not submit or start a task. Only needed when the user explicitly ' +
+      'asks for a new task or separate parallel workstreams; handoff without a session picks ' +
       'or creates a sensible default on its own. For independent concurrent ' +
-      'tasks, create one session per task and hand off to each returned handle.',
+      'tasks, create one session per task and hand off to each returned handle in the same turn; never stop at a promise.',
     parameters: {
       type: 'object',
       properties: {
@@ -166,8 +170,8 @@ const HANDOFF_TOOL: RealtimeToolDefinition = {
     description:
       "Send the user's request to a coding session for execution. This is " +
       'the route for files, commands, webpage interaction, artifacts, long or complex work, ' +
-      'deep screen inspection, or a user explicitly requesting a coding agent. ' +
-      'For simple current public-information queries, use web_search first when it is available; ' +
+      'or a user explicitly requesting delegated visual work, a new task, or a coding agent. ' +
+      'For simple lookups without an explicit request to create a task, use web_search first when available; ' +
       'otherwise this route can perform the lookup. Do not duplicate a web_search fallback already managed by the runtime. ' +
       "Pass the user's own words in `task`; do not rewrite " +
       'them. An instruction_only terminal receives text only and returns a delivery handle, ' +
