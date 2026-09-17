@@ -180,16 +180,61 @@ describe('standalone Omni without any coding backend', () => {
     },
   );
 
-  it('retains On Demand screen metadata without sending it to a missing backend', async () => {
-    const receipt = JSON.parse(
-      await tool('appshot', {}, 'no-backend-appshot'),
-    ) as Json;
+  it('delivers On Demand screen pixels directly without a backend', async () => {
+    const fromIndex = fakeDash.inbox.length;
+    const pending = tool('appshot', {}, 'no-backend-appshot');
+    await fakeDash.waitForMessage(
+      (value) => value['type'] === 'input_audio_buffer.commit',
+      { fromIndex },
+    );
+    const messages = fakeDash.inbox.slice(fromIndex);
+    expect(messages.slice(-4)).toEqual([
+      expect.objectContaining({
+        type: 'session.update',
+        session: { turn_detection: null },
+      }),
+      expect.objectContaining({
+        type: 'input_audio_buffer.append',
+        audio: Buffer.alloc(32000).toString('base64'),
+      }),
+      expect.objectContaining({
+        type: 'input_image_buffer.append',
+        image: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      }),
+      expect.objectContaining({ type: 'input_audio_buffer.commit' }),
+    ]);
+    expect(messages.some((value) => functionCallOutputOf(value))).toBe(false);
+
+    const itemId = 'no-backend-appshot-media';
+    conn.send({ type: 'input_audio_buffer.committed', item_id: itemId });
+    conn.send({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: itemId,
+      transcript: '',
+    });
+
+    const receipt = JSON.parse(await pending) as Json;
     expect(receipt).toMatchObject({
       status: 'ok',
       source: 'screen',
+      image_delivery: 'realtime',
       accessibility_text: 'fake accessibility text',
     });
     expect(receipt['asset']).toMatch(/^asset_/);
+    const completed = fakeDash.inbox.slice(fromIndex);
+    const resultIndex = completed.findIndex(
+      (value) => functionCallOutputOf(value)?.callId === 'no-backend-appshot',
+    );
+    expect(completed[resultIndex - 1]).toMatchObject({
+      type: 'session.update',
+      session: {
+        turn_detection: {
+          type: 'semantic_vad',
+          create_response: false,
+          interrupt_response: true,
+        },
+      },
+    });
   });
 
   it('keeps Memory writes and refreshed context available', async () => {
@@ -247,6 +292,11 @@ describe('standalone Omni without any coding backend', () => {
     await fakeDash.waitForMessage(
       (value) =>
         contextTextOf(value)?.includes('source=camera mode=live-feed') ?? false,
+      { fromIndex },
+    );
+    host.sendAudio(epoch, Buffer.alloc(3200, 1));
+    await fakeDash.waitForMessage(
+      (value) => value['type'] === 'input_audio_buffer.append',
       { fromIndex },
     );
     const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
