@@ -13,6 +13,8 @@ const QUIET_GAP_MS = 800;
 class FakeSink implements InjectorSink {
   contextCalls: string[] = [];
   speechCalls: string[] = [];
+  permissionCalls: string[] = [];
+  taskResultCalls: string[] = [];
   peerReportCalls: string[] = [];
   searchResultCalls: Array<{ text: string; searchId?: string }> = [];
   injected: Array<{ item: InjectorItem; spoken: boolean }> = [];
@@ -29,6 +31,16 @@ class FakeSink implements InjectorSink {
   injectSpeech(text: string): boolean {
     this.speechCalls.push(text);
     return this.speechResult;
+  }
+
+  injectPermission(text: string): boolean {
+    this.permissionCalls.push(text);
+    return true;
+  }
+
+  injectTaskResult(text: string): boolean {
+    this.taskResultCalls.push(text);
+    return true;
   }
 
   injectPeerReport(text: string): boolean {
@@ -151,9 +163,192 @@ describe('Injector context budget', () => {
     injector.enqueue(permission);
     injector.noteInputCommitted();
 
-    // Permissions sort first, so the handle the model needs is never the
-    // part that gets deferred.
-    expect(sink.contextCalls[0]).toBe(permission.context);
+    // Permissions have an independent lane, never a size-capped batch.
+    expect(sink.permissionCalls).toEqual([permission.context]);
+  });
+});
+
+describe('Injector permission questions', () => {
+  const permission: InjectorItem = {
+    kind: 'permission',
+    requestId: 'acp:perm-1',
+    context: '[PERMISSION] {"request_id":"req_1","action":"Run command"}',
+    spoken: 'Legacy English must never be read.',
+  };
+
+  it('reserves a distinct response so progress cannot replace the question', () => {
+    injector.enqueue(permission);
+    injector.enqueue(complete('result evidence', 'Task finished.'));
+    expect(sink.permissionCalls).toEqual([permission.context]);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+    injector.noteResponseCreated('permission');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('permission');
+    expect(sink.speechCalls).toEqual([]);
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.speechCalls).toEqual(['Task finished.']);
+  });
+
+  it('retries refusal without falling back to verbatim speech or losing the request', () => {
+    const inject = vi
+      .spyOn(sink, 'injectPermission')
+      .mockReturnValueOnce(false);
+    injector.enqueue(permission);
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.speechCalls).toEqual([]);
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(inject).toHaveBeenCalledTimes(2);
+    expect(injector.pendingCount).toBe(0);
+    expect(sink.permissionCalls).toEqual([permission.context]);
+  });
+
+  it('merges a held question on input commit and reopens after a failed request', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(permission);
+    injector.noteInputCommitted(true);
+    expect(sink.permissionCalls).toEqual([permission.context]);
+    expect(sink.injected).toEqual([{ item: permission, spoken: false }]);
+    injector.noteResponseCreated('direct');
+    injector.noteResponseDone('direct');
+    injector.enqueue(permission);
+    injector.enqueue(complete('later context'));
+    expect(injector.pendingCount).toBe(1);
+    injector.noteResponseDone('permission');
+    expect(sink.contextCalls).toEqual(['later context']);
+  });
+});
+
+describe('Injector structured task outcomes', () => {
+  const outcome: InjectorItem = {
+    kind: 'task_result',
+    context: '[COMPLETE job_1] {"status":"completed"}',
+    spoken: 'The task to old code finished.',
+  };
+  it('reserves a model response and playback slot for each outcome without generic speech', () => {
+    injector.enqueue(outcome);
+    injector.enqueue({
+      ...outcome,
+      context: '[ERROR job_2] {"status":"failed"}',
+    });
+    expect(sink.taskResultCalls).toEqual([outcome.context]);
+    expect(sink.speechCalls).toEqual([]);
+    expect(sink.contextCalls).toEqual([]);
+    injector.noteResponseCreated('task_result');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('task_result');
+    expect(sink.taskResultCalls).toHaveLength(1);
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.taskResultCalls).toHaveLength(2);
+  });
+  it('keeps the full result queued on refusal, and merges it with a pending real user reply', () => {
+    const inject = vi
+      .spyOn(sink, 'injectTaskResult')
+      .mockReturnValueOnce(false);
+    injector.enqueue(outcome);
+    expect(injector.pendingCount).toBe(1);
+    injector.noteSpeechStarted();
+    injector.noteInputCommitted(true);
+    expect(inject).toHaveBeenCalledTimes(2);
+    expect(sink.injected).toEqual([{ item: outcome, spoken: false }]);
+    expect(sink.speechCalls).toEqual([]);
+  });
+});
+
+describe('Injector transport recovery barrier', () => {
+  const question: InjectorItem = {
+    kind: 'permission',
+    requestId: 'p1',
+    context: 'pending permission',
+  };
+  it('freezes every notification and clears stale speech/response state before a no-input recovery', () => {
+    injector.noteSpeechStarted();
+    injector.noteResponseCreated('direct');
+    injector.enqueue(question);
+    injector.beginTransportRecovery();
+    injector.enqueue(complete('result', 'result'));
+    injector.noteResponseDone('direct');
+    injector.noteOutputCleared();
+    expect(sink.permissionCalls).toEqual([]);
+    injector.completeTransportRecovery('none');
+    expect(sink.permissionCalls).toEqual(['pending permission']);
+    injector.noteResponseCreated('permission');
+    injector.noteResponseDone('permission');
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.speechCalls).toEqual(['result']);
+  });
+  it('keeps resumed user text ahead of queued permissions until its real response finishes', () => {
+    injector.beginTransportRecovery();
+    injector.enqueue(question);
+    injector.completeTransportRecovery('text');
+    injector.noteInputCommitted(true);
+    expect(sink.permissionCalls).toEqual([]);
+    injector.noteResponseCreated('direct');
+    expect(sink.permissionCalls).toEqual([]);
+    injector.noteResponseDone('direct');
+    expect(sink.permissionCalls).toEqual(['pending permission']);
+  });
+  it('does not block forever when restored audio produces no VAD, but honors an actual long utterance', () => {
+    injector.beginTransportRecovery();
+    injector.enqueue(question);
+    injector.completeTransportRecovery('audio');
+    vi.advanceTimersByTime(7_999);
+    expect(sink.permissionCalls).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(sink.permissionCalls).toEqual(['pending permission']);
+    injector.beginTransportRecovery();
+    injector.enqueue({ ...question, requestId: 'p2', context: 'second' });
+    injector.completeTransportRecovery('audio');
+    injector.noteSpeechStarted();
+    vi.advanceTimersByTime(30_000);
+    expect(sink.permissionCalls).toHaveLength(1);
+    injector.noteInputCommitted(true);
+    injector.noteResponseCreated('direct');
+    injector.noteResponseDone('direct');
+    expect(sink.permissionCalls).toEqual(['pending permission', 'second']);
+  });
+  it('restores only unfinished proactive deliveries ahead of newer queued events', () => {
+    const first: InjectorItem = {
+      kind: 'proactive',
+      context: 'first',
+      deliveryId: 'd1',
+    };
+    const second: InjectorItem = {
+      kind: 'proactive',
+      context: 'second',
+      deliveryId: 'd2',
+    };
+    const proactive = vi.fn((_text: string) => true);
+    injector.dispose();
+    injector = new Injector({
+      sink: {
+        ...sink,
+        injectContext: () => true,
+        injectSpeech: () => true,
+        injectProactive: proactive,
+      },
+    });
+    injector.enqueue(first);
+    injector.enqueue(second);
+    injector.beginTransportRecovery();
+    injector.restoreProactiveAfterRecovery([first]);
+    injector.completeTransportRecovery('none');
+    expect(proactive.mock.calls.map(([text]) => text)).toEqual([
+      'first',
+      'first',
+    ]);
+    injector.noteResponseCreated('proactive');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('proactive');
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(proactive.mock.calls.map(([text]) => text)).toEqual([
+      'first',
+      'first',
+      'second',
+    ]);
   });
 });
 
@@ -699,8 +894,8 @@ describe('Injector window conditions', () => {
     expect(injector.pendingCount).toBe(1);
 
     injector.noteInputCommitted();
-    expect(sink.contextCalls).toEqual(['[PERMISSION req_1] allow?']);
-    expect(sink.speechCalls).toEqual(['Should I allow it?']);
+    expect(sink.permissionCalls).toEqual(['[PERMISSION req_1] allow?']);
+    expect(sink.speechCalls).toEqual([]);
   });
 
   it('holds items through speech stop and delivers on input commit', () => {
@@ -821,14 +1016,9 @@ describe('Injector batching', () => {
 
     injector.noteResponseDone();
 
-    expect(sink.contextCalls).toEqual([
-      // Permission asks are moved to the front of the batch so the
-      // size-capped context join can never truncate their handles.
-      'job_3 wants to edit a file\njob_1 finished\njob_2 is halfway',
-    ]);
-    expect(sink.speechCalls).toEqual([
-      'Job three needs permission. Job one finished. Job two is halfway.',
-    ]);
+    expect(sink.contextCalls).toEqual(['job_1 finished\njob_2 is halfway']);
+    expect(sink.speechCalls).toEqual(['Job one finished. Job two is halfway.']);
+    expect(sink.permissionCalls).toEqual(['job_3 wants to edit a file']);
     expect(sink.injected).toHaveLength(3);
     expect(injector.pendingCount).toBe(0);
   });
@@ -962,7 +1152,8 @@ describe('Injector queue maintenance', () => {
 
     injector.noteResponseDone();
     injector.noteInputCommitted();
-    expect(sink.contextCalls).toEqual(['needs approval\nfinished']);
+    expect(sink.contextCalls).toEqual(['finished']);
+    expect(sink.permissionCalls).toEqual(['needs approval']);
   });
 
   it('retracts a queued permission ask by request id', () => {
@@ -983,7 +1174,7 @@ describe('Injector queue maintenance', () => {
     expect(injector.retractPermission('req_unknown')).toBe(false);
 
     injector.noteResponseDone();
-    expect(sink.contextCalls).toEqual(['ask two']);
+    expect(sink.permissionCalls).toEqual(['ask two']);
   });
 
   it('dispose clears the queue and nothing is delivered afterwards', () => {

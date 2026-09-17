@@ -25,12 +25,19 @@ export const MONITOR_DEBUG_ROOT = join(
 const FORMAT = 'qwen-live-harness-monitor-debug-v1';
 const DIRECTORY = /^monitor-\d+-[a-f0-9-]{36}$/u;
 const MAX_PENDING_BYTES = 32 * 1024 * 1024;
+const MAX_PROVIDER_SESSION_ID_CHARS = 256;
 type Log = (event: string, details: Record<string, unknown>) => void;
+export type MonitorAudioOrigin = 'microphone' | 'protocol_silence';
+export interface MonitorDebugSendMetadata {
+  /** Diagnostic annotation only; never part of the provider request. */
+  origin?: MonitorAudioOrigin;
+}
 type Media = {
   type: 'input_image_buffer.append' | 'input_audio_buffer.append';
   bytes: Buffer;
   eventId?: string;
   sentAt: number;
+  origin?: MonitorAudioOrigin;
 };
 
 export interface MonitorDebugInfo {
@@ -125,7 +132,13 @@ export class MonitorDebugStore {
     info: MonitorDebugInfo,
     apiKey?: string,
   ): MonitorDebugRecorder | undefined {
-    if (!this.ready || !info.modalities.includes('vision')) return undefined;
+    if (
+      !this.ready ||
+      !info.modalities.some(
+        (modality) => modality === 'vision' || modality === 'audio',
+      )
+    )
+      return undefined;
     const createdAt = Math.max(Date.now(), this.lastCreatedAt + 1);
     this.lastCreatedAt = createdAt;
     const directory = join(this.root, `monitor-${createdAt}-${randomUUID()}`);
@@ -222,6 +235,7 @@ export class MonitorDebugRecorder {
   private queuedBytes = 0;
   private sequence = 0;
   private transport = 0;
+  private providerSessionId?: string;
   private session: Array<Record<string, unknown>> = [];
   private previousRequest?: string;
   private activeRequest?: {
@@ -270,10 +284,38 @@ export class MonitorDebugRecorder {
     this.session = [];
     this.previousRequest = undefined;
     this.activeRequest = undefined;
+    this.providerSessionId = undefined;
     this.transport = transport;
   }
 
-  sent(body: Record<string, unknown>): void {
+  setProviderSessionId(id: string): void {
+    if (
+      this.closed ||
+      this.disabled ||
+      this.providerSessionId !== undefined ||
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      id.length > MAX_PROVIDER_SESSION_ID_CHARS ||
+      !/^[A-Za-z0-9_.:/-]+$/u.test(id) ||
+      (this.apiKey && id.includes(this.apiKey))
+    )
+      return;
+    // A transport has one provider identity. Duplicate or conflicting updates
+    // cannot rewrite an earlier request or enqueue an unbounded stream of writes.
+    this.providerSessionId = id;
+    const active = this.activeRequest;
+    if (!active || active.completed) return;
+    active.record['providerSessionId'] = id;
+    this.enqueue(async () => {
+      await privateDirectory(active.directory);
+      await json(join(active.directory, 'request.json'), active.record);
+    }, Buffer.byteLength(id));
+  }
+
+  sent(
+    body: Record<string, unknown>,
+    metadata?: MonitorDebugSendMetadata,
+  ): void {
     if (this.closed) return;
     if (this.disabled) {
       if (body['type'] === 'input_audio_buffer.commit')
@@ -284,13 +326,16 @@ export class MonitorDebugRecorder {
       return;
     }
     try {
-      this.recordSent(body);
+      this.recordSent(body, metadata);
     } catch {
       this.fail('recording_failed');
     }
   }
 
-  private recordSent(body: Record<string, unknown>): void {
+  private recordSent(
+    body: Record<string, unknown>,
+    metadata?: MonitorDebugSendMetadata,
+  ): void {
     const type = body['type'];
     if (type === 'session.update' || type === 'conversation.item.create') {
       this.session.push(this.clean(body));
@@ -316,6 +361,11 @@ export class MonitorDebugRecorder {
         type,
         bytes,
         sentAt: Date.now(),
+        ...(type === 'input_audio_buffer.append' &&
+        (metadata?.origin === 'microphone' ||
+          metadata?.origin === 'protocol_silence')
+          ? { origin: metadata.origin }
+          : {}),
         ...(typeof body['event_id'] === 'string'
           ? { eventId: body['event_id'] }
           : {}),
@@ -326,9 +376,10 @@ export class MonitorDebugRecorder {
     } else if (type === 'response.create' && this.activeRequest) {
       const active = this.activeRequest;
       active.events.push(this.clean(body));
-      this.enqueue(async () =>
-        json(join(active.directory, 'request.json'), active.record),
-      );
+      this.enqueue(async () => {
+        await privateDirectory(active.directory);
+        await json(join(active.directory, 'request.json'), active.record);
+      });
     }
   }
 
@@ -340,12 +391,16 @@ export class MonitorDebugRecorder {
       active.completed = true;
       const safe = this.clean({
         ...value,
+        // Snapshot correlation from the request, never from a later transport
+        // or arbitrary result fields supplied by the caller.
+        providerSessionId: active.record['providerSessionId'],
         ...(typeof value['text'] === 'string' && value['text'].length > 131_072
           ? { text: value['text'].slice(0, 131_072), textTruncated: true }
           : {}),
       });
       this.enqueue(
         async () => {
+          await privateDirectory(active.directory);
           await json(join(active.directory, 'response.json'), safe);
           this.emit('proactive.monitor_request_result', {
             requestDirectory: active.directory,
@@ -388,6 +443,12 @@ export class MonitorDebugRecorder {
     );
     const events: Array<Record<string, unknown>> = [];
     const audio: Buffer[] = [];
+    const audioSummary = {
+      totalBytes: 0,
+      microphoneBytes: 0,
+      protocolSilenceBytes: 0,
+      unknownBytes: 0,
+    };
     let audioOffset = 0;
     let imageIndex = 0;
     const images: Array<{ path: string; bytes: Buffer }> = [];
@@ -405,6 +466,12 @@ export class MonitorDebugRecorder {
         });
       } else {
         audio.push(input.bytes);
+        audioSummary.totalBytes += input.bytes.length;
+        if (input.origin === 'microphone')
+          audioSummary.microphoneBytes += input.bytes.length;
+        else if (input.origin === 'protocol_silence')
+          audioSummary.protocolSilenceBytes += input.bytes.length;
+        else audioSummary.unknownBytes += input.bytes.length;
         events.push({
           type: input.type,
           audio: 'input.wav',
@@ -412,6 +479,7 @@ export class MonitorDebugRecorder {
           bytes: input.bytes.length,
           sentAt: input.sentAt,
           eventId: input.eventId,
+          origin: input.origin ?? 'unknown',
         });
         audioOffset += input.bytes.length;
       }
@@ -423,6 +491,9 @@ export class MonitorDebugRecorder {
       monitor: this.clean(this.info),
       request: this.sequence,
       transportGeneration: this.transport,
+      ...(this.providerSessionId
+        ? { providerSessionId: this.providerSessionId }
+        : {}),
       createdAt: Date.now(),
       previousRequest: this.previousRequest,
       session: this.session.map((item) => this.clean(item)),
@@ -432,6 +503,7 @@ export class MonitorDebugRecorder {
         channels: 1,
         byteOffsetsExcludeWavHeader: true,
       },
+      audioSummary,
       events,
     };
     this.previousRequest = basename(directory);
@@ -455,6 +527,7 @@ export class MonitorDebugRecorder {
         request: record.request,
         imageFrames: images.length,
         audioBytes: audioOffset,
+        audioSummary,
       });
     }, byteCost);
   }

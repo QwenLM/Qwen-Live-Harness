@@ -1,25 +1,25 @@
-# Qwen Live Harness Host 开发指南
+# Qwen Live Harness Host Development Guide
 
-简体中文 | [English](README_EN.md)
+[简体中文](README_ZH.md) | English
 
-[项目首页](../../README.md) · [配置与功能指南](../../docs/configuration.md) · [Daemon 开发指南](../qwen-live-harness/README.md)
+[Project overview](../../README.md) · [Configuration and features](../../docs/configuration.md) · [Daemon development](../qwen-live-harness/README.md)
 
-Host 是 Qwen-Live-Harness 的 macOS 桌面端，负责悬浮球、系统权限、麦克风、扬声器、摄像头、屏幕采集和全局快捷键。主 Omni 会话、工具调度、后台 Harness、Memory 和 Proactive 由 daemon 管理；Host 不直接调用模型 API，也不包含 Node 或 daemon 的安装包。
+Host is the macOS desktop component of Qwen-Live-Harness. It provides the UI, system permissions, microphone, speakers, camera, screen capture, and global shortcut. The daemon owns the main Omni session, tool scheduling, background Harness tasks, Memory, and Proactive. Host does not call model APIs directly and does not bundle Node or the daemon installer.
 
-本文面向修改桌面端的开发者。安装产品、选择输入源、设置记忆和配置参数请阅读[配置与功能指南](../../docs/configuration.md)。
+This guide is for desktop developers. For installation, input selection, memory settings, and user configuration, see [Configuration and features](../../docs/configuration.md).
 
-## 开发环境
+## Development environment
 
-- macOS 12 或更高版本，支持 Apple Silicon 和 Intel。
-- Node.js 22.13+；推荐使用仓库 `.nvmrc` 指定的 Node 22。
-- Xcode Command Line Tools 或完整 Xcode，确保 `xcrun --find clang++` 和 `xcrun --show-sdk-path` 可用。
-- Node 原生开发头文件，包含 `node_api.h`。构建脚本优先读取 `NODE_INCLUDE_DIR`，然后检查当前 Node 安装的 `include/node`、Homebrew 和 `/usr/local`。
+- macOS 12 or later, on Apple Silicon or Intel.
+- Node.js 22.13+; Node 22 from the repository's `.nvmrc` is recommended.
+- Xcode Command Line Tools or full Xcode, with working `xcrun --find clang++` and `xcrun --show-sdk-path`.
+- Node native development headers, including `node_api.h`. The build checks `NODE_INCLUDE_DIR` first, then the current Node installation's `include/node`, Homebrew, and `/usr/local`.
 
-Host 使用独立的 `package-lock.json` 和依赖树，需要单独安装依赖；根目录 `npm ci` 不会安装 Electron。原生 Appshot 由 Objective-C++ 编写，构建时生成 arm64/x64 通用 N-API 模块。构建过程见 [`scripts/build.mjs`](scripts/build.mjs)。
+Host has its own `package-lock.json` and dependency tree. Root `npm ci` does not install Electron; install Host dependencies separately. Native Appshot is implemented in Objective-C++ and built as a universal arm64/x64 N-API module. See [`scripts/build.mjs`](scripts/build.mjs).
 
-## 从源码启动
+## Run from source
 
-以下命令均在仓库根目录执行：
+Run these commands from the repository root:
 
 ```sh
 npm ci
@@ -28,96 +28,96 @@ npm run init
 npm start
 ```
 
-`npm run init` 构建 daemon 并进入源码初始化向导，写入配置；它不会下载安装或启动 Host，也不会更改已安装应用的桌面启动登记。已有配置可选择保留。
+`npm run init` builds the daemon and opens the source initialization wizard. It saves configuration but does not download, install, or launch Host, or change an installed application's desktop runtime registration. You can keep existing configuration.
 
-`npm start` 会依次构建 daemon 和 Host，启动本次 checkout 的 daemon，等待就绪后用本地 Electron 打开源码 Host。`Ctrl+C` 会清理它启动的两个进程。若已有 daemon 或 Host 正在运行，先退出再启动，避免混用发行版和源码实例。
+`npm start` builds both packages, starts this checkout's daemon, waits for readiness, and opens the source Host with local Electron. `Ctrl+C` cleans up both processes it started. Quit any running daemon or Host first to avoid mixing installed and source instances.
 
-同时查看两端调试日志：
+To see diagnostics from both sides:
 
 ```sh
 npm start -- --debug
 ```
 
-### 两个终端分别调试
+### Debug in two terminals
 
-需要独立重启某一端时，先完成上面的依赖安装和初始化，再在仓库根目录分别运行：
+After installing dependencies and initializing, run these separately from the repository root:
 
 ```sh
-# 终端一：构建并启动 daemon，不打开已安装的 Host
+# Terminal 1: build and start the daemon without opening an installed Host
 npm run build
 node packages/qwen-live-harness/dist/index.js --daemon-only --debug
 ```
 
 ```sh
-# 终端二：构建并打开源码 Host
+# Terminal 2: build and open the source Host
 npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 ```
 
-`--daemon-only` 属于 daemon 入口，不是根目录开发启动器的参数。直接运行 Host 时使用 `--live-harness-debug`，不要把 daemon 的 `--debug` 传给 Electron。
+`--daemon-only` belongs to the daemon entry point, not the root development launcher. Use `--live-harness-debug` when launching Host directly; do not pass the daemon's `--debug` to Electron.
 
-## 代码分工
+## Code map
 
-| 入口                                                             | 职责                                                       |
-| ---------------------------------------------------------------- | ---------------------------------------------------------- |
-| [`src/main/index.ts`](src/main/index.ts)                         | Electron 生命周期、原生窗口、权限、自检、快捷键和 IPC 路由 |
-| [`src/main/daemon-connection.ts`](src/main/daemon-connection.ts) | daemon 连接、v9 握手、音视频帧和状态同步                   |
-| [`src/preload/index.ts`](src/preload/index.ts)                   | 受限的 renderer bridge，以及音频、摄像头引擎               |
-| [`src/renderer/live-view.ts`](src/renderer/live-view.ts)         | 悬浮球、授权页、状态条；设置与子任务视图位于同目录         |
-| [`src/native/appshot.mm`](src/native/appshot.mm)                 | 前台窗口截图、辅助功能文本与完整显示器采集                 |
-| [`src/shared`](src/shared)                                       | 协议解析、IPC 类型、布局常量和主题                         |
+| Entry point                                                      | Responsibility                                                                                  |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [`src/main/index.ts`](src/main/index.ts)                         | Electron lifecycle, native windows, permissions, self-checks, shortcuts, and IPC routing        |
+| [`src/main/daemon-connection.ts`](src/main/daemon-connection.ts) | Daemon connection, v9 handshake, media frames, and state synchronization                        |
+| [`src/preload/index.ts`](src/preload/index.ts)                   | Restricted renderer bridge, audio engine, and camera engine                                     |
+| [`src/renderer/live-view.ts`](src/renderer/live-view.ts)         | Main UI, permission page, and status bar; settings and subagent views are in the same directory |
+| [`src/native/appshot.mm`](src/native/appshot.mm)                 | Foreground-window capture, accessibility text, and full-display capture                         |
+| [`src/shared`](src/shared)                                       | Protocol parsing, IPC types, layout constants, and themes                                       |
 
-主窗口和子任务窗口都启用 `contextIsolation`、renderer sandbox，关闭 `nodeIntegration`；导航和新窗口默认被拒绝。新增能力应通过明确的 preload API 和 IPC 消息接入，主进程校验发送窗口、字段、长度及通话 epoch，不能让 renderer 任意执行 Node 或访问文件。
+Main and subagent windows use `contextIsolation` and renderer sandboxing, with `nodeIntegration` disabled. Navigation and new windows are rejected by default. Add capabilities through explicit preload APIs and IPC messages. The main process validates the sending window, fields, lengths, and call epoch; never give renderers arbitrary Node execution or filesystem access.
 
-### 布局与交互
+### Layout and interaction
 
-几何参数统一维护在 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)，原生位置约束在 [`overlay-position.ts`](src/main/overlay-position.ts)。透明窗口画布与实际可见内容不是同一个边界：初始化页、悬浮球、预览和设置应分别按可见区域限位。
+Geometry constants live in [`overlay-geometry.ts`](src/shared/overlay-geometry.ts); native position constraints live in [`overlay-position.ts`](src/main/overlay-position.ts). The transparent window canvas is not the same boundary as its visible content: constrain the initialization page, main UI, preview, and settings using their respective visible regions.
 
-修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能挤压小球和状态条。
+When changing layout, test screen edges, multiple displays, negative coordinates, scaling, display removal, and expanded settings/previews. Temporary repositioning must not overwrite saved user positions. State updates and snapshots must not move windows. Keep media and editing controls mounted so subtitle updates do not discard focus, previews, or drafts. [`subagents-windows.ts`](src/main/subagents-windows.ts) manages subagent panels; expanded details must not cover the main UI or status bar.
 
-## 与 daemon 的边界
+## Boundary with the daemon
 
-Host 通过 loopback WebSocket `/live/host` 连接 daemon。默认发现文件为 `~/.qwen-live-harness/run/daemon.json`，权限为 `0600`，包含实例 PID、nonce 和连接凭据。不要将文件内容写入诊断或公开分享。
+Host connects over the loopback WebSocket endpoint `/live/host`. Its default discovery file is `~/.qwen-live-harness/run/daemon.json`, with mode `0600`; it contains the instance PID, nonce, and connection credentials. Do not print or share its contents.
 
-协议当前为 **v9**，两端定义分别位于：
+The current protocol is **v9**, defined on both sides:
 
-- Host：[`src/shared/protocol.ts`](src/shared/protocol.ts)。
-- Daemon：[`src/host/types.ts`](../qwen-live-harness/src/host/types.ts) 与 [`qwen-live-harness-host-coordinator.ts`](../qwen-live-harness/src/host/qwen-live-harness-host-coordinator.ts)。
+- Host: [`src/shared/protocol.ts`](src/shared/protocol.ts).
+- Daemon: [`src/host/types.ts`](../qwen-live-harness/src/host/types.ts) and [`qwen-live-harness-host-coordinator.ts`](../qwen-live-harness/src/host/qwen-live-harness-host-coordinator.ts).
 
-修改消息需要同时检查两端解析和能力协商。媒体和会话操作不能串入已结束的 epoch，进程级控制绑定 daemon 实例 nonce；播放回执还需匹配 output ID。主模型的名称、API key、会话配置和工具响应都由 daemon 持有，Host 只提交设备输入并播放返回结果，不直接创建 Realtime response 或提交模型音频缓冲。
+When changing messages, check parsing and capability negotiation on both sides. Media and session operations must not cross into an ended epoch. Process-level control is bound to the daemon instance nonce; playback acknowledgements also match an output ID. The daemon owns the model name, API key, session settings, and tool results. Host submits device input and plays output; it never creates Realtime responses or commits model input audio buffers directly.
 
-已安装应用通过 `run/runtime.json` 中登记的 Node、CLI 和工作目录按需启动 daemon，使用内部 `--daemon-only` 避免循环拉起。普通断线只重连，不无限重启进程。CLI 打开的 Host 会接收对应的 discovery 路径和 owner 身份；停止该 daemon 时，Host 根据匹配实例的退出通知收尾。
+An installed Host can start the daemon using the Node path, CLI path, and working directory registered in `run/runtime.json`. It uses the internal `--daemon-only` option to avoid a launch loop. Ordinary disconnections reconnect the transport rather than indefinitely restarting processes. A CLI-launched Host receives the corresponding discovery path and owner identity; it shuts down on the matching daemon instance's exit notification.
 
-`End call` 结束交互，保留桌面界面；`Quit Host` 协调关闭整套应用，清理未确认时保留错误和重试入口。实例身份、启动与退出逻辑见 [`daemon-bootstrap.ts`](src/main/daemon-bootstrap.ts)、[`daemon-lifecycle.ts`](src/main/daemon-lifecycle.ts)。发行版 CLI 与 Host 必须版本配套，协议号相同不代表不同版本可混用。
+`End call` ends the interaction and leaves the desktop UI available. `Quit Host` coordinates shutdown of the application; if cleanup is not confirmed, the UI retains an error and retry action. See [`daemon-bootstrap.ts`](src/main/daemon-bootstrap.ts) and [`daemon-lifecycle.ts`](src/main/daemon-lifecycle.ts). Released CLI and Host versions must match; sharing a protocol version is not sufficient for mixing releases.
 
-## 设备与权限
+## Devices and permissions
 
-| 当前视觉模式       | 所需 macOS 权限            |
-| ------------------ | -------------------------- |
-| Screen + On Demand | 麦克风、屏幕录制、辅助功能 |
-| Screen + Live Feed | 麦克风、屏幕录制           |
-| Camera             | 麦克风、摄像头             |
+| Visual mode        | Required macOS permissions                  |
+| ------------------ | ------------------------------------------- |
+| Screen + On Demand | Microphone, Screen Recording, Accessibility |
+| Screen + Live Feed | Microphone, Screen Recording                |
+| Camera             | Microphone, Camera                          |
 
-未选中来源的权限不应阻止交互。默认快捷键 `Command+E` 使用 Electron `globalShortcut`，不需要 Input Monitoring。开发 Electron 与正式应用的系统授权分别由 macOS 管理，应在实际运行的应用身份上验证。
+Permissions for an unselected source must not block interaction. The default `Command+E` shortcut uses Electron `globalShortcut` and does not require Input Monitoring. macOS manages development Electron and released-app permissions separately; verify the actual application identity being run.
 
-Appshot 是随 Host 构建的内置模块，不依赖外部截图 App、CLI、MCP 或运行时下载。Screen On Demand 捕获前台窗口和 AX 文本；Live Feed 与视觉 Proactive monitor 捕获选定显示器的完整画面，并排除 Host 自身窗口。完整画面范围不等于原生像素尺寸，传输前仍按限制缩放。Camera 使用同一设备引擎提供预览、实时帧和单次照片；隐藏预览只改变显示，不代表停止采集。
+Appshot is a module built into Host, not an external capture application, CLI, MCP, or runtime download. Screen On Demand captures the foreground window and accessibility text. Live Feed and visual Proactive monitors capture the entire selected display and exclude Host windows. Full-display coverage does not imply native pixel resolution; frames are resized to transport limits. The same camera engine provides preview, live frames, and snapshots. Hiding its preview does not stop capture.
 
-前台 `appshot` 的 metadata、AX 文本和图片 asset 如何用于回答由 daemon 处理，不能把“Host 已截图”当成“主模型已收到像素”。具体 Source、Mode、分辨率与能力边界见[配置指南](../../docs/configuration.md)。
+The daemon decides how Appshot metadata, accessibility text, and image assets are used for a response. “Host captured an image” is not proof that the main model received its pixels. See [Configuration and features](../../docs/configuration.md) for sources, modes, resolution, and capability boundaries.
 
-采集尺寸与协议上限分开校验：实时帧目前最多 `1920 × 1080`、每帧 `190 KiB`，截图资产上限为 `8 MiB`。配置允许更大的采集目标，不代表实时传输会保留同样的像素数。Camera 原生截图优先使用静态拍照能力，否则尝试视频约束回退；不支持时应明确失败。修改尺寸或编码策略时，同时检查 [`camera-engine.ts`](src/preload/camera-engine.ts)、[`appshot-capture.ts`](src/main/appshot-capture.ts) 和共享协议限制。
+Validate capture dimensions separately from protocol limits. Live frames are currently limited to `1920 × 1080` and `190 KiB` per frame; snapshot assets are limited to `8 MiB`. A larger configured capture size does not guarantee that those pixels survive live transmission. Native camera snapshots prefer still-photo capture and fall back to video constraints where possible; unsupported requests must fail explicitly. When changing dimensions or encoding, check [`camera-engine.ts`](src/preload/camera-engine.ts), [`appshot-capture.ts`](src/main/appshot-capture.ts), and shared protocol limits together.
 
-### 音频与故障恢复
+### Audio and failure handling
 
-麦克风通过 AudioWorklet 转为单声道 16-bit、16 kHz PCM。模型返回 24 kHz PCM；播放 AudioContext 使用输出设备自身的采样率，协商了结束标记的连接采用连续流式重采样，并等待对应输出真正播放完毕。修改时保持帧顺序、output ID 和播放完成回执一致。
+An AudioWorklet converts microphone input to mono, 16-bit, 16 kHz PCM. The model returns 24 kHz PCM. Playback uses an AudioContext at the output device's actual sample rate. Connections with negotiated end markers use continuous streaming resampling and wait until the corresponding output has actually played. Preserve frame order, output IDs, and playback-complete acknowledgements.
 
-蓝牙耳机启用自身麦克风时，macOS 可能进入免提模式；这与模型输出采样率不同。测试应同时覆盖内置／USB 麦克风与蓝牙输出，不能通过强制设备采样率解决系统路由问题。
+Enabling a Bluetooth headset's own microphone may switch macOS to a hands-free profile; this is separate from the model output sample rate. Test built-in/USB microphone input together with Bluetooth output. Forcing a device sample rate does not solve operating-system audio routing.
 
-录音启动、设备切换和音频恢复使用有界等待。主进程在 10 秒内等待设备 ready 与首个输入帧；静音只需 ready。AudioContext 关闭最多等待 1 秒。Stop、静音、通话切换和退出会取消过时操作，迟到的媒体流与 AudioContext 必须释放，取消不能伪造就绪或报成新的播放错误。
+Capture startup, device switching, and audio recovery use bounded waits. The main process waits up to 10 seconds for device readiness and the first input frame; muted input requires readiness only. Closing an AudioContext waits at most one second. Stop, mute, call changes, and quit cancel stale operations. Release late media streams and AudioContexts; cancellation must not falsely signal readiness or become a new playback error.
 
-音频超时停止本轮通话并保留悬浮球、设置、拖拽和 Quit，不立即循环重试。用户可选择输入设备并按 Start／`Command+E` 重试。技术音频故障不撤销系统授权；真正缺少权限时，授权提示优先于音频错误。对应实现见 [`capture-readiness.ts`](src/main/capture-readiness.ts)、[`audio-operation.ts`](src/preload/audio-operation.ts) 和 [`audio-engine.ts`](src/preload/audio-engine.ts)。
+Audio timeout ends the current call but preserves the UI, Settings, dragging, and Quit; it does not immediately retry in a loop. Users can choose an input device and retry with Start or `Command+E`. Technical audio faults do not revoke system permissions; genuine missing permissions take precedence in the UI. See [`capture-readiness.ts`](src/main/capture-readiness.ts), [`audio-operation.ts`](src/preload/audio-operation.ts), and [`audio-engine.ts`](src/preload/audio-engine.ts).
 
-## 日志与文案
+## Logs and shared text
 
-Host 偏好和常态故障日志位于 Electron `userData`，默认路径为：
+Host preferences and routine failure logs are stored under Electron `userData`, normally:
 
 ```text
 ~/Library/Application Support/qwen-live-harness-host/
@@ -129,15 +129,15 @@ Host 偏好和常态故障日志位于 Electron `userData`，默认路径为：
     └── host-errors.log.1
 ```
 
-未开启 debug 时也会记录精选故障事件。日志仅包含白名单错误码、阶段、epoch 等元信息，文件权限为 `0600`；每份上限 1 MiB，最多保留当前文件与一份轮转。日志写入失败不能中断音视频或退出流程，见 [`host-diagnostics.ts`](src/main/host-diagnostics.ts)。
+Selected failure events are recorded even without debug. Logs contain allowlisted error codes, stages, epochs, and related metadata. Files use mode `0600`, rotate at 1 MiB, and retain the current file plus one backup. Logging failures must not interrupt media or shutdown. See [`host-diagnostics.ts`](src/main/host-diagnostics.ts).
 
-`--live-harness-debug` 增加 Host 状态、设备和帧传输诊断。daemon 的 `--debug` 另有 Realtime、工具与 Monitor 日志，并可能保存真实视觉 Monitor 请求、画面和音频；分享前必须检查敏感内容。诊断开关与数据路径说明集中在[配置指南](../../docs/configuration.md)。
+`--live-harness-debug` adds Host state, device, and frame-transport diagnostics. The daemon's `--debug` provides separate Realtime, tool, and Monitor logs and may archive real Monitor requests, images, and audio. Inspect sensitive content before sharing. See [Configuration and features](../../docs/configuration.md) for diagnostic options and data locations.
 
-固定展示文本统一放在 [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts)，每个键包含 `en` 与 `zh-CN`。Host 构建通过别名编入共用的文案、启动和子任务模块，不在运行时依赖已安装的 daemon npm 包。修改共用文件后应重建并验证两个包。
+Fixed UI strings are centralized in [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts), with paired `en` and `zh-CN` entries. Host bundles shared messages, startup, and subagent modules through build aliases rather than depending on an installed daemon npm package at runtime. Rebuild and verify both packages after changing shared files.
 
-## 测试与打包
+## Tests and packaging
 
-在仓库根目录运行 Host 检查：
+Run Host checks from the repository root:
 
 ```sh
 npm --prefix packages/qwen-live-harness-host run typecheck
@@ -145,32 +145,32 @@ npm --prefix packages/qwen-live-harness-host test
 npm run build:host
 ```
 
-修改协议、共享文案或生命周期时，也运行 daemon 的相关测试和根目录类型检查。自动测试覆盖协议、布局、媒体时钟、超时与退出；真实设备、权限弹窗、拖拽和签名安装仍需在 macOS 验证，并在 PR 中注明验证环境。
+For protocol, shared-text, or lifecycle changes, also run relevant daemon tests and root type checks. Automated tests cover protocols, layout, media clocks, timeouts, and shutdown. Real devices, permission dialogs, dragging, and signed installation still require macOS testing; document the verification environment in your PR.
 
-生成本地安装包，不发布到 GitHub 或 npm：
+Build local installers without publishing to GitHub or npm:
 
 ```sh
 npm --prefix packages/qwen-live-harness-host run dist:mac:no-publish
 ```
 
-编译产物在 `dist/`，安装包在 `release/`。打包配置见 [`electron-builder.yml`](electron-builder.yml)：App ID 为 `com.alibaba.qwen-live-harness.host`，产品名为 `Qwen Live Harness Host`，正式安装路径为 `/Applications/Qwen Live Harness Host.app`。原生模块作为独立 resource 随应用签名；保留 ASAR 完整性和 Electron fuse 限制。仅构建成功不能代替正式签名与公证验证。
+Compiled files are in `dist/`, installers in `release/`. [`electron-builder.yml`](electron-builder.yml) sets App ID `com.alibaba.qwen-live-harness.host`, product name `Qwen Live Harness Host`, and the release installation path `/Applications/Qwen Live Harness Host.app`. Native modules are separate signed resources. Preserve ASAR integrity and Electron fuse restrictions. A successful build is not a substitute for release signing and notarization checks.
 
-### 发布维护
+### Release maintenance
 
-发布入口是 [Qwen Live Harness Host Release](../../.github/workflows/qwen-live-harness-host-release.yml)。推送 `main` 运行 CI；相关 PR 做打包 dry run，正式发布需从 `main` 手动触发。发布版本必须与 daemon、Host 的已提交版本一致，并同步相应 lock 文件；公开 release 和 npm 版本不可覆盖，`clobber` 仅用于尚未公开的 draft。
+The release entry point is [Qwen Live Harness Host Release](../../.github/workflows/qwen-live-harness-host-release.yml). Pushes to `main` run CI, relevant PRs run packaging dry runs, and a release is manually dispatched from `main`. The release version must match committed daemon and Host versions and their lockfiles. Public release and npm versions cannot be overwritten; `clobber` is only for unpublished drafts.
 
-稳定版流程依次完成构建／测试、Developer ID 签名与公证、GitHub Release、OSS 镜像，再发布 npm 包。产物包含 arm64/x64 的 ZIP、DMG、`Qwen-Live-Harness-Host-manifest.json` 和校验文件；tag 为 `qwen-live-harness-host-vX.Y.Z`，稳定下载 feed 为 `qwen-live-harness-host-latest`。draft 不发布 npm；prerelease 使用 npm `preview` 标签，不更新稳定 Host feed。
+The stable flow builds and tests, signs with Developer ID, notarizes, creates a GitHub Release, synchronizes the OSS mirror, then publishes npm. Artifacts include arm64/x64 ZIP and DMG files, `Qwen-Live-Harness-Host-manifest.json`, and checksums. Version tags use `qwen-live-harness-host-vX.Y.Z`; the stable download feed is `qwen-live-harness-host-latest`. Drafts do not publish npm. Prereleases use the npm `preview` tag and do not update the stable Host feed.
 
-正式安装器验证版本、manifest、SHA-256、bundle ID、Developer ID team `NF4574S59H`、`codesign --deep --strict` 和 Gatekeeper。维护签名时核对 [`build/entitlements.mac.plist`](build/entitlements.mac.plist)，不要扩大 renderer 权限或绕过这些检查。
+The installer verifies version, manifest, SHA-256, bundle ID, Developer ID team `NF4574S59H`, `codesign --deep --strict`, and Gatekeeper. Review [`build/entitlements.mac.plist`](build/entitlements.mac.plist) when maintaining signing. Do not expand renderer privileges or bypass these checks.
 
-[OSS 同步 workflow](../../.github/workflows/sync-qwen-live-harness-host-to-oss.yml) 使用 `ossutil` 上传版本化 ZIP 和 manifest，公开下载校验成功后再更新 `latest` manifest。默认地址为 `https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/qwen-live-harness-host`；安装器优先 OSS，再回退本仓库 GitHub feed。OSS 可单独重传；GitHub fallback 需要仓库和 Release 对下载者可访问。
+The [OSS synchronization workflow](../../.github/workflows/sync-qwen-live-harness-host-to-oss.yml) uploads versioned ZIPs and manifests with `ossutil`, verifies public downloads, then updates the `latest` manifest. Its default public base URL is `https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/qwen-live-harness-host`. The installer tries OSS before this repository's GitHub feed. OSS synchronization can be rerun independently; GitHub fallback requires the repository and Release to be accessible to the downloader.
 
-维护者需要配置：
+Maintainers configure:
 
-- Apple 签名与公证凭据：workflow 支持 `APPLE_CERTIFICATE`／`APPLE_CERTIFICATE_PASSWORD`、`APPLE_API_ISSUER`／`APPLE_API_KEY`／`APPLE_API_KEY_P8` 和 `APPLE_TEAM_ID`；替代变量与编码格式以 workflow 为准。
-- OSS 上传凭据：`ALIYUN_OSS_ACCESS_KEY_ID`、`ALIYUN_OSS_ACCESS_KEY_SECRET`，以及 `production-release` environment；可选 bucket、endpoint、公开地址变量见同步 workflow。
-- npm [Trusted Publisher](https://docs.npmjs.com/trusted-publishers)：绑定 `QwenLM/Qwen-Live-Harness`、workflow 文件名 `qwen-live-harness-host-release.yml` 和 environment `production-release`。发布 job 使用 `id-token: write` 的 OIDC，不读取 `NPM_TOKEN`；公开仓库发布附带 provenance。当前 workflow 固定支持 Trusted Publishing 的 Node/npm 版本。
+- Apple signing/notarization credentials: `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_ISSUER` / `APPLE_API_KEY` / `APPLE_API_KEY_P8`, and `APPLE_TEAM_ID`. See the workflow for alternative variables and encoding formats.
+- OSS credentials: `ALIYUN_OSS_ACCESS_KEY_ID`, `ALIYUN_OSS_ACCESS_KEY_SECRET`, and the `production-release` environment. Optional bucket, endpoint, and public-base variables are documented in the synchronization workflow.
+- npm [Trusted Publisher](https://docs.npmjs.com/trusted-publishers): bind `QwenLM/Qwen-Live-Harness`, workflow `qwen-live-harness-host-release.yml`, and environment `production-release`. The publishing job uses OIDC with `id-token: write`, not `NPM_TOKEN`; public-repository publications include provenance. The workflow pins Node/npm versions that support Trusted Publishing.
 
-## 许可证
+## License
 
-[Apache License 2.0](../../LICENSE)。
+[Apache License 2.0](../../LICENSE).

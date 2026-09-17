@@ -53,7 +53,7 @@ export const MEMORY_TOOLS: readonly RealtimeToolDefinition[] = [
     function: {
       name: 'omnibio',
       description:
-        'An operational memory tool for managing personalized_user_memories — persistent, reusable facts about the user that personalize future conversations. It covers general information about the user themselves: demographic information (name, age, gender, occupation, education, nationality, address), preferences, traits and habits, relationships and family, skills and expertise, recurring plans and schedules, and upcoming plans, appointments or commitments (e.g. a work trip next week, an interview tomorrow). Each entry must be a complete sentence describing a general, lasting fact about the user in the user\'s language — not a detailed event from the current request. "In the user\'s language" means the language they speak, not their voice: write every entry in the third person about the user — "用户的职业是…", never "我的职业是…". DO NOT include one-off events that are already over, temporary emotions, or other people\'s information unless it defines a relationship to the user. Send this call BEFORE you answer, on its own with no text around it; then write your reply in the next message. Don\'t record what the memory sections already contain. You can only update or delete entries in personalized_user_memories (the numbered list); user_profile and recent are read-only — when the user corrects or cancels something recorded there, record the change with add instead. The operations object takes three optional keys, all arrays: "add" holds new entries as plain strings; "update" holds objects of the form {"index": <integer>, "content": <string>}; "delete" holds integers. Every index is the 0-based number shown at the start of the line in personalized_user_memories, so entry "0. …" is index 0. Send only the keys you need, e.g. {"delete": [1]} alone is valid.',
+        'An operational memory tool for managing personalized_user_memories — persistent, reusable facts about the user that personalize future conversations. It covers general information about the user themselves: demographic information (name, age, gender, occupation, education, nationality, address), preferences, traits and habits, relationships and family, skills and expertise, recurring plans and schedules, and upcoming plans, appointments or commitments (e.g. a work trip next week, an interview tomorrow). Each entry must be a complete sentence describing a general, lasting fact about the user in the user\'s language — not a detailed event from the current request. "In the user\'s language" means the language they speak, not their voice: write every entry in the third person about the user — "用户的职业是…", never "我的职业是…". DO NOT include one-off events that are already over, temporary emotions, or other people\'s information unless it defines a relationship to the user. Send this call BEFORE you answer, on its own with no text around it; then write your reply in the next message. Don\'t record what the memory sections already contain. You can only update or delete entries in personalized_user_memories (the numbered list); user_profile and recent are read-only — when the user corrects or cancels something recorded there, record the change with add instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -66,6 +66,7 @@ export const MEMORY_TOOLS: readonly RealtimeToolDefinition[] = [
                 type: 'array',
                 items: {
                   type: 'string',
+                  minLength: 1,
                 },
                 description:
                   'New memory entries to add. Each entry should be a complete sentence describing a persistent fact about the user.',
@@ -77,16 +78,19 @@ export const MEMORY_TOOLS: readonly RealtimeToolDefinition[] = [
                   properties: {
                     index: {
                       type: 'integer',
+                      minimum: 0,
                       description:
                         '0-based index of the entry in the numbered personalized_user_memories list.',
                     },
                     content: {
                       type: 'string',
+                      minLength: 1,
                       description:
                         'The new full text for that entry; it replaces the old text entirely.',
                     },
                   },
                   required: ['index', 'content'],
+                  additionalProperties: false,
                 },
                 description: 'Updated memory entries by index.',
               },
@@ -94,6 +98,7 @@ export const MEMORY_TOOLS: readonly RealtimeToolDefinition[] = [
                 type: 'array',
                 items: {
                   type: 'integer',
+                  minimum: 0,
                 },
                 description:
                   '0-based indices of the entries to remove from the numbered personalized_user_memories list.',

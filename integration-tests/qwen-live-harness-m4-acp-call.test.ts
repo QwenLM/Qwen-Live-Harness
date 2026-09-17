@@ -88,17 +88,8 @@ describeE2E('qwen-live-harness M4 — ACP backend call loop', () => {
       },
     );
     expect(contextTextOf(complete)).toContain('acp call task complete');
-    const spoken = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text?.startsWith('[SPEAK_TO_USER] ') === true &&
-          text.includes('acp call task complete')
-        );
-      },
-      { fromIndex: stack.fakeDash.inbox.indexOf(complete) + 1 },
-    );
-    await waitForLiveResponseAfter(stack, spoken, 'backend_speech');
+    expect(contextTextOf(complete)).not.toContain('[SPEAK_TO_USER]');
+    await waitForLiveResponseAfter(stack, complete, 'task_result');
   });
 
   it('lists the acp session with its backend name', async () => {

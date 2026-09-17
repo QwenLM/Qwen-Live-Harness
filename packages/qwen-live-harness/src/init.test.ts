@@ -51,6 +51,7 @@ vi.mock('./startup-registration.js', () => ({
 }));
 
 import { runInit } from './init.js';
+import { DEFAULT_REALTIME_MODEL } from './config.js';
 import { liveText } from './i18n/messages.js';
 
 const originalApiKey = process.env['DASHSCOPE_API_KEY'];
@@ -69,7 +70,7 @@ function answerSetupPrompts(
       [liveText('en', 'init.addAgent', { count: 1 }), false],
       [liveText('en', 'init.endpoint'), international],
       [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
-      [liveText('en', 'init.apiName'), 'qwen3.5-omni-plus-realtime'],
+      [liveText('en', 'init.apiName'), DEFAULT_REALTIME_MODEL],
       [liveText('en', 'init.memoryEnabled'), false],
       [liveText('en', 'init.cwd'), cwd],
       [liveText('en', 'init.hostInstall'), true],
@@ -432,7 +433,7 @@ describe('runInit', () => {
         [t('init.defaultAgent'), 'qwen'],
         [t('init.qwenMode'), 'acp'],
         [t('init.apiKey'), 'synthetic-region-test-key'],
-        [t('init.apiName'), 'qwen3.5-omni-plus-realtime'],
+        [t('init.apiName'), DEFAULT_REALTIME_MODEL],
         [t('init.endpoint'), true],
         [t('init.memoryEnabled'), false],
         [t('init.cwd'), '/tmp/region-order-test'],
@@ -889,7 +890,7 @@ describe('runInit', () => {
             case 'Use DASHSCOPE_API_KEY from the environment?':
               return { value: true };
             case liveText('en', 'init.apiName'):
-              return { value: 'qwen3.5-omni-plus-realtime' };
+              return { value: DEFAULT_REALTIME_MODEL };
             case 'Enable Memory for cross-call recall?':
               return { value: enabled };
             case 'DashScope Memory consolidation model:':
@@ -950,7 +951,7 @@ describe('runInit', () => {
           case 'Use DASHSCOPE_API_KEY from the environment?':
             return { value: true };
           case liveText('en', 'init.apiName'):
-            return { value: 'qwen3.5-omni-plus-realtime' };
+            return { value: DEFAULT_REALTIME_MODEL };
           case 'Enable Memory for cross-call recall?':
             return { value: true };
           case 'DashScope Memory consolidation model:':
@@ -972,7 +973,7 @@ describe('runInit', () => {
       );
     expect(modelQuestion).toMatchObject({
       type: 'text',
-      initial: 'qwen3.5-omni-plus-realtime',
+      initial: DEFAULT_REALTIME_MODEL,
     });
 
     const serialized = mocks.writeFileSync.mock.calls[0]?.[1];
@@ -980,7 +981,7 @@ describe('runInit', () => {
     expect(JSON.parse(String(serialized))).toMatchObject({
       language: 'en',
       realtimeApiKey: 'sk-test',
-      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      realtimeModel: DEFAULT_REALTIME_MODEL,
       memory: {
         enabled: true,
         updater: { model: 'qwen3.7-plus' },
@@ -997,9 +998,9 @@ describe('runInit', () => {
       },
       proactive: {
         enabled: true,
-        monitor: { sessionRecycleEvals: 60 },
+        monitor: { chunkDurationSec: 1, sessionRecycleEvals: 60 },
         scheduler: {
-          evalIntervalSec: 2,
+          evalIntervalSec: 1,
           maxFailuresPerTask: 3,
           repeat: {
             cooldownSec: 3,
@@ -1008,7 +1009,7 @@ describe('runInit', () => {
           },
         },
         vision: {
-          fps: 1,
+          fps: 2,
           windowSizeSec: 10,
           minEvalDurationSec: 0,
         },

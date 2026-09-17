@@ -165,8 +165,14 @@ describe('live session Proactive tools', () => {
       expect(search.function.description).toContain(
         'Prefer this for simple lookups even when a background Harness is configured',
       );
-      expect(search.function.description).toContain(
+      expect(search.function.description).not.toContain(
+        'Before the first tool call in the user turn',
+      );
+      expect(search.function.description).not.toContain(
         'one brief natural preamble without promising a result',
+      );
+      expect(search.function.description).toContain(
+        'Do not read the receipt aloud or repeat the preamble',
       );
     }
     const handoff = LIVE_SESSION_TOOLS.find(
@@ -181,6 +187,15 @@ describe('live session Proactive tools', () => {
     );
     expect(handoff.function.description).toContain(
       'webpage interaction, artifacts, long or complex work',
+    );
+    expect(handoff.function.description).not.toContain(
+      'Before your first tool call in a user turn',
+    );
+    expect(handoff.function.description).not.toContain(
+      'say one short neutral sentence',
+    );
+    expect(handoff.function.description).toContain(
+      'delivery never proves execution, steering or completion',
     );
   });
 

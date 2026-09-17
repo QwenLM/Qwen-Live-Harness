@@ -20,6 +20,7 @@ import {
 import type { SubagentsControlResult } from '../packages/qwen-live-harness/src/subagents/types.js';
 import {
   contextTextOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   startFakeDashScopeServer,
   type FakeDashScopeConnection,
@@ -285,20 +286,18 @@ describePeers(
       });
       expect(handoff.receipt['status']).toBe('accepted');
       const permission = await fakeDash.waitForMessage(
-        (entry) =>
-          contextTextOf(entry)?.includes('[PERMISSION req_1]') ?? false,
+        (entry) => permissionPayloadOf(entry)?.request_id === 'req_1',
         { fromIndex: handoff.fromIndex },
       );
-      expect(contextTextOf(permission)).toContain('respond_permission');
-      const ask = await fakeDash.waitForMessage(
-        (entry) =>
-          contextTextOf(entry)?.startsWith('[SPEAK_TO_USER] ') ?? false,
-        { fromIndex: handoff.fromIndex },
-      );
+      expect(permissionPayloadOf(permission)).toMatchObject({
+        request_id: 'req_1',
+        action: expect.stringContaining('coexistence write check'),
+      });
+      expect(contextTextOf(permission)).not.toContain('[SPEAK_TO_USER]');
       await waitForLiveResponseAfter(
         { fakeDash, dataDir },
-        ask,
-        'backend_speech',
+        permission,
+        'permission',
       );
 
       await Promise.all([

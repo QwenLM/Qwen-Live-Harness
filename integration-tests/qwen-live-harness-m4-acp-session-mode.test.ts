@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { fakeToolCall } from './fake-openai-server.js';
 import {
   contextTextOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
@@ -131,7 +132,7 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
       expect(readFileSync(filePath, 'utf8')).toBe(FILE_CONTENT);
       expect(
         injectedContext(stack, fromIndex).some((text) =>
-          text.includes('[PERMISSION '),
+          text.includes('[PERMISSION]'),
         ),
       ).toBe(false);
       expect(stack.live.stderrBuf.value).toContain(
@@ -157,15 +158,16 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
       const { fromIndex, job } = await handOffWriteTask(stack, conn, 'call-f');
 
       const permissionMessage = await stack.fakeDash.waitForMessage(
-        (message) => contextTextOf(message)?.includes('[PERMISSION ') ?? false,
+        (message) => permissionPayloadOf(message) !== undefined,
         {
           timeoutMs: 120_000,
           fromIndex,
           description: 'the [PERMISSION] context injection after the fallback',
         },
       );
-      const text = contextTextOf(permissionMessage)!;
-      expect(text).toContain('respond_permission');
+      const permission = permissionPayloadOf(permissionMessage)!;
+      expect(permission.action).toBeTruthy();
+      expect(contextTextOf(permissionMessage)).not.toContain('[SPEAK_TO_USER]');
       expect(stack.live.stderrBuf.value).toContain(
         'configured sessionMode "turbo" is not advertised',
       );
@@ -175,26 +177,11 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
 
       // The daemon must have handed the ask to the voice model before the vote
       // lands, exactly as the asking-mode relay test drives it.
-      const spokenAsk = await stack.fakeDash.waitForMessage(
-        (message) => {
-          const spoken = contextTextOf(message);
-          return (
-            spoken !== undefined &&
-            spoken.startsWith('[SPEAK_TO_USER] ') &&
-            spoken.includes('Should I allow it?')
-          );
-        },
-        {
-          timeoutMs: 30_000,
-          fromIndex,
-          description: 'the spoken permission ask after the fallback',
-        },
-      );
-      await waitForLiveResponseAfter(stack, spokenAsk, 'backend_speech');
+      await waitForLiveResponseAfter(stack, permissionMessage, 'permission');
 
       // The fallback session is a working asking session, not a stalled one:
       // the vote still resolves the ask and the task completes.
-      const requestId = /\[PERMISSION (\S+?)\]/.exec(text)?.[1];
+      const requestId = permission.request_id;
       expect(requestId).toBeDefined();
       conn.queueFunctionCall({
         name: 'respond_permission',

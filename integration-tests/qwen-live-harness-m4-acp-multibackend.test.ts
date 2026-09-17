@@ -130,17 +130,8 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
         },
       );
       expect(contextTextOf(complete)).toContain(marker);
-      const spoken = await stack.fakeDash.waitForMessage(
-        (message) => {
-          const text = contextTextOf(message);
-          return (
-            text?.startsWith('[SPEAK_TO_USER] ') === true &&
-            text.includes(marker)
-          );
-        },
-        { fromIndex: stack.fakeDash.inbox.indexOf(complete) + 1 },
-      );
-      await waitForLiveResponseAfter(stack, spoken, 'backend_speech');
+      expect(contextTextOf(complete)).not.toContain('[SPEAK_TO_USER]');
+      await waitForLiveResponseAfter(stack, complete, 'task_result');
     }
 
     // session_list shows both backends.

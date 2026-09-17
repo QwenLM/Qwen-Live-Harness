@@ -329,6 +329,22 @@ describe('LiveDaemon', () => {
       expect(session.options.monitorDebug).toBe(
         level === 'debug' ? initialize.mock.contexts[0] : undefined,
       );
+      if (level === 'debug') {
+        const sessionLog = (daemon as unknown as { log: SessionLog }).log;
+        const write = vi.spyOn(sessionLog, 'write');
+        const archive = session.options.monitorDebug as unknown as {
+          log: (event: string, details: Record<string, unknown>) => void;
+        };
+        archive.log('proactive.monitor_request_saved', {
+          taskId: 'synthetic-monitor',
+          requestDirectory: 'synthetic-private-directory/requests/000001',
+        });
+        expect(write).toHaveBeenCalledWith('proactive.debug', {
+          event: 'proactive.monitor_request_saved',
+          taskId: 'synthetic-monitor',
+          requestDirectory: 'synthetic-private-directory/requests/000001',
+        });
+      }
       await daemon.stop();
       expect(flush).toHaveBeenCalledTimes(level === 'debug' ? 1 : 0);
     },

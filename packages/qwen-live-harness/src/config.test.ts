@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadConfig } from './config.js';
+import { DEFAULT_REALTIME_MODEL, loadConfig } from './config.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -133,6 +133,18 @@ describe('loadConfig', () => {
     },
   );
 
+  it('preserves an explicitly configured invitation alias and the independent Memory models', async () => {
+    const alias = 'example-omni-realtime-deployment';
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'fixture-key',
+      realtimeModel: alias,
+    });
+    const config = loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir });
+    expect(config.realtime.model).toBe(alias);
+    expect(config.memory.updater.model).toBe('qwen3.7-plus');
+    expect(config.memory.retrieve.model).toBe('text-embedding-v4');
+  });
+
   it('applies env over file over built-in defaults', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'file-key',
@@ -199,7 +211,8 @@ describe('loadConfig', () => {
       QWEN_LIVE_HARNESS_DATA_DIR: await temporaryDataDir(),
       DASHSCOPE_API_KEY: 'env-key',
     });
-    expect(defaults.realtime.model).toBe('qwen3.5-omni-plus-realtime');
+    expect(DEFAULT_REALTIME_MODEL).toBe('qwen3.8-omni-flash-realtime');
+    expect(defaults.realtime.model).toBe(DEFAULT_REALTIME_MODEL);
     expect(defaults.realtime.endpoint).toBe('https://dashscope.aliyuncs.com');
     expect(defaults.visualInput).toEqual({
       source: 'screen',
@@ -213,9 +226,13 @@ describe('loadConfig', () => {
     });
     expect(defaults.proactive).toEqual({
       enabled: true,
-      monitor: { sessionRecycleEvals: 60 },
+      monitor: {
+        chunkDurationSec: 1,
+        sessionRecycleEvals: 60,
+        representationCompact: 'normal',
+      },
       scheduler: {
-        evalIntervalSec: 2,
+        evalIntervalSec: 1,
         maxFailuresPerTask: 3,
         repeat: {
           cooldownSec: 3,
@@ -224,7 +241,7 @@ describe('loadConfig', () => {
         },
       },
       vision: {
-        fps: 1,
+        fps: 2,
         windowSizeSec: 10,
         minEvalDurationSec: 0,
       },
@@ -475,7 +492,7 @@ describe('loadConfig', () => {
       realtimeApiKey: 'k',
       proactive: {
         enabled: false,
-        monitor: { sessionRecycleEvals: 120 },
+        monitor: { chunkDurationSec: 2, sessionRecycleEvals: 120 },
         scheduler: {
           evalIntervalSec: 0.5,
           maxConcurrentTasks: 8,
@@ -499,7 +516,11 @@ describe('loadConfig', () => {
       loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).proactive,
     ).toEqual({
       enabled: false,
-      monitor: { sessionRecycleEvals: 120 },
+      monitor: {
+        chunkDurationSec: 2,
+        sessionRecycleEvals: 120,
+        representationCompact: 'normal',
+      },
       scheduler: {
         evalIntervalSec: 0.5,
         maxConcurrentTasks: 8,
@@ -530,6 +551,36 @@ describe('loadConfig', () => {
       }).proactive.enabled,
     ).toBe(false);
   });
+
+  it.each(['none', 'normal'])(
+    'accepts proactive video representation mode %s',
+    async (representationCompact) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'k',
+        proactive: { monitor: { representationCompact } },
+      });
+      expect(
+        loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).proactive.monitor,
+      ).toEqual({
+        chunkDurationSec: 1,
+        sessionRecycleEvals: 60,
+        representationCompact,
+      });
+    },
+  );
+
+  it.each([null, true, 1, '', 'NORMAL', 'compact', {}, []])(
+    'rejects invalid proactive video representation mode %j',
+    async (representationCompact) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'k',
+        proactive: { monitor: { representationCompact } },
+      });
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        'proactive.monitor.representationCompact',
+      );
+    },
+  );
 
   it('rejects malformed proactive objects and unknown settings', async () => {
     const cases: Array<[unknown, string]> = [
@@ -592,6 +643,18 @@ describe('loadConfig', () => {
   it('rejects wrong proactive number types, non-integers, and out-of-range values', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [
+        { monitor: { chunkDurationSec: '1' } },
+        'proactive.monitor.chunkDurationSec',
+      ],
+      [
+        { monitor: { chunkDurationSec: 0.09 } },
+        'proactive.monitor.chunkDurationSec',
+      ],
+      [
+        { monitor: { chunkDurationSec: 61 } },
+        'proactive.monitor.chunkDurationSec',
+      ],
+      [
         { scheduler: { evalIntervalSec: '2' } },
         'proactive.scheduler.evalIntervalSec',
       ],
@@ -632,6 +695,32 @@ describe('loadConfig', () => {
         expected,
       );
     }
+  });
+
+  it('requires enough frames and local media capacity for a complete monitor chunk', async () => {
+    for (const [proactive, field] of [
+      [{ vision: { fps: 1 } }, 'proactive.vision.fps'],
+      [{ monitor: { chunkDurationSec: 0.5 } }, 'proactive.vision.fps'],
+      [{ audio: { windowSizeSec: 0.5 } }, 'proactive.audio.windowSizeSec'],
+      [{ vision: { windowSizeSec: 0.5 } }, 'proactive.vision.windowSizeSec'],
+    ] as const) {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'k',
+        proactive,
+      });
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        field,
+      );
+    }
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'k',
+      proactive: { monitor: { chunkDurationSec: 2 }, vision: { fps: 1 } },
+    });
+    const proactive = loadConfig({
+      QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+    }).proactive;
+    expect(proactive.monitor.chunkDurationSec).toBe(2);
+    expect(proactive.vision.fps).toBe(1);
   });
 
   it('rejects proactive warm-up durations longer than their media windows', async () => {

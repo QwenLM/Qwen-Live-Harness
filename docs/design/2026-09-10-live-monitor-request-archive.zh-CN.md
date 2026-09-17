@@ -2,6 +2,8 @@
 
 [English](2026-09-10-live-monitor-request-archive.md) | [简体中文](2026-09-10-live-monitor-request-archive.zh-CN.md)
 
+本文保留 2026-09-10 的历史设计范围。自 2026-09-17 起，debug 归档也覆盖纯音频 Monitor；当前实现请参见 [Monitor 诊断归档](../../packages/qwen-live-harness/README_ZH.md#monitor-诊断归档)。
+
 ## 范围
 
 用户明确要求为视觉 Monitor 的每次推理保存临时的 JSON／图像／音频记录，每条日志

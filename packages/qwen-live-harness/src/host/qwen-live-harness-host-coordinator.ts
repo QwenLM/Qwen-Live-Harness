@@ -42,6 +42,11 @@ import {
 } from './types.js';
 import { isScreenDisplayId } from './screen-display.js';
 import { LiveLogger } from '../logger.js';
+import {
+  emitRuntimeFailure,
+  type RuntimeFailure,
+  type RuntimeFailureSink,
+} from '../log/runtime-failure.js';
 import type { SubagentsSnapshot } from '../subagents/types.js';
 import {
   isLiveLanguage,
@@ -73,6 +78,7 @@ const DEFAULT_SHORTCUT = 'Command+E';
 const MAX_SHORTCUT_LENGTH = 128;
 const MAX_APPSHOT_TEXT_LENGTH = 32_000;
 const DEFAULT_VISUAL_CAPTURE_TIMEOUT_MS = 15_000;
+const MAX_REPORTED_FAILURES = 128;
 const DEFAULT_VISUAL_INPUT: LiveVisualInput = {
   source: 'screen',
   mode: 'on-demand',
@@ -112,6 +118,8 @@ interface HostLease {
   memoryPending?: Set<string>;
   memoryResults?: Map<string, LiveMemoryResult>;
   languageResults?: Map<string, LiveLanguageResult>;
+  expectedClose?: boolean;
+  failureReported?: boolean;
 }
 
 export interface LiveCallHandlers {
@@ -131,6 +139,7 @@ export interface LiveCallHandlers {
     callId: string;
     pcm16: Buffer;
   }) => boolean;
+  onInputMuteChanged?: (call: { epoch: number; inputMuted: boolean }) => void;
   onInputImage?: (call: {
     epoch: number;
     callId: string;
@@ -168,6 +177,7 @@ export interface LiveHostCoordinatorOptions {
   now?: () => number;
   visualInput?: LiveVisualInput;
   logger?: LiveLogger;
+  onFailure?: RuntimeFailureSink;
   getMemoryState?: () => LiveMemoryState;
   onMemoryAction?: (
     action: LiveMemoryAction,
@@ -713,6 +723,8 @@ export class LiveHostCoordinator {
   >();
   private pendingShortcut?: PendingShortcut;
   private readonly inactiveWaiters = new Set<() => void>();
+  private readonly reportedFailures = new Set<string>();
+  private hostGeneration = 0;
 
   constructor(private readonly options: LiveHostCoordinatorOptions) {
     this.daemonInstanceNonce = options.daemonInstanceNonce ?? randomUUID();
@@ -766,6 +778,7 @@ export class LiveHostCoordinator {
     }
     if (!this.host) return;
     const lease = this.host;
+    lease.expectedClose = true;
     if (lease.socket.readyState === WebSocket.OPEN) {
       lease.socket.close(1001, 'Qwen Live Harness voice disabled.');
     }
@@ -780,24 +793,53 @@ export class LiveHostCoordinator {
       !timingSafeEqual(expectedNonce, presentedNonce)
     ) {
       this.debug('host.rejected', { reason: 'daemon_nonce' });
+      this.reportFailure({
+        code: 'host_identity_rejected',
+        stage: 'host_handshake',
+        impact: 'operation',
+        message:
+          'Host connection rejected because its daemon identity did not match.',
+        closeCode: 4003,
+      });
       socket.close(4003, 'Invalid daemon instance nonce.');
       return;
     }
     if (this.host && this.isLeaseHealthy(this.host)) {
       this.debug('host.rejected', { reason: 'lease_active' });
+      this.reportFailure({
+        code: 'host_lease_active',
+        stage: 'host_handshake',
+        impact: 'operation',
+        message: 'Another Host already owns the active connection.',
+        closeCode: 4009,
+      });
       socket.close(4009, 'A Qwen Live Harness Host is already connected.');
       return;
     }
-    if (this.host) this.disconnectHost(this.host, 4008, 'Host lease expired.');
+    if (this.host)
+      this.disconnectHost(
+        this.host,
+        4008,
+        'Host lease expired.',
+        'host_lease_expired',
+      );
 
     // Only an accepted lease revives Qwen Live Harness voice: a fresh host connection is
     // the re-activation signal that ends the deactivating window.
     this.deactivating = false;
+    this.hostGeneration += 1;
     const lease: HostLease = {
       socket,
       lastPongAt: this.now(),
       helloTimer: setTimeout(() => {
         if (this.host === lease && !lease.hello) {
+          this.reportHostFailure(
+            lease,
+            'host_hello_timeout',
+            'host_handshake',
+            'Host did not send its hello before the handshake deadline.',
+            4000,
+          );
           socket.close(4000, 'Host hello timeout.');
           this.detachHost(lease, 'host_disconnected');
         }
@@ -817,11 +859,28 @@ export class LiveHostCoordinator {
         code,
         reason: reason.toString('utf8').slice(0, 256),
       });
-      if (this.host === lease) this.detachHost(lease, 'host_disconnected');
+      if (this.host === lease) {
+        this.reportHostFailure(
+          lease,
+          'host_disconnected',
+          'host_transport',
+          'The Host connection closed unexpectedly.',
+          code,
+        );
+        this.detachHost(lease, 'host_disconnected');
+      }
     });
     socket.on('error', (error: Error) => {
       this.debug('host.error', { message: error.message.slice(0, 256) });
-      if (this.host === lease) this.detachHost(lease, 'host_disconnected');
+      if (this.host === lease) {
+        this.reportHostFailure(
+          lease,
+          'host_socket_error',
+          'host_transport',
+          'The Host connection reported a transport error.',
+        );
+        this.detachHost(lease, 'host_disconnected');
+      }
     });
   }
 
@@ -899,6 +958,15 @@ export class LiveHostCoordinator {
       stopOnReadinessLoss &&
       !preserveCheckingCall
     ) {
+      if (this.call.state !== 'stopping') {
+        this.reportFailure({
+          code: blocker ?? 'readiness_lost',
+          stage: 'host_readiness',
+          impact: 'call',
+          message:
+            'An active call lost a required Host or provider capability.',
+        });
+      }
       this.stopForReadinessLoss();
     }
     const active = this.call;
@@ -997,10 +1065,16 @@ export class LiveHostCoordinator {
           visualInput: { ...this.visualInput },
         }),
       ).catch(() => {
-        this.failCall(call.epoch, this.uiText('runtime.startFailed'));
+        this.failCall(call.epoch, this.uiText('runtime.startFailed'), {
+          code: 'call_start_failed',
+          stage: 'call_start',
+        });
       });
     } catch {
-      this.failCall(call.epoch, this.uiText('runtime.startFailed'));
+      this.failCall(call.epoch, this.uiText('runtime.startFailed'), {
+        code: 'call_start_failed',
+        stage: 'call_start',
+      });
     }
     return { epoch: call.epoch, callId: call.callId, status: this.getStatus() };
   }
@@ -1012,8 +1086,21 @@ export class LiveHostCoordinator {
   }
 
   setMute(update: LiveMuteUpdate): LiveStatus {
-    if (update.inputMuted !== undefined) {
+    if (
+      update.inputMuted !== undefined &&
+      update.inputMuted !== this.inputMuted
+    ) {
       this.inputMuted = update.inputMuted;
+      this.debug('audio.input_mute_changed', {
+        epoch: this.call?.epoch,
+        inputMuted: this.inputMuted,
+      });
+      if (this.call && this.call.state !== 'stopping') {
+        this.handlers.onInputMuteChanged?.({
+          epoch: this.call.epoch,
+          inputMuted: this.inputMuted,
+        });
+      }
     }
     if (update.outputMuted !== undefined) {
       const becameMuted = update.outputMuted && !this.outputMuted;
@@ -1208,6 +1295,14 @@ export class LiveHostCoordinator {
     return new Promise<LiveVisualCapture>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingVisualCaptures.delete(requestId);
+        this.reportFailure({
+          code: 'visual_capture_timeout',
+          stage: 'visual_capture',
+          impact: 'operation',
+          message: 'Host visual capture did not complete before its deadline.',
+          epoch: call.epoch,
+          callId: call.callId,
+        });
         this.debug('visual.capture_failed', {
           epoch: call.epoch,
           source,
@@ -1267,6 +1362,7 @@ export class LiveHostCoordinator {
   failCall(
     epoch: number,
     message = this.uiText('runtime.callFailed'),
+    diagnostic?: { code: string; stage: string },
   ): boolean {
     if (
       !this.call ||
@@ -1276,6 +1372,13 @@ export class LiveHostCoordinator {
       return false;
     }
     this.debug('call.failed', { epoch, message });
+    this.reportFailure({
+      code: diagnostic?.code ?? 'call_failed',
+      stage: diagnostic?.stage ?? 'call',
+      impact: 'call',
+      message,
+      epoch,
+    });
     const call = this.call;
     this.pendingStartMode = undefined;
     this.lastCallError = message;
@@ -1300,6 +1403,18 @@ export class LiveHostCoordinator {
       socket.readyState !== WebSocket.OPEN ||
       socket.bufferedAmount > MAX_SOCKET_BUFFERED_BYTES
     ) {
+      if (this.call.state !== 'stopping') {
+        this.reportFailure({
+          code:
+            socket?.readyState === WebSocket.OPEN
+              ? 'audio_output_backpressure'
+              : 'audio_output_unavailable',
+          stage: 'audio_output',
+          impact: 'response',
+          message: 'Response audio could not be delivered to the Host.',
+          epoch,
+        });
+      }
       return false;
     }
     const outputId = this.writableOutputId ?? this.allocateOutputId();
@@ -1313,7 +1428,18 @@ export class LiveHostCoordinator {
     frame.writeBigUInt64BE(BigInt(epoch), 0);
     frame.writeBigUInt64BE(BigInt(outputId), LIVE_OUTPUT_AUDIO_EPOCH_BYTES);
     frame.set(pcm16, LIVE_OUTPUT_AUDIO_HEADER_BYTES);
-    socket.send(frame, { binary: true });
+    try {
+      socket.send(frame, { binary: true });
+    } catch (error) {
+      this.reportFailure({
+        code: 'audio_output_send_failed',
+        stage: 'audio_output',
+        impact: 'response',
+        message: 'Sending response audio to the Host failed.',
+        epoch,
+      });
+      throw error;
+    }
     this.writableOutputId = outputId;
     if (!this.supportsOutputAudioEndMarker()) {
       output.finished = false;
@@ -1347,6 +1473,16 @@ export class LiveHostCoordinator {
         })
       ) {
         output.finished = false;
+        if (call.state !== 'stopping') {
+          this.reportFailure({
+            code: 'audio_output_end_marker_failed',
+            stage: 'audio_output',
+            impact: 'response',
+            message: 'The Host did not accept the response audio end marker.',
+            epoch: call.epoch,
+            callId: call.callId,
+          });
+        }
       } else {
         this.writableOutputId = undefined;
       }
@@ -1359,6 +1495,10 @@ export class LiveHostCoordinator {
     return this.outputMuted;
   }
 
+  isInputMuted(): boolean {
+    return this.inputMuted;
+  }
+
   clearOutput(epoch: number): void {
     if (this.call && this.call.epoch !== epoch) return;
     this.resetOutputAudio();
@@ -1368,6 +1508,7 @@ export class LiveHostCoordinator {
 
   dispose(): void {
     this.pendingStartMode = undefined;
+    if (this.host) this.host.expectedClose = true;
     if (this.call) this.finishCall(this.call);
     if (this.host) {
       const lease = this.host;
@@ -1508,11 +1649,25 @@ export class LiveHostCoordinator {
         ? Buffer.concat(data).toString('utf8')
         : Buffer.from(data).toString('utf8');
     if (Buffer.byteLength(text) > MAX_HOST_TEXT_BYTES) {
+      this.reportHostFailure(
+        lease,
+        'host_message_too_large',
+        'host_protocol',
+        'Host control message exceeded the supported size.',
+        1009,
+      );
       lease.socket.close(1009, 'Host message is too large.');
       return;
     }
     const message = parseHostMessage(text);
     if (!message) {
+      this.reportHostFailure(
+        lease,
+        'host_message_invalid',
+        'host_protocol',
+        'Host sent an invalid control message.',
+        1002,
+      );
       this.sendHostError(
         'invalid_message',
         'Invalid Qwen Live Harness Host message.',
@@ -1525,6 +1680,13 @@ export class LiveHostCoordinator {
       return;
     }
     if (!lease.hello) {
+      this.reportHostFailure(
+        lease,
+        'host_hello_required',
+        'host_protocol',
+        'Host sent a control message before its hello.',
+        1002,
+      );
       lease.socket.close(1002, 'host.hello must be the first message.');
       return;
     }
@@ -1706,6 +1868,12 @@ export class LiveHostCoordinator {
       return;
     }
     if (!message.success) {
+      this.reportFailure({
+        code: 'shortcut_registration_failed',
+        stage: 'host_readiness',
+        impact: 'operation',
+        message: 'Host could not register the requested global shortcut.',
+      });
       pending.reject(
         new Error(
           message.error ||
@@ -1738,6 +1906,13 @@ export class LiveHostCoordinator {
     this.pendingVisualCaptures.delete(message.requestId);
     clearTimeout(pending.timer);
     if (!message.success) {
+      this.reportFailure({
+        code: 'visual_capture_failed',
+        stage: 'visual_capture',
+        impact: 'operation',
+        message: 'Host could not capture the selected visual source.',
+        epoch: pending.epoch,
+      });
       this.debug('visual.capture_failed', {
         epoch: pending.epoch,
         reason: message.error.slice(0, 256),
@@ -1746,6 +1921,13 @@ export class LiveHostCoordinator {
       return;
     }
     if (message.source !== pending.source) {
+      this.reportFailure({
+        code: 'visual_source_mismatch',
+        stage: 'visual_capture',
+        impact: 'operation',
+        message: 'Host visual capture returned the wrong source.',
+        epoch: pending.epoch,
+      });
       this.debug('visual.capture_failed', {
         epoch: pending.epoch,
         source: pending.source,
@@ -1767,6 +1949,13 @@ export class LiveHostCoordinator {
           message.displayId.toLowerCase() !==
             pending.screenDisplayId.toLowerCase()))
     ) {
+      this.reportFailure({
+        code: 'visual_display_mismatch',
+        stage: 'visual_capture',
+        impact: 'operation',
+        message: 'Host visual capture did not match the selected display.',
+        epoch: pending.epoch,
+      });
       pending.reject(new Error(this.uiText('runtime.displayCaptureMismatch')));
       return;
     }
@@ -1775,10 +1964,26 @@ export class LiveHostCoordinator {
       message.source === 'screen' &&
       message.screenScope === 'display'
     ) {
+      this.reportFailure({
+        code: 'visual_display_mismatch',
+        stage: 'visual_capture',
+        impact: 'operation',
+        message:
+          'Host returned a display capture for a different capture scope.',
+        epoch: pending.epoch,
+      });
       pending.reject(new Error(this.uiText('runtime.displayCaptureMismatch')));
       return;
     }
     if (pending.persistAsset && !message.screenshotPath) {
+      this.reportFailure({
+        code: 'visual_asset_missing',
+        stage: 'visual_capture',
+        impact: 'operation',
+        message:
+          'Host did not return the requested persisted screenshot asset.',
+        epoch: pending.epoch,
+      });
       this.debug('visual.capture_failed', {
         epoch: pending.epoch,
         source: pending.source,
@@ -1837,6 +2042,13 @@ export class LiveHostCoordinator {
       (lease.hello && lease.hello.instanceNonce !== hello.instanceNonce)
     ) {
       this.lastHostFailure = 'host_version';
+      this.reportHostFailure(
+        lease,
+        'host_version',
+        'host_handshake',
+        'Host identity or protocol version is incompatible.',
+        4006,
+      );
       this.detachHost(lease, 'host_version');
       lease.socket.close(4006, 'Incompatible Qwen Live Harness Host.');
       return;
@@ -1986,7 +2198,25 @@ export class LiveHostCoordinator {
         frameHash,
         accepted,
       });
+      if (!accepted) {
+        this.reportFailure({
+          code: 'visual_frame_rejected',
+          stage: 'visual_input',
+          impact: 'feature',
+          message: 'The active call did not accept a visual input frame.',
+          epoch: call.epoch,
+          callId: call.callId,
+        });
+      }
     } catch (error) {
+      this.reportFailure({
+        code: 'visual_input_failed',
+        stage: 'visual_input',
+        impact: 'feature',
+        message: 'Handling an input frame from the Host failed.',
+        epoch: call.epoch,
+        callId: call.callId,
+      });
       this.debug('visual.frame', {
         epoch: call.epoch,
         source: message.source,
@@ -2101,6 +2331,13 @@ export class LiveHostCoordinator {
       this.start(mode);
     } catch (error) {
       if (error instanceof LiveUnavailableError) {
+        this.reportFailure({
+          code: error.status.blocker ?? 'call_start_unavailable',
+          stage: 'call_start',
+          impact: 'operation',
+          message:
+            'The Host could not start a call because a required capability is unavailable.',
+        });
         this.debug('call.start_blocked', {
           mode,
           ...(error.status.blocker ? { blocker: error.status.blocker } : {}),
@@ -2113,6 +2350,12 @@ export class LiveHostCoordinator {
         mode,
         message: error instanceof Error ? error.message : String(error),
       });
+      this.reportFailure({
+        code: 'call_start_failed',
+        stage: 'call_start',
+        impact: 'operation',
+        message: 'The Host could not start the requested call.',
+      });
       this.sendState({
         ...this.getStatus(),
         state: 'error',
@@ -2123,6 +2366,13 @@ export class LiveHostCoordinator {
 
   private handleAudioFrame(lease: HostLease, data: RawData): void {
     if (!lease.hello) {
+      this.reportHostFailure(
+        lease,
+        'host_hello_required',
+        'host_protocol',
+        'Host sent audio before its hello.',
+        1002,
+      );
       lease.socket.close(1002, 'host.hello must precede audio.');
       return;
     }
@@ -2136,11 +2386,25 @@ export class LiveHostCoordinator {
       audio.byteLength > MAX_HOST_AUDIO_WIRE_BYTES ||
       (audio.byteLength - LIVE_INPUT_AUDIO_EPOCH_BYTES) % 2 !== 0
     ) {
+      this.reportHostFailure(
+        lease,
+        'host_audio_frame_invalid',
+        'audio_input',
+        'Host sent an invalid audio frame.',
+        1009,
+      );
       lease.socket.close(1009, 'Invalid Qwen Live Harness audio frame.');
       return;
     }
     const encodedEpoch = audio.readBigUInt64BE(0);
     if (encodedEpoch > BigInt(Number.MAX_SAFE_INTEGER)) {
+      this.reportHostFailure(
+        lease,
+        'host_audio_frame_invalid',
+        'audio_input',
+        'Host audio frame had an invalid epoch.',
+        1009,
+      );
       lease.socket.close(1009, 'Invalid Qwen Live Harness audio frame.');
       return;
     }
@@ -2162,10 +2426,16 @@ export class LiveHostCoordinator {
         pcm16: Buffer.from(pcm16),
       });
       if (accepted === false) {
-        this.failCall(call.epoch, this.uiText('runtime.audioDropped'));
+        this.failCall(call.epoch, this.uiText('runtime.audioDropped'), {
+          code: 'audio_input_rejected',
+          stage: 'audio_input',
+        });
       }
     } catch {
-      this.failCall(call.epoch, this.uiText('runtime.audioInputFailed'));
+      this.failCall(call.epoch, this.uiText('runtime.audioInputFailed'), {
+        code: 'audio_input_failed',
+        stage: 'audio_input',
+      });
     }
   }
 
@@ -2176,6 +2446,7 @@ export class LiveHostCoordinator {
         lease,
         4008,
         'Qwen Live Harness Host heartbeat timed out.',
+        'host_heartbeat_timeout',
       );
       return;
     }
@@ -2202,9 +2473,28 @@ export class LiveHostCoordinator {
     try {
       void Promise.resolve(
         this.handlers.onStop?.({ epoch: call.epoch, callId: call.callId }),
-      ).catch(() => {});
+      ).catch(() => {
+        this.reportFailure({
+          code: 'call_stop_failed',
+          stage: 'call_stop',
+          impact: 'call',
+          message: 'The call stop handler failed after local teardown.',
+          epoch: call.epoch,
+          callId: call.callId,
+          executionUncertain: true,
+        });
+      });
     } catch {
       // The call is already stopped. Handler failures cannot restore it.
+      this.reportFailure({
+        code: 'call_stop_failed',
+        stage: 'call_stop',
+        impact: 'call',
+        message: 'The call stop handler failed after local teardown.',
+        epoch: call.epoch,
+        callId: call.callId,
+        executionUncertain: true,
+      });
     }
     this.broadcastState();
   }
@@ -2267,6 +2557,15 @@ export class LiveHostCoordinator {
 
   private failStoppingCall(call: LiveCall, message: string): void {
     if (this.call !== call || call.state !== 'stopping') return;
+    this.reportFailure({
+      code: 'call_stop_failed',
+      stage: 'call_stop',
+      impact: 'call',
+      message,
+      epoch: call.epoch,
+      callId: call.callId,
+      executionUncertain: true,
+    });
     this.pendingStartMode = undefined;
     this.call = undefined;
     this.resetOutputAudio();
@@ -2284,7 +2583,13 @@ export class LiveHostCoordinator {
     this.beginCallStop(call);
   }
 
-  private disconnectHost(lease: HostLease, code: number, reason: string): void {
+  private disconnectHost(
+    lease: HostLease,
+    code: number,
+    reason: string,
+    failureCode = 'host_disconnected',
+  ): void {
+    this.reportHostFailure(lease, failureCode, 'host_transport', reason, code);
     if (lease.socket.readyState === WebSocket.OPEN) {
       lease.socket.close(code, reason);
     }
@@ -2373,10 +2678,23 @@ export class LiveHostCoordinator {
         lease,
         4008,
         'Qwen Live Harness Host is not consuming messages.',
+        'host_message_backpressure',
       );
       return false;
     }
-    socket.send(JSON.stringify(message));
+    try {
+      socket.send(JSON.stringify(message));
+    } catch (error) {
+      if (this.call?.state !== 'stopping' && !this.deactivating) {
+        this.reportHostFailure(
+          lease,
+          'host_message_send_failed',
+          'host_transport',
+          'Sending a control message to the Host failed.',
+        );
+      }
+      throw error;
+    }
     return true;
   }
 
@@ -2394,6 +2712,45 @@ export class LiveHostCoordinator {
 
   private debug(event: string, details: Record<string, unknown>): void {
     this.logger.debug(`${event} ${JSON.stringify(details)}`);
+  }
+
+  private reportHostFailure(
+    lease: HostLease,
+    code: string,
+    stage: string,
+    message: string,
+    closeCode?: number,
+  ): void {
+    if (lease.expectedClose || lease.failureReported || this.host !== lease)
+      return;
+    lease.failureReported = true;
+    this.reportFailure({
+      code,
+      stage,
+      message,
+      impact: this.call && this.call.state !== 'stopping' ? 'call' : 'feature',
+      ...(closeCode !== undefined ? { closeCode } : {}),
+    });
+  }
+
+  private reportFailure(failure: Omit<RuntimeFailure, 'source'>): void {
+    if (!this.options.onFailure) return;
+    const epoch = failure.epoch ?? this.call?.epoch;
+    const key = `${epoch === undefined ? `host:${this.hostGeneration}` : `call:${epoch}`}:${failure.code}`;
+    if (this.reportedFailures.has(key)) return;
+    this.reportedFailures.add(key);
+    if (this.reportedFailures.size > MAX_REPORTED_FAILURES) {
+      const oldest = this.reportedFailures.values().next().value;
+      if (oldest !== undefined) this.reportedFailures.delete(oldest);
+    }
+    emitRuntimeFailure(this.options.onFailure, {
+      source: 'host',
+      ...(epoch !== undefined ? { epoch } : {}),
+      ...(this.call && this.call.epoch === epoch
+        ? { callId: this.call.callId }
+        : {}),
+      ...failure,
+    });
   }
 
   private notifyInactive(): void {

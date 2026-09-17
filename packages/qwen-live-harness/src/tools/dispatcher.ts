@@ -11,6 +11,12 @@
  * would stall the realtime response arbitration.
  */
 
+import {
+  emitRuntimeFailure,
+  type RuntimeFailure,
+  type RuntimeFailureSink,
+} from '../log/runtime-failure.js';
+
 /**
  * Generous by design: the timeout is a last-resort answer for the model,
  * not a cancellation — the handler keeps running and its side effects
@@ -44,16 +50,50 @@ export interface ToolDispatcherOptions {
   timeoutMs?: number;
   /** Guidance must match the capabilities available in the current call. */
   timeoutNote?: string;
+  /** Best-effort diagnostics; never changes tool execution or receipts. */
+  onFailure?: RuntimeFailureSink;
 }
 
-function parseArguments(raw: string): Record<string, unknown> {
+function errorName(error: unknown): string | undefined {
+  try {
+    return error instanceof Error && typeof error.name === 'string'
+      ? error.name
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseArguments(
+  raw: string,
+  name: string,
+  onFailure: RuntimeFailureSink | undefined,
+): Record<string, unknown> {
   if (!raw.trim()) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
       return parsed as Record<string, unknown>;
-  } catch {
-    /* fall through to the lenient default */
+    emitRuntimeFailure(onFailure, {
+      source: 'tool',
+      code: 'tool_arguments_shape',
+      stage: 'arguments',
+      impact: 'operation',
+      toolName: name,
+      message:
+        'Tool arguments were not an object; the handler receives an empty object.',
+    });
+  } catch (error) {
+    emitRuntimeFailure(onFailure, {
+      source: 'tool',
+      code: 'tool_arguments_invalid',
+      stage: 'arguments',
+      impact: 'operation',
+      toolName: name,
+      errorName: errorName(error),
+      message:
+        'Tool arguments were not valid JSON; the handler receives an empty object.',
+    });
   }
   return {};
 }
@@ -69,11 +109,13 @@ export class ToolDispatcher {
   private readonly handlers: ReadonlyMap<string, ToolHandler>;
   private readonly timeoutMs: number;
   private readonly timeoutNote: string;
+  private readonly onFailure?: RuntimeFailureSink;
 
   constructor(options: ToolDispatcherOptions) {
     this.handlers = options.handlers;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS;
     this.timeoutNote = options.timeoutNote ?? TIMEOUT_NOTE;
+    this.onFailure = options.onFailure;
   }
 
   async dispatch(
@@ -83,6 +125,11 @@ export class ToolDispatcher {
   ): Promise<ToolDispatchResult> {
     const handler = this.handlers.get(name);
     if (!handler) {
+      this.reportFailure(name, {
+        code: 'tool_unknown',
+        stage: 'lookup',
+        message: 'The requested tool has no registered handler.',
+      });
       return {
         ok: false,
         receipt: JSON.stringify({
@@ -91,8 +138,9 @@ export class ToolDispatcher {
         }),
       };
     }
-    const args = parseArguments(rawArguments);
+    const args = parseArguments(rawArguments, name, this.onFailure);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stage: 'handler' | 'serialization' = 'handler';
     try {
       const outcome = await Promise.race([
         Promise.resolve(handler(args, ctx)),
@@ -103,9 +151,20 @@ export class ToolDispatcher {
           timer.unref?.();
         }),
       ]);
-      return { ok: true, receipt: JSON.stringify(outcome) };
+      stage = 'serialization';
+      const receipt = JSON.stringify(outcome);
+      this.observeBusinessResult(name, receipt);
+      return { ok: true, receipt };
     } catch (error) {
       if (error instanceof ToolTimeoutError) {
+        this.reportFailure(name, {
+          code: 'tool_timeout_pending',
+          stage: 'handler',
+          message:
+            'The tool response timed out; execution may still continue and must not be retried automatically.',
+          errorName: errorName(error),
+          executionUncertain: true,
+        });
         return {
           ok: false,
           receipt: JSON.stringify({
@@ -114,6 +173,19 @@ export class ToolDispatcher {
           }),
         };
       }
+      this.reportFailure(name, {
+        code:
+          stage === 'serialization'
+            ? 'tool_result_serialization_failed'
+            : 'tool_handler_failed',
+        stage,
+        message:
+          stage === 'serialization'
+            ? 'The tool result could not be serialized; execution may already have occurred.'
+            : 'The tool handler raised an error; prior side effects are not rolled back.',
+        errorName: errorName(error),
+        executionUncertain: true,
+      });
       return {
         ok: false,
         receipt: JSON.stringify({
@@ -127,5 +199,42 @@ export class ToolDispatcher {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  private observeBusinessResult(name: string, receipt: string): void {
+    if (!this.onFailure) return;
+    try {
+      // Inspect the already serialized wire result, not getters or toJSON on
+      // the handler-owned object. Observability must not execute them twice.
+      const outcome: unknown = JSON.parse(receipt);
+      if (
+        outcome &&
+        typeof outcome === 'object' &&
+        !Array.isArray(outcome) &&
+        'status' in outcome &&
+        outcome.status === 'error'
+      ) {
+        this.reportFailure(name, {
+          code: 'tool_business_rejected',
+          stage: 'result',
+          message: 'The tool handler returned a business error receipt.',
+        });
+      }
+    } catch {
+      // Keep the original receipt even if it cannot be inspected for diagnostics.
+    }
+  }
+
+  private reportFailure(
+    name: string,
+    failure: Pick<RuntimeFailure, 'code' | 'stage' | 'message'> &
+      Pick<RuntimeFailure, 'errorName' | 'executionUncertain'>,
+  ): void {
+    emitRuntimeFailure(this.onFailure, {
+      source: 'tool',
+      impact: 'operation',
+      toolName: name,
+      ...failure,
+    });
   }
 }

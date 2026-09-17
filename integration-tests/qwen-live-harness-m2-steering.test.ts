@@ -181,17 +181,8 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
       },
     );
     expect(contextTextOf(complete)).toContain('slow task finished');
-    const spoken = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text?.startsWith('[SPEAK_TO_USER] ') === true &&
-          text.includes('slow task finished')
-        );
-      },
-      { fromIndex: stack.fakeDash.inbox.indexOf(complete) + 1 },
-    );
-    await waitForLiveResponseAfter(stack, spoken, 'backend_speech');
+    expect(contextTextOf(complete)).not.toContain('[SPEAK_TO_USER]');
+    await waitForLiveResponseAfter(stack, complete, 'task_result');
   });
 
   it('accepts a plain handoff to the now-idle session', async () => {

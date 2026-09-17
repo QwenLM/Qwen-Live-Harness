@@ -174,20 +174,11 @@ describeE2E('qwen-live-harness M2 — injection window', () => {
       },
     );
     expect(contextTextOf(complete)).toContain('finished inject-window-task');
-    const spoken = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text?.startsWith('[SPEAK_TO_USER] ') === true &&
-          text.includes('finished inject-window-task')
-        );
-      },
-      { fromIndex: stack.fakeDash.inbox.indexOf(complete) + 1 },
-    );
-    await waitForLiveResponseAfter(stack, spoken, 'backend_speech');
+    expect(contextTextOf(complete)).not.toContain('[SPEAK_TO_USER]');
+    await waitForLiveResponseAfter(stack, complete, 'task_result');
   });
 
-  it('batches multiple completions into one context injection', async () => {
+  it('queues independent completion summaries without combining their task identities', async () => {
     // A second backend session so two independent turns can complete.
     const createIndex = stack.fakeDash.inbox.length;
     conn.queueFunctionCall({
@@ -239,21 +230,20 @@ describeE2E('qwen-live-harness M2 — injection window', () => {
     expect(premature).toEqual([]);
 
     conn.finishResponse(holdId);
-    // The injector flushes the whole queue as ONE combined context item:
-    // both job conclusions must land in the same conversation.item.create.
-    const merged = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return text !== undefined && text.includes(`[COMPLETE ${jobA}]`);
-      },
-      {
-        timeoutMs: 15_000,
-        fromIndex: inboxIndex,
-        description: `the merged [COMPLETE ${jobA}]/[COMPLETE ${jobB}] injection`,
-      },
-    );
-    const mergedText = contextTextOf(merged)!;
-    expect(mergedText).toContain(`[COMPLETE ${jobA}]`);
-    expect(mergedText).toContain(`[COMPLETE ${jobB}]`);
+    for (const job of [jobA, jobB]) {
+      const outcome = await stack.fakeDash.waitForMessage(
+        (message) =>
+          contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        {
+          timeoutMs: 15_000,
+          fromIndex: inboxIndex,
+          description: `independent [COMPLETE ${job}] outcome`,
+        },
+      );
+      const text = contextTextOf(outcome)!;
+      expect(text).toContain('"status":"completed"');
+      expect(text).not.toContain(`[COMPLETE ${job === jobA ? jobB : jobA}]`);
+      await waitForLiveResponseAfter(stack, outcome, 'task_result');
+    }
   });
 });

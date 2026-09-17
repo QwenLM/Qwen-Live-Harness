@@ -15,7 +15,7 @@ vi.mock('node:os', async () => ({
   homedir: () => synthetic.home,
 }));
 
-import { loadConfig } from './config.js';
+import { DEFAULT_REALTIME_MODEL, loadConfig } from './config.js';
 import { readPreferredLiveLanguage } from './language-preferences.js';
 
 beforeEach(async () => {
@@ -59,6 +59,7 @@ describe('new-only configuration namespace', () => {
     expect(config.dataDir).toBe(data);
     expect(config.discoveryDir).toBe(data);
     expect(config.realtime.apiKey).toBe('new-key');
+    expect(config.realtime.model).toBe(DEFAULT_REALTIME_MODEL);
     expect(config.language).toBe('zh-CN');
     expect(readPreferredLiveLanguage({ QWEN_LIVE_DATA_DIR: legacy })).toBe(
       'zh-CN',
@@ -104,6 +105,9 @@ describe('new-only configuration namespace', () => {
     const currentEnvironment = {
       QWEN_LIVE_HARNESS_REALTIME_API_KEY: 'new-key',
     };
+    expect(loadConfig(currentEnvironment).realtime.model).toBe(
+      DEFAULT_REALTIME_MODEL,
+    );
     expect(loadConfig({ ...legacyEnvironment, ...currentEnvironment })).toEqual(
       loadConfig(currentEnvironment),
     );

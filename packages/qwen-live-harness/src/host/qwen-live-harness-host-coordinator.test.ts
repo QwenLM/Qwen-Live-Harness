@@ -139,6 +139,38 @@ afterEach(() => {
 });
 
 describe('LiveHostCoordinator', () => {
+  it('forwards input mute transitions only for the active call and preserves pre-call mute', () => {
+    const onInputMuteChanged = vi.fn();
+    const value = coordinator({ handlers: { onInputMuteChanged } });
+    value.setMute({ inputMuted: true });
+    expect(value.isInputMuted()).toBe(true);
+    expect(onInputMuteChanged).not.toHaveBeenCalled();
+    connectReady(value);
+    const call = value.start('resume');
+    expect(value.isInputMuted()).toBe(true);
+
+    value.setMute({ inputMuted: true });
+    value.setMute({ outputMuted: true });
+    expect(onInputMuteChanged).not.toHaveBeenCalled();
+    value.setMute({ inputMuted: false });
+    expect(onInputMuteChanged).toHaveBeenLastCalledWith({
+      epoch: call.epoch,
+      inputMuted: false,
+    });
+    value.setMute({ inputMuted: true });
+    expect(onInputMuteChanged).toHaveBeenLastCalledWith({
+      epoch: call.epoch,
+      inputMuted: true,
+    });
+    value.setHandlers({
+      onInputMuteChanged,
+      onStop: () => new Promise<void>(() => {}),
+    });
+    value.stop();
+    value.setMute({ inputMuted: false });
+    expect(onInputMuteChanged).toHaveBeenCalledTimes(2);
+  });
+
   it('requests the selected full display for monitors but keeps Appshot window-scoped', async () => {
     const displayId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const debug = vi.fn();
@@ -3006,6 +3038,284 @@ describe('LiveHostCoordinator memory RPC', () => {
     expect(results(next)).toHaveLength(0);
     expect(next.messages()).toEqual(messagesBeforeCompletion);
     expect(next.readyState).toBe(WebSocket.OPEN);
+  });
+});
+
+describe('Host coordinator failure diagnostics', () => {
+  it('reports an actual call failure once without changing the stop outcome', () => {
+    const onFailure = vi.fn();
+    const onStop = vi.fn();
+    const value = coordinator({ onFailure, handlers: { onStop } });
+    connectReady(value);
+    const call = value.start('resume');
+    expect(value.failCall(call.epoch, 'Call failed.')).toBe(true);
+    expect(value.failCall(call.epoch, 'Duplicate.')).toBe(false);
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+      source: 'host',
+      code: 'call_failed',
+      stage: 'call',
+      impact: 'call',
+      message: 'Call failed.',
+      epoch: call.epoch,
+      callId: call.callId,
+    });
+    expect(onStop).toHaveBeenCalledExactlyOnceWith({
+      epoch: call.epoch,
+      callId: call.callId,
+    });
+  });
+
+  it.each(['throw', 'reject', 'outcome'] as const)(
+    'records %s stop failures after an explicit End call',
+    async (mode) => {
+      const onFailure = vi.fn();
+      const value = coordinator({
+        onFailure,
+        handlers: {
+          onStop: () => {
+            if (mode === 'throw') throw new Error('PRIVATE_STOP_ERROR');
+            if (mode === 'reject')
+              return Promise.reject(new Error('PRIVATE_STOP_ERROR'));
+            return { error: 'Call cleanup did not finish.' };
+          },
+        },
+      });
+      connectReady(value);
+      const call = value.start('resume');
+      value.stop();
+      await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce());
+      expect(onFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'call_stop_failed',
+          stage: 'call_stop',
+          impact: 'call',
+          epoch: call.epoch,
+          callId: call.callId,
+          executionUncertain: true,
+        }),
+      );
+      expect(JSON.stringify(onFailure.mock.calls)).not.toContain(
+        'PRIVATE_STOP_ERROR',
+      );
+      expect(value.getStatus().state).toBe('error');
+    },
+  );
+
+  it('does not classify normal End call, Quit, mute or stale media as failures', async () => {
+    const onFailure = vi.fn();
+    const value = coordinator({ onFailure });
+    const socket = connectReady(value);
+    const call = value.start('resume');
+    socket.receiveAudio(call.epoch - 1, [1, 0]);
+    expect(value.sendOutputAudio(call.epoch - 1, Buffer.from([1, 0]))).toBe(
+      false,
+    );
+    value.setMute({ inputMuted: true, outputMuted: true });
+    socket.receiveAudio(call.epoch, [1, 0]);
+    expect(value.sendOutputAudio(call.epoch, Buffer.from([1, 0]))).toBe(false);
+    value.stop();
+    await value.deactivate();
+    value.dispose();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'socket_error',
+    'closed',
+    'invalid_control',
+    'invalid_audio',
+  ] as const)(
+    'records one safe transport cause for %s without duplicate close errors',
+    (cause) => {
+      const onFailure = vi.fn();
+      const onStop = vi.fn();
+      const value = coordinator({ onFailure, handlers: { onStop } });
+      const socket = connectReady(value);
+      const call = value.start('resume');
+      if (cause === 'socket_error')
+        socket.emit('error', new Error('PRIVATE_SOCKET_ERROR'));
+      else if (cause === 'closed') {
+        socket.readyState = WebSocket.CLOSED;
+        socket.emit('close', 1006, Buffer.from('PRIVATE_CLOSE_REASON'));
+      } else if (cause === 'invalid_control')
+        socket.receive({ type: 'not-a-message', data: 'PRIVATE_BODY' });
+      else socket.receiveRawAudio([1]);
+      expect(onFailure).toHaveBeenCalledOnce();
+      expect(onFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: {
+            socket_error: 'host_socket_error',
+            closed: 'host_disconnected',
+            invalid_control: 'host_message_invalid',
+            invalid_audio: 'host_audio_frame_invalid',
+          }[cause],
+          impact: 'call',
+          epoch: call.epoch,
+          callId: call.callId,
+        }),
+      );
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(JSON.stringify(onFailure.mock.calls)).not.toContain('PRIVATE_');
+    },
+  );
+
+  it('records hello and heartbeat timeout causes without modifying their close codes', async () => {
+    vi.useFakeTimers();
+    const helloFailure = vi.fn();
+    const pending = coordinator({ onFailure: helloFailure, helloTimeoutMs: 5 });
+    const pendingSocket = new FakeSocket();
+    pending.attachHost(
+      pendingSocket as unknown as WebSocket,
+      'daemon_instance_nonce_0001',
+    );
+    await vi.advanceTimersByTimeAsync(5);
+    expect(pendingSocket.closeCode).toBe(4000);
+    expect(helloFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'host_hello_timeout',
+        closeCode: 4000,
+        impact: 'feature',
+      }),
+    );
+
+    const onFailure = vi.fn();
+    let now = 0;
+    const active = coordinator({
+      onFailure,
+      now: () => now,
+      heartbeatIntervalMs: 5,
+      heartbeatTimeoutMs: 10,
+    });
+    const socket = connectReady(active);
+    const call = active.start('resume');
+    now = 20;
+    await vi.advanceTimersByTimeAsync(5);
+    expect(socket.closeCode).toBe(4008);
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'host_heartbeat_timeout',
+        closeCode: 4008,
+        epoch: call.epoch,
+      }),
+    );
+  });
+
+  it.each(['provider', 'microphone'] as const)(
+    'records the capability lost when %s readiness stops a call',
+    (kind) => {
+      const onFailure = vi.fn();
+      const value = coordinator({ onFailure });
+      const socket = connectReady(value);
+      const call = value.start('resume');
+      if (kind === 'provider')
+        value.setProviderReachability({
+          state: 'unavailable',
+          blocker: 'provider_unreachable',
+        });
+      else
+        socket.receive(
+          readyHello({
+            permissions: { ...readyHello().permissions, microphone: 'denied' },
+          }),
+        );
+      value.getStatus();
+      value.getStatus();
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          code:
+            kind === 'provider'
+              ? 'provider_unreachable'
+              : 'microphone_permission',
+          stage: 'host_readiness',
+          epoch: call.epoch,
+          callId: call.callId,
+        }),
+      );
+    },
+  );
+
+  it('deduplicates output backpressure per epoch and records a missing output marker separately', () => {
+    const onFailure = vi.fn();
+    const value = coordinator({ onFailure });
+    const socket = connectReady(
+      value,
+      readyHello({ capabilities: { outputAudioEndMarkerV1: true } }),
+    );
+    const call = value.start('resume');
+    socket.bufferedAmount = 2 * 1024 * 1024;
+    for (let frame = 0; frame < 100; frame += 1) {
+      expect(value.sendOutputAudio(call.epoch, Buffer.from([1, 0]))).toBe(
+        false,
+      );
+    }
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'audio_output_backpressure',
+        epoch: call.epoch,
+      }),
+    );
+    socket.bufferedAmount = 0;
+    expect(value.sendOutputAudio(call.epoch, Buffer.from([1, 0]))).toBe(true);
+    socket.readyState = WebSocket.CLOSING;
+    value.finishOutputAudio(call.epoch);
+    value.finishOutputAudio(call.epoch);
+    expect(onFailure).toHaveBeenCalledTimes(2);
+    expect(onFailure).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        code: 'audio_output_end_marker_failed',
+        epoch: call.epoch,
+      }),
+    );
+    socket.readyState = WebSocket.OPEN;
+    value.stop();
+    const next = value.start('resume');
+    socket.bufferedAmount = 2 * 1024 * 1024;
+    value.sendOutputAudio(next.epoch, Buffer.from([1, 0]));
+    expect(onFailure).toHaveBeenCalledTimes(3);
+    socket.bufferedAmount = 0;
+  });
+
+  it('records a capture timeout without copying screenshot or request content', async () => {
+    vi.useFakeTimers();
+    const onFailure = vi.fn();
+    const value = coordinator({ onFailure, visualCaptureTimeoutMs: 5 });
+    connectReady(value);
+    const call = value.start('resume');
+    value.setCoordinator(call.epoch, {
+      workspaceCwd: '/fixture',
+      sessionId: 'capture-session',
+    });
+    const capture = value.captureVisualContext('capture-session');
+    const rejection = expect(capture).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(5);
+    await rejection;
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'visual_capture_timeout',
+        stage: 'visual_capture',
+        impact: 'operation',
+        epoch: call.epoch,
+      }),
+    );
+  });
+
+  it('isolates a throwing failure observer and bounds deduplication state', () => {
+    const onStop = vi.fn();
+    const value = coordinator({
+      onFailure: () => {
+        throw new Error('sink failed');
+      },
+      handlers: { onStop },
+    });
+    connectReady(value);
+    for (let index = 0; index < 140; index += 1) {
+      const call = value.start('resume');
+      expect(value.failCall(call.epoch, 'Synthetic failure.')).toBe(true);
+    }
+    expect(onStop).toHaveBeenCalledTimes(140);
+    expect(
+      (Reflect.get(value, 'reportedFailures') as Set<string>).size,
+    ).toBeLessThanOrEqual(128);
   });
 });
 

@@ -169,7 +169,31 @@ ipcRenderer.on(
 ipcRenderer.on(
   'live:audio:output-finished',
   (_event, identity: { epoch: number; outputId: number }) => {
-    void audio.finishOutputAudio(identity);
+    void audio.finishOutputAudio(identity).catch((error: unknown) => {
+      if (isAudioOperationCancelled(error)) return;
+      const errorName =
+        error instanceof Error &&
+        [
+          'Error',
+          'TypeError',
+          'RangeError',
+          'InvalidStateError',
+          'NotSupportedError',
+          'SecurityError',
+          'AudioOperationTimeoutError',
+        ].includes(error.name)
+          ? error.name
+          : 'Error';
+      ipcRenderer.send('live:audio:diagnostic', {
+        event: 'audio_output_finish_failed',
+        details: {
+          epoch: identity.epoch,
+          outputId: identity.outputId,
+          code: 'audio_output_finish_failed',
+          errorName,
+        },
+      });
+    });
   },
 );
 ipcRenderer.on('live:audio:clear', () => audio.clearOutput());

@@ -33,6 +33,12 @@ import {
 import { LiveHostCoordinator } from './host/qwen-live-harness-host-coordinator.js';
 import { LIVE_HOST_PROTOCOL_VERSION } from './host/types.js';
 import { SessionLog } from './log/session-log.js';
+import {
+  RuntimeFailureLog,
+  runtimeFailureRecord,
+  runtimeFailureSecrets,
+  type RuntimeFailure,
+} from './log/runtime-failure.js';
 import { LiveLogger } from './logger.js';
 import { LiveSession } from './orchestrator/live-session.js';
 import { MemoryService } from './memory/service.js';
@@ -60,6 +66,7 @@ export interface LiveDaemonDeps {
   /** Installer (tests inject a fake); production installs the real Host. */
   installer?: LiveHostInstaller;
   logger?: LiveLogger;
+  failureLog?: RuntimeFailureLog;
 }
 
 /** Build one adaptor from its config entry. */
@@ -98,6 +105,9 @@ export class LiveDaemon {
   private readonly installer: LiveHostInstaller;
   private readonly token = randomUUID();
   private readonly instanceNonce = randomUUID();
+  private readonly failureLog: RuntimeFailureLog;
+  private failureLogUnavailable = false;
+  private startupStage = 'constructor';
   private server: Server | undefined;
   private wss: WebSocketServer | undefined;
   private coordinator: LiveHostCoordinator | undefined;
@@ -117,6 +127,11 @@ export class LiveDaemon {
     deps: LiveDaemonDeps = {},
   ) {
     this.logger = deps.logger ?? new LiveLogger();
+    this.failureLog =
+      deps.failureLog ??
+      new RuntimeFailureLog(config.dataDir, () =>
+        runtimeFailureSecrets(this.config, [this.token]),
+      );
     this.installer = deps.installer ?? new LiveHostInstaller();
     this.registry =
       deps.registry ??
@@ -137,15 +152,48 @@ export class LiveDaemon {
   }
 
   async start(): Promise<{ port: number; url: string }> {
+    try {
+      return await this.startRuntime();
+    } catch (error) {
+      if (!this.stopping)
+        this.recordFailure({
+          source: 'daemon',
+          code: 'daemon_start_failed',
+          stage: this.startupStage,
+          impact: 'daemon',
+          message:
+            error instanceof Error ? error.message : 'Daemon startup failed.',
+          errorName: error instanceof Error ? error.name : undefined,
+        });
+      throw error;
+    }
+  }
+
+  private async startRuntime(): Promise<{ port: number; url: string }> {
     const assertStarting = () => {
       if (this.stopping)
         throw new Error(liveMessage('startup.startup_aborted'));
     };
     assertStarting();
+    this.startupStage = 'debug_archive';
     if (this.logger.debugEnabled) {
-      const archive = new MonitorDebugStore((event, details) =>
-        this.logger.debug(`${event} ${JSON.stringify(details)}`),
-      );
+      const archive = new MonitorDebugStore((event, details) => {
+        this.logger.debug(`${event} ${JSON.stringify(details)}`);
+        this.log?.write('proactive.debug', { event, ...details });
+        if (event === 'proactive.monitor_debug_failed')
+          this.recordFailure({
+            source: 'proactive',
+            code: 'monitor_archive_failed',
+            stage: 'debug_archive',
+            impact: 'operation',
+            message:
+              'Monitor diagnostic archive failed; monitoring itself continues.',
+            taskId:
+              typeof details['taskId'] === 'string'
+                ? details['taskId']
+                : undefined,
+          });
+      });
       if (await archive.initialize()) this.monitorDebug = archive;
     }
     assertStarting();
@@ -158,9 +206,19 @@ export class LiveDaemon {
       );
     }
     const backendStarts = new Map<string, number>();
+    this.startupStage = 'backend_preflight';
     await this.registry.preflight(
       (message) => this.logger.warn(message),
       ({ backend, stage }) => {
+        if (stage === 'unavailable')
+          this.recordFailure({
+            source: 'backend',
+            code: 'backend_preflight_failed',
+            stage: 'preflight',
+            impact: 'feature',
+            message: 'A configured backend did not initialize.',
+            backend,
+          });
         if (stage === 'starting') {
           backendStarts.set(backend, Date.now());
           this.logger.info(
@@ -182,10 +240,20 @@ export class LiveDaemon {
     );
     assertStarting();
 
+    this.startupStage = 'memory_initialization';
     let memoryBaseUrl = '';
     try {
       memoryBaseUrl = deriveMemoryBaseUrl(this.config.realtime.endpoint);
     } catch {
+      if (this.config.memory.enabled)
+        this.recordFailure({
+          source: 'memory',
+          code: 'memory_endpoint_unavailable',
+          stage: 'initialization',
+          impact: 'feature',
+          message:
+            'The configured Realtime endpoint cannot provide a default Memory endpoint.',
+        });
       this.logger.warn(
         'Memory default endpoint unavailable; check realtimeEndpoint or QWEN_LIVE_HARNESS_REALTIME_ENDPOINT.',
       );
@@ -197,12 +265,33 @@ export class LiveDaemon {
         baseUrl: memoryBaseUrl,
         apiKey: this.config.realtime.apiKey,
       },
-      log: (event, details) =>
-        this.logger.debug(`${event} ${JSON.stringify(details ?? {})}`),
+      log: (event, details) => {
+        this.logger.debug(`${event} ${JSON.stringify(details ?? {})}`);
+        if (
+          /[._](?:failed|error|unavailable|bad_response|invalid_response|timeout)$/u.test(
+            event,
+          )
+        ) {
+          this.recordFailure({
+            source: 'memory',
+            code: event,
+            stage: 'memory_service',
+            impact: 'operation',
+            message:
+              'A Memory sub-operation failed; other Memory functions may continue.',
+            errorName:
+              typeof details?.['kind'] === 'string'
+                ? details['kind']
+                : undefined,
+          });
+        }
+      },
       onChange: () => this.coordinator?.refreshMemoryState(),
     });
 
+    this.startupStage = 'host_initialization';
     const coordinator = new LiveHostCoordinator({
+      onFailure: (failure) => this.recordFailure(failure),
       daemonInstanceNonce: this.instanceNonce,
       daemonShutdownV1: true,
       getUiLanguage: () => ({ language: this.config.language ?? 'en' }),
@@ -285,6 +374,9 @@ export class LiveDaemon {
     this.log = log;
 
     const session = new LiveSession({
+      getLanguage: () => this.config.language ?? 'en',
+      onFailure: (failure) => this.recordFailure(failure, false),
+      failureSecrets: runtimeFailureSecrets(this.config, [this.token]),
       host: coordinator,
       registry: this.registry,
       realtime: {
@@ -308,6 +400,7 @@ export class LiveDaemon {
       onStart: (call) => session.start(call),
       onStop: (call) => session.stop(call),
       onInputAudio: (call) => session.pushAudio(call),
+      onInputMuteChanged: (call) => session.setInputMuted(call),
       onInputImage: (call) => session.pushImage(call),
       onVisualSettings: (call) => session.setVisualSettings(call),
       onPlaybackStarted: (call) => session.playbackStarted(call),
@@ -315,10 +408,12 @@ export class LiveDaemon {
       onOutputMuted: (call) => session.outputMuted(call),
     });
 
+    this.startupStage = 'listen';
     const port = await this.listen();
     assertStarting();
     const url = `http://127.0.0.1:${port}`;
 
+    this.startupStage = 'discovery';
     await this.publishDiscovery(url);
     if (this.stopping) {
       // Shutdown may have removed discovery before publication completed.
@@ -396,7 +491,35 @@ export class LiveDaemon {
     this.pendingCleanup?.delete('discovery');
   }
 
+  private recordFailure(failure: RuntimeFailure, includeSession = true): void {
+    try {
+      const record = runtimeFailureRecord(
+        failure,
+        runtimeFailureSecrets(this.config, [this.token]),
+      );
+      if (includeSession) this.log?.write('failure', record);
+      const saved = this.failureLog.write(record as unknown as RuntimeFailure);
+      if (!saved && !this.failureLogUnavailable) {
+        this.failureLogUnavailable = true;
+        this.logger.warn(
+          'Runtime failure log could not be written. Check the data directory permissions and disk space.',
+        );
+      }
+    } catch {
+      /* Failure reporting must not break cleanup or calls. */
+    }
+  }
+
   private logCleanupFailure(name: string, error: unknown): void {
+    this.recordFailure({
+      source: 'daemon',
+      code: 'cleanup_failed',
+      stage: 'cleanup',
+      impact: 'daemon',
+      message: `Cleanup of ${name} failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+      errorName: error instanceof Error ? error.name : undefined,
+      executionUncertain: true,
+    });
     const secrets = [
       this.token,
       this.config.realtime.apiKey,

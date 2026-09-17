@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SocketLike } from './socket.js';
 import {
   searchQwenRealtime,
-  supportsQwenRealtimeSearch,
   type QwenRealtimeSearchOptions,
 } from './web-search.js';
 
@@ -36,6 +35,21 @@ class SearchSocket implements SocketLike {
   }
   ready(): void {
     this.message({ type: 'session.created' });
+    const update = this.sent.find(
+      (message) => message['type'] === 'session.update',
+    );
+    const session = update?.['session'] as Record<string, unknown> | undefined;
+    // Mirror the provider's handshake requirement even for text-only sessions.
+    if (typeof session?.['voice'] !== 'string' || !session['voice']) {
+      this.message({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'A voice is required.',
+        },
+      });
+      return;
+    }
     this.message({ type: 'session.updated' });
     this.message({ type: 'response.created', response: { id: 'response-1' } });
   }
@@ -56,7 +70,7 @@ class SearchSocket implements SocketLike {
 
 const OPTIONS: QwenRealtimeSearchOptions = {
   endpoint: 'https://example.test/compatible-mode/v1',
-  model: 'qwen3.5-omni-plus-realtime',
+  model: 'qwen3.8-omni-flash-realtime',
   apiKey: 'sk-search-fixture-secret',
   query: '  What happened today?  ',
 };
@@ -96,6 +110,7 @@ describe('isolated Qwen Realtime native web search', () => {
       socket.ready();
       expect(socket.sent[0]?.['session']).toMatchObject({
         modalities: ['text'],
+        voice: 'Tina',
         turn_detection: null,
       });
       socket.text('A fixture result');
@@ -106,18 +121,59 @@ describe('isolated Qwen Realtime native web search', () => {
     },
   );
 
-  it('supports only the two documented model names', () => {
-    expect(supportsQwenRealtimeSearch('qwen3.5-omni-plus-realtime')).toBe(true);
-    expect(supportsQwenRealtimeSearch('qwen3.5-omni-flash-realtime')).toBe(
-      true,
-    );
-    for (const model of [
-      'qwen3.8-omni-flash-realtime',
-      'qwen-omni-turbo-realtime',
-      'qwen3.5-omni-plus',
-      '',
-    ])
-      expect(supportsQwenRealtimeSearch(model)).toBe(false);
+  it.each([
+    'qwen3.8-omni-flash-realtime',
+    'future-realtime-model',
+    'example-omni-realtime-deployment',
+    'custom-realtime-deployment/2026?variant=a&b=中文',
+  ])(
+    'passes the configured model through without a whitelist: %s',
+    async (model) => {
+      const endpoint = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime';
+      const expectedUrl = new URL(endpoint);
+      expectedUrl.searchParams.set('model', model);
+      const { socket, createWebSocket, promise } = fixture({ endpoint, model });
+      expect(createWebSocket).toHaveBeenCalledExactlyOnceWith(
+        expectedUrl.toString(),
+        expect.objectContaining({
+          headers: { Authorization: `Bearer ${OPTIONS.apiKey}` },
+        }),
+      );
+      socket.ready();
+      expect(socket.sent[0]?.['session']).toMatchObject({
+        modalities: ['text'],
+        voice: 'Tina',
+        tools: [],
+        enable_search: true,
+      });
+      socket.text('A fixture result from the configured model.');
+      socket.done({ usage: { plugins: { search: { count: 1 } } } });
+      await expect(promise).resolves.toMatchObject({
+        searchStatus: 'performed',
+      });
+    },
+  );
+
+  it('treats provider rejection of an invited model as a normal search failure after connecting', async () => {
+    const { socket, createWebSocket, promise } = fixture({
+      model: 'example-omni-realtime-deployment',
+    });
+    socket.message({ type: 'session.created' });
+    expect(createWebSocket).toHaveBeenCalledOnce();
+    expect(socket.sent[0]?.['session']).toMatchObject({ enable_search: true });
+    socket.message({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        code: 'unsupported_parameter',
+        message: 'PRIVATE provider detail: enable_search is unsupported',
+      },
+    });
+    await expect(promise).rejects.toMatchObject({
+      code: 'web_search_failed',
+      message: 'Realtime web search failed.',
+    });
+    expect(socket.close).toHaveBeenCalledOnce();
   });
 
   it('uses one text-only search connection with only the explicit query', async () => {
@@ -129,6 +185,8 @@ describe('isolated Qwen Realtime native web search', () => {
         type: 'session.update',
         session: {
           modalities: ['text'],
+          voice: 'Tina',
+          smooth_output: false,
           instructions: expect.any(String),
           tools: [],
           enable_search: true,
@@ -137,6 +195,7 @@ describe('isolated Qwen Realtime native web search', () => {
         },
       },
     ]);
+    expect(socket.sent[0]?.['session']).toHaveProperty('smooth_output', false);
     const searchInstructions = String(
       (socket.sent[0]?.['session'] as Record<string, unknown>)['instructions'],
     );
@@ -169,8 +228,10 @@ describe('isolated Qwen Realtime native web search', () => {
       },
       { type: 'response.create', response: { modalities: ['text'] } },
     ]);
+    // The response inherits the session setting without an unverified override.
+    expect(socket.sent[2]?.['response']).not.toHaveProperty('smooth_output');
     expect(createWebSocket).toHaveBeenCalledWith(
-      'wss://example.test/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime',
+      'wss://example.test/api-ws/v1/realtime?model=qwen3.8-omni-flash-realtime',
       {
         headers: { Authorization: 'Bearer sk-search-fixture-secret' },
         maxPayload: 1024 * 1024,
@@ -189,8 +250,31 @@ describe('isolated Qwen Realtime native web search', () => {
     const encoded = JSON.stringify(socket.sent);
     expect(encoded).not.toContain('sk-search-fixture-secret');
     expect(encoded).not.toMatch(
-      /voice|input_audio|output_audio|input_image|tool_choice|memory|monitor/,
+      /input_audio|output_audio|input_image|tool_choice|memory|monitor/,
     );
+  });
+
+  it('satisfies the text-only provider voice requirement with fixed Tina for an invited model', async () => {
+    const { socket, promise } = fixture({
+      model: 'example-omni-realtime-deployment',
+    });
+    socket.ready();
+    expect(socket.sent[0]?.['session']).toMatchObject({
+      voice: 'Tina',
+      modalities: ['text'],
+      smooth_output: false,
+      enable_search: true,
+      tools: [],
+    });
+    expect(socket.sent[2]).toEqual({
+      type: 'response.create',
+      response: { modalities: ['text'] },
+    });
+    socket.text('Text only, despite the required voice field.');
+    socket.done();
+    await expect(promise).resolves.toMatchObject({
+      answer: 'Text only, despite the required voice field.',
+    });
   });
 
   it.each([
@@ -395,11 +479,12 @@ describe('isolated Qwen Realtime native web search', () => {
   });
 
   it.each([
-    { model: 'qwen3.8-omni-flash-realtime' },
+    { model: '' },
+    { model: '   ' },
     { endpoint: 'https://example.test?api_key=sk-secret' },
     { endpoint: 'file:///private/config.json' },
   ])(
-    'rejects unsupported models or unsafe endpoints without opening a socket: %j',
+    'rejects empty model names or unsafe endpoints without opening a socket: %j',
     async (overrides) => {
       const { createWebSocket, promise } = fixture(overrides);
       await expect(promise).rejects.toMatchObject({

@@ -1,16 +1,16 @@
-# Qwen Live Harness · Daemon 开发指南
+# Qwen Live Harness · Daemon Development Guide
 
-[简体中文](README.md) | [English](README_EN.md)
+[简体中文](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/README_ZH.md) | English
 
-本目录是 `qwen-live-harness` npm 包：负责模型连接、对话调度、任务委托、Proactive 和 Memory。桌面界面、系统授权与设备采集由独立的 macOS Host 负责。
+This directory is the `qwen-live-harness` npm package. It owns model connections, conversation scheduling, delegation, Proactive, and Memory. The separate macOS Host provides the desktop UI, system permissions, and device capture.
 
-[项目介绍与安装](../../README.md) · [配置与功能指南](../../docs/configuration.md) · [Host 开发指南](../qwen-live-harness-host/README.md)
+[Project overview and installation](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/README.md) · [Configuration and features](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/docs/configuration.md) · [Host development guide](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness-host/README.md)
 
-[源码运行](#从源码运行) · [代码入口](#先看哪些代码) · [后端适配](#接入新的后台-harness) · [Qwen 终端](#qwen-终端接入) · [协议](#协议与能力边界) · [高级配置](#高级配置参考)
+[Run from source](#run-from-source) · [Code map](#code-map) · [Backend integration](#integrate-a-background-harness) · [Qwen terminals](#qwen-terminal-integration) · [Protocols](#protocols-and-capability-boundaries) · [Advanced configuration](#advanced-configuration)
 
-## 从源码运行
+## Run from source
 
-需要 Node.js **22.13+**；完整桌面交互目前需要 macOS。以下命令均在**仓库根目录**执行：
+Use Node.js **22.13+**. Full desktop interaction currently requires macOS. Run all commands below from the **repository root**:
 
 ```bash
 npm ci
@@ -19,43 +19,43 @@ npm run init
 npm start
 ```
 
-`npm run init` 构建 daemon 后打开源码初始化向导，保存配置；不会下载安装 Host，也不会登记桌面启动运行时。可以选择后台编程代理，也可以先不接入后台 Harness。
+`npm run init` builds the daemon, opens the source initialization wizard, and saves configuration. It does not download or install Host or register an installed desktop runtime. You can select a coding agent or continue without a background Harness.
 
-选择 Qwen Code 后，向导默认提供由 Live 自动启动本地 Qwen Serve，也可连接已有本地服务或选择 ACP。初始化只保存这些设置，服务在 daemon 启动时才拉起；终端发现与授权的区别见 [Qwen 终端接入](#qwen-终端接入)。
+For Qwen Code, initialization defaults to a Live-managed local Qwen Serve. You can instead connect to an existing local service or select ACP. Initialization only saves the settings; the service starts with the daemon. See [Qwen terminal integration](#qwen-terminal-integration) for the distinction between terminal discovery and authorization.
 
-`npm start` 构建两端，启动本仓库的 daemon 和 Electron Host。它不使用全局 CLI 或 `/Applications` 中的 Host。请先退出已有的 Qwen Live Harness；源码启动器拒绝接管正在运行的实例。`Ctrl+C` 会清理本次启动的进程。
+`npm start` builds both packages and starts this checkout's daemon and Electron Host. It does not use the global CLI or Host in `/Applications`. Quit existing Qwen Live Harness instances first; the source launcher refuses to take over a running instance. `Ctrl+C` cleans up the processes started by this launcher.
 
-需要诊断日志时运行：
+For diagnostics:
 
 ```bash
 npm start -- --debug
 ```
 
-源码入口由 [`scripts/start-dev.mjs`](../../scripts/start-dev.mjs) 管理。已安装 npm 包的用户启动流程不同，见[项目首页](../../README.md#快速开始)。
+[`scripts/start-dev.mjs`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/scripts/start-dev.mjs) implements the source entry point. Installed npm users follow the different startup flow in the [main README](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/README.md#quick-start).
 
-## 先看哪些代码
+## Code map
 
-| 位置                                                                                           | 职责                                              |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| [`src/index.ts`](src/index.ts)、[`src/cli-startup.ts`](src/cli-startup.ts)                     | CLI 入口、实例复用、启动和退出                    |
-| [`src/config.ts`](src/config.ts)、[`src/init.ts`](src/init.ts)                                 | 配置校验、环境变量优先级、交互初始化              |
-| [`src/peer-setup.ts`](src/peer-setup.ts)、[`src/peer-diagnostics.ts`](src/peer-diagnostics.ts) | Qwen 终端增量设置和只读诊断                       |
-| [`src/daemon.ts`](src/daemon.ts)                                                               | 装配服务、Host HTTP/WebSocket 入口、资源清理      |
-| [`src/host/`](src/host/)                                                                       | Host 协议、发现文件、通话状态和安装器             |
-| [`src/orchestrator/`](src/orchestrator/)                                                       | 对话生命周期、工具分发、后台事件与播报队列        |
-| [`src/realtime/`](src/realtime/)                                                               | 主 Realtime 协议、system prompt、独立文本搜索连接 |
-| [`src/adaptor/`](src/adaptor/)                                                                 | 后台代理适配器、能力声明和事件归一化              |
-| [`src/tools/`](src/tools/)                                                                     | 模型工具定义、回执、session/job/asset 句柄        |
-| [`src/permissions/`](src/permissions/)                                                         | 后台真实授权请求的转发与答复                      |
-| [`src/proactive/`](src/proactive/)                                                             | 监控、计时、事件触发与 FIFO 播报                  |
-| [`src/memory/`](src/memory/)                                                                   | 本地记忆库、检索、整理和可选视觉观察              |
-| [`src/subagents/`](src/subagents/)                                                             | 子智能体状态、详情和手动停止接口                  |
-| [`src/log/`](src/log/)、[`src/logger.ts`](src/logger.ts)                                       | 会话记录与运行诊断                                |
-| [`src/i18n/messages.ts`](src/i18n/messages.ts)                                                 | CLI 与 Host 共用的中英文固定展示文案              |
+| Location                                                                                                                                                                                                                                                         | Responsibility                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [`src/index.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/index.ts), [`src/cli-startup.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/cli-startup.ts)                     | CLI entry point, instance reuse, startup, and shutdown                            |
+| [`src/config.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/config.ts), [`src/init.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/init.ts)                                 | Configuration validation, environment precedence, and initialization              |
+| [`src/peer-setup.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/peer-setup.ts), [`src/peer-diagnostics.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/peer-diagnostics.ts) | Incremental Qwen terminal setup and read-only diagnostics                         |
+| [`src/daemon.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/daemon.ts)                                                                                                                                                | Service assembly, Host HTTP/WebSocket endpoints, and cleanup                      |
+| [`src/host/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/host)                                                                                                                                                         | Host protocol, discovery, call state, and installer                               |
+| [`src/orchestrator/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/orchestrator)                                                                                                                                         | Call lifecycle, tool dispatch, backend events, and notification queue             |
+| [`src/realtime/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/realtime)                                                                                                                                                 | Main Realtime protocol, system prompts, and independent text search connections   |
+| [`src/adaptor/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/adaptor)                                                                                                                                                   | Backend adapters, capability declarations, and event normalization                |
+| [`src/tools/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/tools)                                                                                                                                                       | Model tool schemas, receipts, and session/job/asset handles                       |
+| [`src/permissions/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/permissions)                                                                                                                                           | Forwarding and answering actual backend permission requests                       |
+| [`src/proactive/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/proactive)                                                                                                                                               | Monitoring, timers, triggers, and FIFO notifications                              |
+| [`src/memory/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/memory)                                                                                                                                                     | Local memory libraries, retrieval, consolidation, and optional visual observation |
+| [`src/subagents/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/subagents)                                                                                                                                               | Subagent status, details, and manual stop API                                     |
+| [`src/log/`](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src/log), [`src/logger.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/logger.ts)                                        | Session records and runtime diagnostics                                           |
+| [`src/i18n/messages.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/i18n/messages.ts)                                                                                                                                  | Shared English/Chinese fixed CLI and Host UI text                                 |
 
-一次通话主要沿着 `LiveDaemon → LiveHostCoordinator → LiveSession → Realtime / BackendAdaptor` 运行。Qwen Serve 是 REST/SSE 后台适配目标，可由 Live 管理启动或连接已有服务；选择 ACP 或无后台模式时不需要它。
+A call primarily follows `LiveDaemon → LiveHostCoordinator → LiveSession → Realtime / BackendAdaptor`. Qwen Serve is a REST/SSE backend target that Live can launch or connect to; it is not required for ACP or no-backend mode.
 
-## 构建与测试
+## Build and test
 
 ```bash
 npm run build
@@ -65,21 +65,21 @@ npm run test:scripts
 npm run test:integration
 ```
 
-只跑一个 daemon 测试文件：
+To run a single daemon test file:
 
 ```bash
 npm test --workspace qwen-live-harness -- src/orchestrator/live-session.test.ts
 ```
 
-仓库还提供 `npm run lint`、`npm run format:check`、`npm run check:boundaries` 和 `npm run check:package`。最后一项会检查实际 npm tarball、安装后的命令和包边界。Host 的构建、类型检查与测试见 [Host 开发指南](../qwen-live-harness-host/README.md)。
+Additional checks are `npm run lint`, `npm run format:check`, `npm run check:boundaries`, and `npm run check:package`. The last command checks the actual npm tarball, installed command, and package boundaries. See the [Host guide](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness-host/README.md) for desktop builds, type checks, and tests.
 
-默认单元与协议测试使用替身和本地测试服务，不依赖真实模型账号。真实后台账号测试是另外的显式验证入口，不要把付费 API、真实设备授权或个人凭据写进普通测试。
+Default unit and protocol tests use fakes and local test services, not real model accounts. Real-account checks are separate, explicit verification steps; do not add paid APIs, device permission prompts, or personal credentials to ordinary tests.
 
-## 隔离配置与单独调试 daemon
+## Isolated configuration and daemon-only debugging
 
-默认配置是 `~/.qwen-live-harness/config.json`，该目录也承载 Memory 与会话数据。
+The default configuration is `~/.qwen-live-harness/config.json`; the data directory also holds Memory and session data.
 
-开发时可以为配置、Memory、会话日志和发现文件使用独立目录。在运行初始化及启动命令的终端中设置：
+Use a separate directory for development configuration, memories, session logs, and discovery. Set these variables in the terminal used for both initialization and startup:
 
 ```bash
 export QWEN_LIVE_HARNESS_DATA_DIR="$HOME/.qwen-live-harness-dev"
@@ -88,62 +88,62 @@ npm run init
 npm start -- --debug
 ```
 
-两个变量分别控制数据目录和发现文件的**基础目录**。只修改 `DATA_DIR` 不会移动发现文件；同时运行多套开发配置时要一起隔离。完整覆盖规则见[环境变量参考](#环境变量参考)。
+These variables set the data directory and discovery **base directory** separately. Changing only `DATA_DIR` does not move discovery; isolate both when using separate development configurations. See [Environment variables](#environment-variables) for precedence.
 
-需要独立运行 daemon 时，先构建，再直接调用产物：
+To run only the daemon, build it and invoke its output directly:
 
 ```bash
 npm run build
 node packages/qwen-live-harness/dist/index.js --daemon-only --debug
 ```
 
-`npm start` 是两进程开发启动器，不接受 `--daemon-only`。单独启动 Host 时，使用本仓库 Host 的开发入口，并将 `QWEN_LIVE_HARNESS_DISCOVERY_FILE` 设置为对应目录下的完整 `run/daemon.json` 路径；不要把基础目录直接传给它。
+`npm start` is a two-process development launcher and does not accept `--daemon-only`. To start Host separately, use its development entry point and set `QWEN_LIVE_HARNESS_DISCOVERY_FILE` to the complete corresponding `run/daemon.json` path, not just its base directory.
 
-进程之间的约定：
+Process contracts:
 
-- `run/daemon.json` 发布 loopback 地址、协议版本、PID 和实例 nonce；连接使用 Bearer token 与实例 nonce 校验。发现文件是私有状态，不应打印或复制其中的凭据。
-- `run/runtime.json` 用于**已安装版本**的桌面启动，保存 Node/CLI 的绝对路径、版本和必要启动信息，不复制 API key。源码 `npm start/init` 不创建或刷新这个登记。
-- 正常进程退出写入实例专属的 stop marker，让尚未握手或正在重连的 Host 也能退出。标记不能让旧实例关闭新实例；普通断线不等于用户要求退出。
-- End call 结束当前交互及 Proactive 采样，已委托的后台任务可以继续。退出整个应用会清理 daemon 拥有的资源、ACP 子进程和自动启动的 Qwen Serve；不会终止用户独立运行的服务或终端。退出失败的重试仍须绑定原来的认证实例。
+- `run/daemon.json` publishes a loopback address, protocol version, PID, and instance nonce. Connections validate a Bearer token and nonce. This file is private state; do not print or copy its credentials.
+- `run/runtime.json` supports desktop startup for **installed releases**. It records absolute Node/CLI paths, versions, and necessary startup information, not API keys. Source `npm start/init` does not create or refresh it.
+- Normal process shutdown writes an instance-specific stop marker, allowing a Host still handshaking or reconnecting to exit. A stale marker must not close a new instance. An ordinary disconnection is not a quit request.
+- End call stops the current interaction and Proactive capture; delegated backend jobs may continue. Full application shutdown cleans up daemon-owned resources, ACP children, and managed Qwen Serve, not independently running user services or terminals. Shutdown retries remain bound to the original authenticated instance.
 
-相关实现位于 [`startup.ts`](src/startup.ts)、[`startup-lock.ts`](src/startup-lock.ts)、[`host/discovery.ts`](src/host/discovery.ts) 和 [`lifecycle.ts`](src/lifecycle.ts)。
+See [`startup.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/startup.ts), [`startup-lock.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/startup-lock.ts), [`host/discovery.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/host/discovery.ts), and [`lifecycle.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/lifecycle.ts).
 
-## 接入新的后台 Harness
+## Integrate a background Harness
 
-如果代理已经支持 ACP，通常只需要配置 `kind: "acp"` 的 `command`、`args` 和必要的 `env`。若希望 init 自动发现它，再扩展 [`agent-detector.ts`](src/agent-detector.ts) 及对应测试。
+For an ACP-compatible agent, configuring `kind: "acp"`, `command`, `args`, and any required `env` is usually enough. To include it in initialization discovery, extend [`agent-detector.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/agent-detector.ts) and its tests.
 
-新协议的接入点是 [`BackendAdaptor`](src/adaptor/types.ts)：
+For a new protocol, implement [`BackendAdaptor`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/types.ts):
 
-1. 在 `src/adaptor/` 实现适配器，提供 `preflight`、会话管理、`prompt`、事件流、取消、授权答复和 `close`。
-2. 如需新的配置类型，更新 `BackendConfig`、配置校验，以及 [`daemon.ts`](src/daemon.ts) 的 `buildAdaptor`。不要把某个代理的分支散布进通话调度器。
-3. 用真实能力填写 `capabilities()`，为协议行为补测试，再验证任务委托、事件关联、权限和清理。
+1. Add an adapter under `src/adaptor/` implementing preflight, session management, `prompt`, events, cancellation, permission responses, and `close`.
+2. If needed, extend `BackendConfig`, validation, and `buildAdaptor` in [`daemon.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/daemon.ts). Keep backend-specific branching out of the call scheduler.
+3. Declare actual behavior in `capabilities()`, add protocol tests, and verify delegation, event correlation, permissions, and cleanup.
 
-现有 [`AcpAdaptor`](src/adaptor/acp-adaptor.ts) 与 [`QwenCodeAdaptor`](src/adaptor/qwen-code-adaptor.ts) 可作参考。后者通过 REST/SSE 连接 Qwen Serve，自动启动由 [`ManagedQwenServe`](src/adaptor/managed-qwen-serve.ts) 管理；连接已有服务时不拥有该外部进程。
+Use [`AcpAdaptor`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/acp-adaptor.ts) and [`QwenCodeAdaptor`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/qwen-code-adaptor.ts) as references. The latter connects to Qwen Serve over REST/SSE. [`ManagedQwenServe`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/managed-qwen-serve.ts) handles managed startup; an existing external service remains user-owned.
 
-适配时需要保持的约定：
+Preserve these contracts:
 
-- `prompt()` 返回的是接收／排队回执，不是最终结果。完成由 `turn_complete` 等事件确认；使用稳定的 `jobRef` 或明确的 joined-turn 标识关联事件，不能猜测任务已完成。
-- `steering`、`imageInput`、`permissionForwarding` 等能力必须如实声明。不支持图片时不能宣称已把截图交给后台。当前持续后台状态观察要求 `eventDelivery: "stream"`；声明其他投递方式本身不会自动增加消费实现。
-- 授权只来自后台实际发出的请求。普通文件写入失败不能被包装成伪造的授权弹窗，也不能默认替用户同意。未知任务的取消不能退化为停止同一会话里的其他任务。
-- `close()` 清理本适配器拥有的进程、订阅和请求。用户已有的独立服务不属于它。
+- `prompt()` returns acceptance/queueing, not a final result. Confirm completion with events such as `turn_complete`, using stable `jobRef` or explicit joined-turn identifiers. Do not infer completion.
+- Declare capabilities such as `steering`, `imageInput`, and `permissionForwarding` accurately. Do not claim an image reached a backend that cannot accept it. Continuous backend observation currently requires `eventDelivery: "stream"`; declaring another delivery mode does not implement its consumer.
+- Permissions come only from actual backend requests. Do not manufacture an approval dialog for an ordinary write failure or silently approve it. Cancelling an unknown job must not stop unrelated work in the same session.
+- `close()` cleans up processes, subscriptions, and requests owned by the adapter, not independent user services.
 
-`backends: []` 是明确的无后台模式，不创建占位代理。语音、视觉、Proactive、Memory 仍可使用；后台工具返回 `no_backend`。如果已配置的默认后台不可用，启动仍然失败，不会静默切换到无后台模式。
+`backends: []` explicitly selects no-backend mode without creating a placeholder agent. Conversation, visual input, Proactive, and Memory remain available; backend tools return `no_backend`. An unavailable configured default backend still fails startup rather than silently enabling no-backend mode.
 
-## Qwen 终端接入
+## Qwen terminal integration
 
-这条路径连接已经运行的 **Qwen Code 交互式终端会话**。它使用 Qwen 的公开 peer 协议，不读取任意终端的 stdout，也不把外部终端变成 Live 拥有的进程。发现、发送文本、接收报告是分别配置的三项能力。
+This path connects existing **interactive Qwen Code terminal sessions** through Qwen's public peer protocol. It does not read arbitrary terminal stdout or take ownership of external terminal processes. Discovery, text delivery, and report reception are three separately configured capabilities.
 
-### Qwen Code 的三种连接方式
+### Three Qwen Code connection modes
 
-主初始化向导为 Qwen Code 提供：
+The main wizard offers:
 
-| 方式                                | 配置与生命周期                                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 自动启动本地 Qwen Serve（默认选项） | `kind: "qwen-code"` 与 `managedServe.command`；启动已安装的 Qwen，使用 loopback、系统分配端口和新认证 token，退出时清理本次服务 |
-| 连接已有本地 Qwen Serve             | `kind: "qwen-code"` 与 `baseUrl` / 可选 `token`；不启动或停止该外部服务                                                         |
-| ACP                                 | `kind: "acp"`，以 `qwen --acp` 启动；不启用 peer 终端发现                                                                       |
+| Mode                                  | Configuration and lifecycle                                                                                                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Managed local Qwen Serve, the default | `kind: "qwen-code"` with `managedServe.command`; starts installed Qwen on loopback with an assigned port and fresh token, and cleans up that service on exit |
+| Existing local Qwen Serve             | `kind: "qwen-code"` with `baseUrl` and optional `token`; does not start or stop the external service                                                         |
+| ACP                                   | `kind: "acp"`, launched as `qwen --acp`; no peer terminal discovery                                                                                          |
 
-自动启动的配置条目示例：
+Example managed entry:
 
 ```json
 {
@@ -154,15 +154,15 @@ node packages/qwen-live-harness/dist/index.js --daemon-only --debug
 }
 ```
 
-将此条目放入 `backends`，把 `command` 换成实际可执行文件路径。`managedServe` 不能与 `baseUrl`、`serveUrl` 或 `token` 同时配置；工作目录使用 `defaultCwd`。后台继续沿用 Qwen 自己的模型认证和设置，Live 不替它配置模型或授权终端消息。
+Put this entry in `backends` and replace `command` with the executable's real path. `managedServe` cannot be combined with `baseUrl`, `serveUrl`, or `token`; the working directory comes from `defaultCwd`. Qwen keeps its own model authentication and settings. Live does not configure its model or authorize terminal messaging on the user's behalf.
 
-向导选择两种 Serve 方式时，还会保存当前 `QWEN_HOME`（缺省为 `~/.qwen`）对应的只读 `peerDiscovery`。它不会自动授予发送文本的权限，也不会开启报告接收。手动配置远程 Serve 时，本地 peer 目录仍然是本地的，不会变成远程终端发现。
+Choosing either Serve mode also saves read-only `peerDiscovery` for the current `QWEN_HOME`, defaulting to `~/.qwen`. It neither grants text-delivery permission nor enables reports. For a manually configured remote Serve, the local peer directory still discovers local terminals, not remote terminals.
 
 <a id="terminal-setup-and-diagnostics-m3-stage-4"></a>
 
-### 增量设置与只读诊断
+### Incremental setup and read-only diagnostics
 
-已有 Live 配置后，从仓库根目录执行：
+With an existing Live configuration, run from the repository root:
 
 ```bash
 npm run build
@@ -170,126 +170,128 @@ node packages/qwen-live-harness/dist/index.js init --peers
 node packages/qwen-live-harness/dist/index.js doctor --peers
 ```
 
-已安装 CLI 的对应命令是 `qwen-live-harness init --peers` 和 `qwen-live-harness doctor --peers`。源码启动脚本当前不转发 `--peers`，因此使用上面的构建产物入口。
+Installed equivalents are `qwen-live-harness init --peers` and `qwen-live-harness doctor --peers`. The source launcher does not currently forward `--peers`, so use the built entry point above.
 
-`init --peers` 只修改选定 `qwen-code` 后端的 `peerDiscovery`；可选已有后端，或增加一个连接已有 Serve 的条目，不会把 ACP 自动转换成 Serve。其他配置与原默认后端保留，取消不写文件。该命令要求已有常规 `config.json`，遇到会遮蔽结果的后台环境变量覆盖会拒绝编辑。保存使用锁和原子替换；不要同时在编辑器中改同一文件。修改完成后重启 Live。
+`init --peers` edits only the selected `qwen-code` backend's `peerDiscovery`. It can select an existing backend or add one connected to an existing Serve; it does not convert ACP to Serve. Other configuration and the original default backend are preserved; cancellation writes nothing. A normal `config.json` must already exist. The command refuses edits when backend environment overrides would hide their effects. Saving uses a lock and atomic replacement; do not edit the same file concurrently. Restart Live afterward.
 
-`doctor --peers` 检查配置、终端目录、连接能力及授权设置，不启动通话、不发送指令、不创建授权。对于尚未启动的 `managedServe`，它显示未验证，不会为了检查而拉起服务或猜测动态端口。检查显示“已配置 controller”不等于该授权仍然有效。
+`doctor --peers` checks configuration, terminal directories, connection capabilities, and authorization settings. It does not start a call, send commands, or grant access. An unstarted managed Serve is shown as unverified; diagnostics do not start it or guess its dynamic port. A configured controller does not prove its grant remains valid.
 
-### 发现现有终端
+### Discover existing terminals
 
-发现要求 `kind: "qwen-code"` 后端配置 `peerDiscovery.qwenHome`，并与目标 Qwen 终端使用同一个本地 Qwen home。Qwen 侧需要 `agents.crossSessionMessaging: true`；修改后应重启目标终端。省略 `peerDiscovery` 会关闭发现，ACP 条目不支持这个设置。
+Discovery requires a `kind: "qwen-code"` backend with `peerDiscovery.qwenHome` matching the target terminal's local Qwen home. Qwen must have `agents.crossSessionMessaging: true`; restart the target terminal after changing it. Omitting `peerDiscovery` disables discovery. ACP entries do not support it.
 
-启动一次语音通话后，`session_list` 会同时列出托管会话和可达的 `tui` 终端。Host 的 Subagents 面板新增 **Terminal sessions**，可用 Refresh 更新列表。外部终端执行状态保持 `unknown`，没有 controller 授权时标为只读；它们不计入普通任务的 Running / Completed 数量。
+During a call, `session_list` includes managed sessions and reachable `tui` terminals. Host's **Terminal sessions** section refreshes this list. External execution state remains `unknown`; without a controller grant, terminals are read-only. They are not counted as ordinary Running / Completed tasks.
 
-目录与 socket 的名称是展示信息，发送目标绑定 Qwen home、会话 ID、PID 和启动时间组成的句柄。同名终端不会仅凭名称被选中；发现失败也不应被解释成该终端任务已完成。
+Directory and socket names are display metadata. Delivery targets use a handle bound to Qwen home, session ID, PID, and start time. A matching name alone does not select a terminal; discovery failure is not task completion.
 
-### 向终端发送文本
+### Send text to a terminal
 
-使用支持 `sessions controllers` 的 Qwen CLI，在**同一个 Qwen home** 手动创建 controller grant：
+Using a Qwen CLI that supports `sessions controllers`, manually create a controller grant in the **same Qwen home**:
 
 ```bash
 QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness" --json
 ```
 
-用增量设置向导保存返回的 token，或设置 `peerDiscovery.controllerTokenEnv` 指向已经包含该 token 的环境变量。`controllerToken` 与 `controllerTokenEnv` 只能二选一；该 token 与 Serve 的 REST token 不同，不应通过语音传递。环境变量方案还需确保启动 Live 的进程能读到它，双击 Host 不会自动继承终端里的变量。
+Save the returned token through incremental setup, or set `peerDiscovery.controllerTokenEnv` to an environment variable containing it. Choose either `controllerToken` or `controllerTokenEnv`, not both. This token differs from the Serve REST token and must not be passed by voice. An environment-based token must be visible to the process launching Live; double-clicking Host does not automatically inherit terminal variables.
 
-开始通话、列出会话，再要求 Live 给选定终端发送具体指令。`handoff` 会发送文本并返回独立的 `delivery_N` 回执；它不是后台 job，不证明指令已经执行、追加到当前轮次或完成。此通道不接受截图附件，也不能停止终端任务或代答其工具授权。
+Start a call, list sessions, and ask Live to send a specific instruction to the selected terminal. `handoff` delivers text and returns an independent `delivery_N` receipt. This is not a backend job and does not prove execution, steering into an active turn, or completion. The channel does not accept screenshot attachments, stop terminal jobs, or answer their tool permissions.
 
-目标终端的 `agents.crossSessionInbound` 策略仍然有效：`hold` 要求在终端审阅，`refuse` 拒收。Host 的 **Instruction deliveries** 展示投递状态，`session_monitor` 可用 `delivery` 参数查询：
+The target's `agents.crossSessionInbound` policy still applies: `hold` requires terminal review; `refuse` rejects delivery. Host shows **Instruction deliveries**, and `session_monitor` accepts a `delivery` argument:
 
-- `pending`：尝试写入，尚无回执；`held`：等待终端审阅。
-- `delivered`：进入终端收件箱，不代表任务完成；之后仍可能变为 `expired` 或 `misaddressed`。
-- `denied` / `refused` / `dropped` 等按实际回执展示；`unknown` 只表示结果不确定，不能自动重发。
+- `pending`: write attempted, no receipt yet; `held`: waiting for terminal review.
+- `delivered`: entered the inbox, not task completion; it may later become `expired` or `misaddressed`.
+- `denied`, `refused`, and `dropped` reflect actual receipts. `unknown` means uncertainty, not permission to resend automatically.
 
-未收到回执时默认 30 秒后显示未知；每个 controller 最多保留 100 条投递记录，满额时先淘汰已结束跟踪的条目，全部仍在跟踪时拒绝新发送。End call 停止跟踪，但不会撤回已经写出的指令。授权管理、撤销和终端审阅仍由 Qwen 自己负责。
+Without a receipt, delivery becomes unknown after 30 seconds by default. Each controller retains at most 100 deliveries, evicting finished tracking entries first and rejecting new sends if all entries are still tracked. End call stops tracking but cannot retract an instruction already written. Qwen owns grant management, revocation, and terminal review.
 
-发送前会复核注册记录并固定目标 socket 与完整 sessionId，但协议没有原子的 PID／启动时间校验。不能把本地目录元数据视为对同一用户下其他程序的身份认证。
+Before sending, Live rechecks registration and pins the target socket and full session ID. The protocol has no atomic PID/start-time check; directory metadata is not strong authentication against other programs running as the same user.
 
-### 接收报告并播报
+### Receive and speak reports
 
-`peerDiscovery.reports: true` 单独开启报告接收，默认是 `false`；接收报告本身不需要 controller grant，也不会因此让终端可控。每次通话发布一个临时 Live peer 地址；handoff 在适用时附上该地址和报告示例。
+`peerDiscovery.reports: true` separately enables reports; the default is `false`. Receiving reports neither requires a controller grant nor makes terminals controllable. Each call publishes a temporary Live peer address; handoff includes the address and a reporting example when applicable.
 
-目标会话必须提供公开 `send_message` 工具、共享对应 Qwen home，并允许该工具调用。Live 不替用户授予这个权限。托管会话也可以使用该公开工具；没有专属报告 endpoint 的适配器，仅在恰好一个可用报告提供方存在时得到报告指引。
+The target session must provide the public `send_message` tool, share the Qwen home, and permit that tool call. Live does not grant this permission. Managed sessions can also use the public tool. An adapter without its own report endpoint gets reporting instructions only when exactly one report provider is available.
 
-报告可区分 `progress`、`blocked`、`result`、`info`；普通文字按 `info` 接收。Host 的 **Session reports** 独立展示来源、正文及排队／已提交／播报状态，用户也可通过 `session_monitor` 的 `reports: true` 查询。来源无法唯一匹配时显示未确认；来源匹配仅用于归因，不等于对同一用户下任意程序的强身份认证。
+Reports can be `progress`, `blocked`, `result`, or `info`; plain text is received as `info`. Host's **Session reports** shows source, body, and queued/submitted/spoken status. `session_monitor` can query them with `reports: true`. Ambiguous sources are marked unconfirmed. Source matching provides attribution, not strong authentication against arbitrary same-user programs.
 
-播报等待用户讲话、前台回复和设备播放结束后，用无工具权限的独立响应转述。报告不是新的用户指令、授权答复或可验证的任务完成事件；关联的托管任务结果仍由原后台事件负责播报，避免双重宣布。静音时保留文字而不播报；中断或失败的报告不会自动重放。
+Report speech waits for user speech, foreground responses, and device playback to finish, then uses an independent response with no tool permissions. A report is not a new user instruction, permission answer, or verified completion event. Original backend events still announce associated managed-job results to avoid duplicate completion reports. Muted output retains text without speech; interrupted or failed reports are not automatically replayed.
 
-每份报告最多 2,000 字符，每分钟最多接收 20 份、每来源 socket 6 份；归因等待与播报队列各最多 32 份，显示历史最多 100 份。通话结束后地址与关联失效，不重放旧消息；上一通话的报告保留到下一次通话开始。
+Each report is limited to 2,000 characters. Reception limits are 20 per minute overall and 6 per source socket; attribution and speech queues hold 32 each; display history holds 100. Addresses and associations expire at call end, and old messages are not replayed. Previous-call reports remain visible until the next call starts.
 
-实现入口为 [`qwen-peer-discovery.ts`](src/adaptor/qwen-peer-discovery.ts)、[`qwen-peer-controller.ts`](src/adaptor/qwen-peer-controller.ts)、[`qwen-peer-reports.ts`](src/adaptor/qwen-peer-reports.ts) 和 [`session-reports.ts`](src/orchestrator/session-reports.ts)。peer SDK 采用固定版本的[官方 Node-only 源码](src/vendor/qwen-code-peer/README.md)并校验来源；peer 传输支持 macOS/Linux，完整桌面体验仍要求 macOS。当前终端协议测试基线为 Qwen Code 0.23.3，不代表任意旧版本具备这些能力。完整条件、协议限制与验收步骤见 [M3 验收清单](../../docs/m3-acceptance.md)。
+Implementation: [`qwen-peer-discovery.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/qwen-peer-discovery.ts), [`qwen-peer-controller.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/qwen-peer-controller.ts), [`qwen-peer-reports.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/adaptor/qwen-peer-reports.ts), and [`session-reports.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/orchestrator/session-reports.ts). The peer SDK vendors pinned [official Node-only source](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/vendor/qwen-code-peer/README.md) with provenance checks. Peer transport supports macOS/Linux; full desktop interaction still requires macOS. The terminal protocol test baseline is Qwen Code 0.23.3, not a promise that arbitrary older versions support it. See the [M3 acceptance checklist](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/docs/m3-acceptance.md) for integration verification.
 
-## 协议与能力边界
+## Protocols and capability boundaries
 
-### 模型工具与 MCP
+### Model tools and MCP
 
-主 Omni 通过 daemon 定义的工具调用 Appshot、Memory、Proactive 和任务委托，并不直接获得后台代理的全部工具。
+Main Omni uses daemon-defined tools for Appshot, Memory, Proactive, and delegation. It does not directly receive every backend tool.
 
-本包没有独立的 MCP 服务配置或管理层。MCP 应在后台 Harness 中配置，能否在 ACP 会话中使用由后台实现决定；当前 ACP 创建／加载会话传入的是 `mcpServers: []`。新增 MCP 接入不能仅修改 Realtime 工具说明，还需要明确实际执行与授权通道。
+This package has no independent MCP configuration or management layer. Configure MCP in the background Harness; availability inside ACP sessions depends on that backend. ACP session creation/loading currently sends `mcpServers: []`. Adding MCP support requires a real execution and permission channel, not only new Realtime tool instructions.
 
-主助手在有后台和无后台两种模式下都以 **Qwen Omni** 为身份。普通自足对话直接回答；简单的公开信息查询优先 `web_search`，文件／命令／复杂执行以及用户明确指定代理的工作仍走 Harness。
+The main assistant identifies as **Qwen Omni** in both backend and no-backend modes. It answers self-contained conversation directly and prefers `web_search` for simple public-information lookups. Files, commands, complex execution, and work explicitly assigned to an agent use the Harness.
 
-支持的模型可使用独立、纯文本的 Realtime 搜索连接，有无后台都开放。工具立即返回 `accepted + taskId`，搜索任务独立执行，多个查询可并行；每个搜索仍有独立的 25 秒超时。只发送本次查询，不附带语音、截图、Memory 或其他工作会话的上下文。支持范围由 [`supportsQwenRealtimeSearch`](src/realtime/web-search.ts) 控制；是否实际联网按服务端 usage 判断，未知状态不能说成已核实。
+`web_search` is available with or without a backend and has no local model-name allowlist. Its independent text-only Realtime connection reuses the main model ID, including aliases, endpoint, and API key exactly. There is no separate search model configuration; native search support is determined by the service. See [`src/realtime/web-search.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/realtime/web-search.ts).
 
-完成结果进入 Injector 的 `search_result` 通道，等待用户语音、前台响应和设备播放结束，由主 Omni 根据 query／answer／searchStatus 组织回答；这不是逐字朗读的后台完成通知。结果不创建用户消息，也没有工具权限，不能从网页内容再次搜索、委托任务或修改 Memory。搜索显示为 `kind: "search"` 的真实子任务，可单独取消，等待播报与已完成分开表示。
+The tool immediately returns `accepted + taskId`; searches execute independently and can run concurrently, each with a 25-second timeout. Only the query is sent, not microphone audio, screenshots, Memory, or other work-session context. Search usage comes from service metadata; an unknown search status must not be presented as verified browsing.
 
-原生搜索失败后，运行时只用原查询在默认后台新建隔离会话，添加只读公开信息查询约束，复用现有 handoff、任务记录与权限流程；不把失败输出或网页指令当成授权，也不让主模型重复转交。原搜索记录失败及转交情况，新后台任务按真实事件更新。结束通话或新建对话会取消未完成搜索、撤回待播结果，并停止该通话自动转交的查询；其他后台任务保持原生命周期。停止请求与后台停止确认仍然是两回事。
+Results enter the Injector's `search_result` channel and wait for speech, foreground responses, and playback to finish. Main Omni composes the answer from query/answer/searchStatus rather than reading the raw result verbatim. The result creates no user message and has no tool permissions, so webpage text cannot trigger another search, delegation, or Memory mutation. Search tasks have `kind: "search"`, support independent cancellation, and distinguish waiting for delivery from completed delivery.
 
-### 语音与视觉
+If native search fails and a backend is configured, runtime creates an isolated default-backend session using only the original query plus read-only public-information constraints. It reuses existing handoff, task records, and permission handling. Failed output and webpage instructions do not become authorization, and the main model does not duplicate the fallback. Without a backend, failure is reported. The search record tracks failure/fallback, and the backend job follows real events. End call or a new conversation cancels unfinished searches, withdraws pending results, and stops that call's automatic fallback queries; unrelated jobs keep their normal lifecycle. Requesting cancellation is distinct from backend confirmation.
 
-主语音会话请求 `semantic_vad`、`create_response: false`、`interrupt_response: true`：服务端识别轮次，daemon 调度 `response.create`。Memory 更新和工具续答不应切换主会话的 VAD 模式。独立 Monitor 按窗口手动提交输入，独立搜索只有文本，两者的 `turn_detection: null` 不代表主语音关闭了 VAD。
+### Audio and visual input
 
-音频传输使用单声道 PCM16，输入为 16 kHz、模型输出为 24 kHz。Host 将输出重采样到设备的实际采样率；不要为了适配模型而强制切换系统输出设备的时钟。
+The main session requests `semantic_vad`, `create_response: false`, and `interrupt_response: true`: the service detects turns, while the daemon schedules `response.create`. Memory updates and tool continuation must not switch the main VAD mode. Independent monitors manually commit media chunks; search is text-only. Their `turn_detection: null` does not disable VAD in the main conversation.
 
-视觉输入只有一个选定来源和一种采集模式：
+Transport uses mono PCM16: 16 kHz input and 24 kHz model output. Host resamples output to the device's actual rate; do not force the system output clock to match the model.
 
-| 路径               | 送入内容与范围                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------- |
-| Live Feed          | 连续向主 Omni 发送所选摄像头或所选显示器的完整画面                                 |
-| On Demand Appshot  | 返回来源信息、可能的屏幕辅助功能文本和截图资产句柄；屏幕路径捕获当前前台窗口       |
-| Proactive 视觉监控 | 向独立 Monitor 发送所选摄像头或完整显示器画面；On Demand 下也可独立采样            |
-| 可选视觉 Memory    | Live Feed 复用当前帧；On Demand 私下采集当前前台窗口或摄像头，存储整理后的文字观察 |
+There is one selected visual source and capture mode:
 
-Appshot 的截图资产通过 `function_call_output` 返回，**不会直接把像素追加到主 Realtime**，也不触发音频 commit。需要像素级理解时，交给支持图片的后台；没有后台时提示切换 Live Feed。不能因为拿到了 asset 句柄，就声称模型已经看见截图内容。
+| Path                     | Content and scope                                                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Live Feed                | Continuous frames from the selected camera or full selected display to main Omni                                                 |
+| On Demand Appshot        | Source metadata, available accessibility text, and a snapshot asset handle; Screen captures the foreground window                |
+| Proactive visual monitor | Selected camera or full-display frames to an independent Monitor, including independent sampling in On Demand mode               |
+| Optional visual Memory   | Reuses Live Feed frames or privately captures the foreground window/camera in On Demand mode; stores processed text observations |
 
-协议类型与限制以 [`host/types.ts`](src/host/types.ts)、[`realtime-session.ts`](src/realtime/realtime-session.ts) 及 Host 的共享协议实现为准。当前 Host 协议为 v9：
+Appshot returns an image asset through `function_call_output`; it **does not append pixels directly to main Realtime** or commit audio. Pixel-level analysis requires an image-capable backend. Without one, suggest Live Feed. An asset handle is not evidence that the model has seen the image.
 
-- 输入／输出绑定 call epoch；输出还绑定 `outputId`。播放开始、完成和清空必须保留这些身份，不能让旧音频的回执推进新轮次。
-- 显示器捕获和音频结束标记等扩展通过 capability 协商。支持结束标记的 Host 只有在该输出的标记与已排入的音频全部处理完后，才能确认播放完成。
-- Proactive 通知等待前台与设备播放结束后按 FIFO 播放；采样可继续、事件可继续入队。任务更新或取消需要撤销其旧事件。
-- 完整显示器覆盖不等于原生像素分辨率。实时帧与单次截图资产采用不同尺寸／传输限制；切源、切显示器和换 epoch 后应丢弃晚到结果。
+Protocol types and limits are defined in [`host/types.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/host/types.ts), [`realtime-session.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/realtime/realtime-session.ts), and Host's shared protocol. Current Host protocol is v9:
 
-### 日志与共享文案
+- Input/output is bound to a call epoch, and output also to `outputId`. Preserve these identities through playback start, completion, and clearing; stale acknowledgements must not advance a new turn.
+- Capabilities negotiate extensions such as display capture and audio-end markers. An end-marker-capable Host acknowledges completion only after processing that output's marker and all queued audio.
+- Proactive notifications play FIFO after foreground responses and device output finish. Capture and event queueing continue. Updating or cancelling a task withdraws its old events.
+- Full-display coverage does not imply native resolution. Live frames and snapshot assets have different size/transport limits. Discard late results after source, display, or epoch changes.
 
-用 `--debug` 对照 Host 连接、epoch、采集尺寸、帧 hash、工具回执和播放时序。会话 JSONL、Memory 数据库与诊断文件不是同一种日志；其中可能包含用户对话和任务内容。
+### Logs and shared text
 
-视觉 Monitor 的 debug 归档还会保存实际请求和原始图片／音频。它只保留最近十个 Monitor 目录，不是固定磁盘配额。结构与诊断方法见 [Monitor 诊断归档](#monitor-诊断归档)，分享前应检查敏感内容。
+Use `--debug` to correlate Host connections, epochs, capture dimensions, frame hashes, tool results, and playback timing. Session JSONL, Memory databases, and diagnostic files serve different purposes and may contain user conversations and task content.
 
-所有固定 UI／init 文案集中在 [`src/i18n/messages.ts`](src/i18n/messages.ts)，维护成对的 `en` / `zh-CN` 字段及一致的占位符。Host 构建复用该模块；system prompt 和原始后台输出不是 UI 翻译表的一部分。
+Audio, visual, and combined Monitor debug archives include actual requests and original images/audio. Only the latest ten Monitor directories are retained; this is not a fixed disk quota. See [Monitor diagnostic archives](#monitor-diagnostic-archives) and inspect sensitive content before sharing.
 
-## 高级配置参考
+All fixed UI/init text lives in [`src/i18n/messages.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/i18n/messages.ts), with paired `en` / `zh-CN` entries and matching placeholders. Host reuses it at build time. System prompts and raw backend output are not UI translation-table entries.
 
-面向修改适配器、调度策略或记忆实现的开发者。普通用户的编辑步骤和常用示例放在[配置与功能指南](../../docs/configuration.md)；本节集中说明运行环境覆盖与内部调优参数。参数以 [`config.ts`](src/config.ts) 和 [`memory/config.ts`](src/memory/config.ts) 的校验为准，不需要把所有默认值写入用户配置。
+## Advanced configuration
 
-### 后台启动与兼容配置
+This section is for developers changing adapters, scheduling, or memory behavior. User editing steps and common examples are in [Configuration and features](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/docs/configuration.md). Validation in [`config.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/config.ts) and [`memory/config.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/memory/config.ts) is authoritative; users do not need to write every default to their configuration.
 
-init 的后台检测规则位于 [`agent-detector.ts`](src/agent-detector.ts)，当前启动入口如下：
+### Backend startup and compatibility
 
-| 后台        | 入口                                                                              |
-| ----------- | --------------------------------------------------------------------------------- |
-| Qwen Code   | init 默认可自动启动本地 Qwen Serve；也可连接已有服务或选择 `qwen --acp`           |
-| Qoder CLI   | `qodercli --acp`                                                                  |
-| Gemini CLI  | `gemini --experimental-acp`                                                       |
-| Claude Code | `npx -y @agentclientprotocol/claude-agent-acp`                                    |
-| Codex       | `npx -y @agentclientprotocol/codex-acp`；init 通过 `CODEX_PATH` 指向检测到的程序  |
-| Qwen Serve  | REST/SSE 适配器，`kind: "qwen-code"`；`managedServe` 自动启动，或指定已有服务地址 |
+Initialization detection is implemented in [`agent-detector.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/agent-detector.ts). Current entry points:
 
-ACP 后端的 `command`、字符串数组 `args`、字符串值对象 `env` 与可选 `cwd` 分开配置，不使用 shell 拼接执行。桌面启动优先使用 init 生成的绝对路径；采用 `npx` 的适配器首次运行可能安装依赖。
+| Backend     | Entry point                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------- |
+| Qwen Code   | Managed local Qwen Serve by default; existing Serve or `qwen --acp` are alternatives                 |
+| Qoder CLI   | `qodercli --acp`                                                                                     |
+| Gemini CLI  | `gemini --experimental-acp`                                                                          |
+| Claude Code | `npx -y @agentclientprotocol/claude-agent-acp`                                                       |
+| Codex       | `npx -y @agentclientprotocol/codex-acp`; initialization sets `CODEX_PATH` to the detected executable |
+| Qwen Serve  | REST/SSE with `kind: "qwen-code"`; managed startup or an existing service URL                        |
 
-后端 `name` 匹配字母／数字开头的 1–32 位字母、数字、下划线或连字符；唯一性检查忽略大小写，但引用后端时应使用配置中的原始名称。多个后端必须且只能指定一个 `default: true`；默认后端预检失败会阻止启动，次要后端失败则标为不可用。
+ACP separates `command`, string-array `args`, string-valued `env`, and optional `cwd`; it does not concatenate a shell command. Desktop startup prefers absolute paths generated during initialization. An `npx` adapter may install dependencies on first use.
 
-兼容已有 REST/SSE 服务的配置段：
+Backend names are 1–32 letters, digits, underscores, or hyphens, starting with a letter or digit. Uniqueness is case-insensitive, but references should use the configured spelling. Multiple backends require exactly one `default: true`. Default-backend preflight failure blocks startup; unavailable secondary backends are marked unavailable.
+
+Example configuration for an existing REST/SSE service:
 
 ```json
 {
@@ -304,156 +306,172 @@ ACP 后端的 `command`、字符串数组 `args`、字符串值对象 `env` 与�
 }
 ```
 
-服务需要认证时另外设置 `token`；`baseUrl` 是 `serveUrl` 的另一种写法。此类后端不使用 ACP 的进程配置字段。省略 `backends` 会保留连接本机旧 `qwen serve` 的行为，关闭后台必须显式使用 `[]`。
+Set `token` if authentication is required. `baseUrl` is an alternative to `serveUrl`. These entries do not use ACP process fields. Omitting `backends` preserves the legacy local `qwen serve` connection behavior; use `[]` to disable backends explicitly.
 
-### ACP 授权模式
+### ACP permission modes
 
-ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回的 `availableModes` 中某个 `id` **精确匹配**。它是后端定义的模式名，不是 Live 通用的“免审批”布尔开关，也不适用于 `kind: "qwen-code"` 的 Serve 条目。
+An ACP backend's optional `sessionMode` must **exactly match** an `id` in the backend's `session/new` `availableModes`. This is backend-defined, not a universal “skip approval” switch, and does not apply to `kind: "qwen-code"` Serve entries.
 
-未配置或找不到指定 ID 时，Live 尝试选择后端公开的 asking 模式：当前实现优先查找 `default`，其次是名称为 `Ask for approval` 的 `read-only`。指定 ID 不存在时会警告；没有匹配的 asking 模式，或 `setSessionMode` 调用失败时，后端仍保留自身的模式，**不能保证已强制进入逐项手动审批**。
+If omitted or unmatched, Live tries an asking mode exposed by the backend: first `default`, then a `read-only` mode named `Ask for approval`. A missing requested ID produces a warning. If no asking mode matches, or `setSessionMode` fails, the backend keeps its own mode. Per-operation manual approval is therefore **not guaranteed**.
 
-模式的实际权限由对应后端决定，应检查其文档及最终状态。当前成功选择任何显式 `sessionMode` 的日志都会写成“不逐项审批”，不能据此推断真实权限；配置 `default` 等模式也不自动意味着免审批。修改这个领域时，应覆盖有效／无效 ID、未提供模式、切换失败和权限请求转发的测试。
+Actual permission scope comes from the backend. Check its documentation and final state. The current success log labels any explicit `sessionMode` as not requiring per-operation approval; do not infer permission scope from that wording. Selecting `default` does not itself imply unrestricted access. Tests in this area should cover valid/invalid IDs, missing modes, switch failures, and permission forwarding.
 
-### 语音授权与持续允许
+### Spoken permissions and persistent approval
 
-后台提出真实权限请求后，普通 `allow` 只批准当前请求。只有用户明确表示“以后都允许”等持续授权意图，才使用 `allow_always`；这适用于支持权限转发的 ACP 和 Qwen Serve 后端。
+Main Omni generates permission questions in the current real conversation's language, falling back to `config.language` only when conversation language cannot be determined. English backend titles, commands, and paths are approval data, not language instructions or user consent. The independent permission response cannot call tools or substitute a progress announcement for a question. A later explicit user answer is handled by ordinary conversation through `respond_permission`. The original action remains visible in subagent details.
 
-`allow_always` 优先选择后端提供的持久授权，由后端保存实际权限范围，例如“允许全部文件编辑”或“在当前项目中始终允许此命令”。有多个持久选项时采用后端提供的首个选项；Qwen 的项目级选项先于用户级选项，不能把它理解为无条件允许所有操作。
+Completion/failure notifications use an independent `task_result` response. Runtime supplies the real status, task, and summary; the model briefly explains them in the current conversation's language rather than using a fixed English template. It must not read internal IDs, raw paths, or Markdown aloud or call tools through the notification. Recent real-user language samples can persist across calls only for language selection, not as result facts. Without a sample, trusted response instructions explicitly specify the configured language.
 
-如果后端未提供、或为当前请求隐藏了持久选项，就退回单次允许，而不是拒绝；仅在这种情况下，Live 还会为当前会话保留 **30 分钟、只匹配相同动作**的本地允许规则。它不涵盖只是相似的其他操作。
+After an actual permission request, ordinary `allow` approves only that request. Use `allow_always` only when the user explicitly asks for ongoing permission. This applies to ACP and Qwen Serve backends with permission forwarding.
 
-后续明确的 `deny` 会撤销匹配的 Live 本地规则，但不会撤回后端已经保存的持久授权；后者必须在对应后端中清除，也不受 Live 的 30 分钟规则约束。
+`allow_always` prefers persistent options offered and stored by the backend, such as all file edits or this command within this project. When several exist, the first is used; Qwen project-scoped options precede user-scoped options. This is not unconditional permission for all operations.
 
-### Proactive 调优参数
+If the backend offers no persistent option, or hides it for the current request, Live falls back to one-time approval rather than denial. Only in this case does Live also retain a **30-minute, same-action-only** local rule for the current session. Similar but different actions are not covered.
 
-调度器按任务窗口提供证据给独立 Monitor；观察、模型推理和前台播报是不同阶段。调高 FPS 或缩短间隔不保证同等缩短触发延迟，还受采集、网络和前台音频队列影响。
+A later explicit `deny` removes the matching local Live rule, not permissions already persisted by the backend. Revoke those in the backend; they are not limited by Live's 30-minute rule.
 
-| 字段，均位于 `proactive`               | 默认值 | 说明                                                                           |
-| -------------------------------------- | ------ | ------------------------------------------------------------------------------ |
-| `enabled`                              | `true` | 是否启用工具与监控能力                                                         |
-| `monitor.sessionRecycleEvals`          | `60`   | 一条 Monitor 连接达到此推理次数后重建连接                                      |
-| `scheduler.evalIntervalSec`            | `2`    | 检查是否可以发起下一次推理的间隔，秒                                           |
-| `scheduler.maxFailuresPerTask`         | `3`    | 连续推理失败达到此次数后停止该任务                                             |
-| `scheduler.repeat.cooldownSec`         | `3`    | 重复触发的冷却时间，秒                                                         |
-| `scheduler.repeat.maxWaitTtsSec`       | `30`   | 前台 Realtime 创建通知响应后，等待播报完成确认的上限，秒；不限制前面的排队时间 |
-| `scheduler.repeat.clearBufferOnResume` | `true` | 恢复观察时清理旧感知缓冲                                                       |
-| `vision.fps`                           | `1`    | Monitor 视觉目标采样帧率，实际受输入源帧率与采集耗时限制                       |
-| `vision.windowSizeSec`                 | `10`   | 视觉观察窗口，秒                                                               |
-| `vision.minEvalDurationSec`            | `0`    | 首次推理前的视觉观察时长；`0` 仍需至少一张有效新帧                             |
-| `audio.windowSizeSec`                  | `60`   | 音频观察窗口，秒                                                               |
-| `audio.minEvalDurationSec`             | `0`    | 首次推理前的音频观察时长                                                       |
+### Proactive tuning
 
-视觉与音频的最短观察时长不能超过各自窗口。`vision.fps` 可设为 `0.1`–`60`，不保证设备能达到该帧率；前台 Live Feed 的 `visualInput.fps` 则是独立设置。较长采集间断会重新计算连续观察时长，旧帧不会被当成新证据。
+The scheduler supplies fixed chunks of new media to an independent Monitor. Capture, inference, and foreground delivery are separate stages. Higher FPS or shorter intervals do not guarantee proportionally faster triggers; capture, network, and audio queues also matter.
 
-旧的 `scheduler.maxConcurrentTasks` 字段仍可读取，但不再限制任务数，新配置无需填写。Monitor 按窗口和模型判断工作，触发有采样、网络及播报排队延迟。
+| Field under `proactive`                | Default    | Meaning                                                                                                               |
+| -------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                              | `true`     | Enable monitoring and tools                                                                                           |
+| `monitor.chunkDurationSec`             | `1`        | Seconds per user media chunk; range `0.1`–`60`, independent of scheduler interval                                     |
+| `monitor.sessionRecycleEvals`          | `60`       | Rebuild a Monitor connection after this many evaluations                                                              |
+| `monitor.representationCompact`        | `"normal"` | Visual representation aggregation: `normal` or `none`; unused for audio-only monitors                                 |
+| `scheduler.evalIntervalSec`            | `1`        | Seconds between checks for the next evaluation                                                                        |
+| `scheduler.maxFailuresPerTask`         | `3`        | Consecutive failures before stopping a task                                                                           |
+| `scheduler.repeat.cooldownSec`         | `3`        | Repeat-trigger cooldown, seconds                                                                                      |
+| `scheduler.repeat.maxWaitTtsSec`       | `30`       | Playback-completion wait after foreground Realtime creates a notification response; does not limit earlier queue time |
+| `scheduler.repeat.clearBufferOnResume` | `true`     | Clear old pending capture on resume                                                                                   |
+| `vision.fps`                           | `2`        | Independent target Monitor FPS; limited by capture speed                                                              |
+| `vision.windowSizeSec`                 | `10`       | Local new-frame buffer limit, seconds; not history resent every round                                                 |
+| `vision.minEvalDurationSec`            | `0`        | Extra observation before the first evaluation; zero still requires a full chunk and at least two valid new frames     |
+| `audio.windowSizeSec`                  | `60`       | Local new-audio buffer limit, seconds                                                                                 |
+| `audio.minEvalDurationSec`             | `0`        | Audio observation before the first evaluation                                                                         |
 
-### Memory 模型服务连接
+Minimum observation duration cannot exceed the corresponding window. `vision.fps` ranges from `0.1` to `60`, with `vision.fps × monitor.chunkDurationSec ≥ 2`. Both windows must be at least the chunk duration. Invalid configurations fail explicitly at startup rather than creating tasks that can never collect a complete chunk. Device speed is not guaranteed. Foreground `visualInput.fps` is independent. Long capture gaps reset continuous observation duration, and old frames do not count as fresh evidence.
 
-整理和视觉观察默认使用由 Realtime endpoint 派生的同地域 `/compatible-mode/v1/chat/completions`；向量检索使用 `/compatible-mode/v1/embeddings`。整理模型默认为 `qwen3.7-plus`，`observer.model` 未配置时跟随整理模型。开启视觉观察需要相应模型支持图片。
+Monitor uses an interleaved session: one `session.update` sets system instructions, `turn_detection: null`, `smooth_output: false`, and empty tools, followed by a user text describing the task. Each round sends one new media chunk, waits for acknowledgement of `input_audio_buffer.commit`, sends `response.create`, then waits for `response.done` before the next chunk. The service retains previous user media and assistant replies; the client does not repeatedly reconstruct history.
 
-`updater.baseUrl` / `observer.baseUrl` 可以覆盖各自的 HTTP(S) 兼容接口基础地址，不能附带 `/chat/completions` 后缀。`apiKeyEnv` 是凭据环境变量的名字，并且必须与对应的 `baseUrl` 一起配置。基础地址已覆盖、但 `apiKeyEnv` 为空时，仍会复用主 API key，应明确核对目标服务和凭据的信任范围。Embedding 始终使用主 DashScope 连接。
+Default audio-only chunks are one second of mono PCM16 at 16 kHz, without extra silence. Video-only chunks pair two images with a one-second `protocol_silence` track to carry the audio-buffer commit. Mixed chunks use one second of real audio and two frames from the same time span. Missing images are not replaced with old ones; incomplete mixed chunks log their drop reason. Less than 2 FPS is unsuitable for default one-second mixed chunks.
 
-### Memory 调优参数
+During slow inference, new media stays in bounded local queues rather than entering the server's in-flight buffer or being combined into a multi-second evaluation. Rebuilding a connection loses that transport's model history. Only unconsumed new media is retained; previously evaluated sounds or images are not replayed. Use `transportGeneration` to identify history boundaries.
 
-以下路径都位于 `memory` 内。省略的字段自动使用表中默认值；通常只需调整开关、模型、目录和视觉观察间隔。上下文数量／字符上限不等于删除本地历史或限制整个数据库大小。
+`monitor.representationCompact` maps to `session.video.input.representation_compact` in the initial session update, before any audio, including protocol silence. It does not change within a connection and remains configured after recycle/recovery. Restart after editing; `none` is useful for fine visual detail.
 
-| 字段                                      | 默认值               | 用途                           |
-| ----------------------------------------- | -------------------- | ------------------------------ |
-| `enabled`                                 | `true`               | Memory 总开关                  |
-| `dir`                                     | `""`                 | 空值使用 `<数据目录>/memories` |
-| `defaultId`                               | `"default"`          | 选中的记忆库 ID                |
-| `updater.enabled`                         | `true`               | 通话结束后的长期／近期记忆整理 |
-| `updater.model`                           | `"qwen3.7-plus"`     | 整理模型                       |
-| `updater.baseUrl` / `updater.apiKeyEnv`   | `""` / `""`          | 可选连接覆盖                   |
-| `updater.timeoutMs`                       | `120000`             | 单次整理请求超时，毫秒         |
-| `updater.temperature`                     | `0`                  | 整理生成温度                   |
-| `updater.maxTokens`                       | `2048`               | 整理输出 token 上限            |
-| `updater.maxWmEntries`                    | `64`                 | 单次整理处理的工作记忆条目上限 |
-| `updater.shutdownWaitSec`                 | `2`                  | 退出时等待整理完成的时长，秒   |
-| `observer.enabled`                        | `false`              | 视觉记忆开关                   |
-| `observer.model`                          | 跟随 `updater.model` | 支持图片输入的观察模型         |
-| `observer.baseUrl` / `observer.apiKeyEnv` | `""` / `""`          | 可选观察连接覆盖               |
-| `observer.intervalSec`                    | `60`                 | 视觉观察间隔，秒               |
-| `observer.timeoutMs`                      | `60000`              | 单次观察请求超时，毫秒         |
-| `observer.temperature`                    | `0`                  | 观察生成温度                   |
-| `observer.maxTokens`                      | `400`                | 观察输出 token 上限            |
-| `observer.maxContentChars`                | `400`                | 保存的描述长度上限             |
-| `observer.maxFrameAgeSec`                 | `15`                 | 接受的观察帧最大年龄，秒       |
-| `wm.maxEntries` / `wm.maxEntryChars`      | `128` / `200`        | 工作记忆条目数／每条字符上限   |
-| `segment.maxTurns`                        | `4`                  | 对话分段轮次上限               |
-| `segment.minTurnsBeforeGapCut`            | `2`                  | 按静默间隔切段前的最少轮次     |
-| `segment.maxChars`                        | `1000`               | 对话分段字符阈值               |
-| `segment.silenceGapSec`                   | `60`                 | 用于切段的静默间隔，秒         |
+The legacy `scheduler.maxConcurrentTasks` field can still be read but no longer limits task count; omit it in new configurations. Monitor judgments and notifications remain subject to sampling, network, and delivery delays.
 
-检索参数：
+### Memory model connections
 
-| 字段                                      | 默认值                | 用途                                                         |
-| ----------------------------------------- | --------------------- | ------------------------------------------------------------ |
-| `retrieve.topK`                           | `3`                   | 检索结果数量上限                                             |
-| `retrieve.maxChars`                       | `5000`                | 原始结果正文预算                                             |
-| `retrieve.retrievedMaxChars`              | `6000`                | 渲染到模型上下文后的检索区预算                               |
-| `retrieve.useVector`                      | `true`                | 启用向量与关键词混合检索                                     |
-| `retrieve.model`                          | `"text-embedding-v4"` | Embedding 模型                                               |
-| `retrieve.timeoutMs`                      | `400`                 | 实时查询向量请求超时，毫秒                                   |
-| `retrieve.backfillTimeoutMs`              | `10000`               | 后台补建向量超时，毫秒                                       |
-| `retrieve.cacheSize`                      | `1000`                | 向量缓存容量                                                 |
-| `retrieve.minSim`                         | `0.4`                 | 向量候选相似度阈值                                           |
-| `retrieve.vecLimit` / `retrieve.ftsLimit` | `50` / `50`           | 向量／全文索引候选数量                                       |
-| `retrieve.ftsAndTryThreshold`             | `20`                  | OR 关键词命中较多时，进一步尝试 AND 匹配的阈值               |
-| `retrieve.andBoost`                       | `1.2`                 | AND 命中加权                                                 |
-| `retrieve.timeRangeBoost`                 | `2`                   | 时间范围内的候选加权                                         |
-| `retrieve.timeEdgeDays`                   | `2`                   | 时间范围边缘的宽限天数                                       |
-| `retrieve.rrfK`                           | `60`                  | 多路排序融合参数                                             |
-| `retrieve.envMinGapSec`                   | `600`                 | 检索视觉观察时的最小时间间隔，用于避免重复结果；不是采样间隔 |
+The updater consolidates long- and short-term information from conversations; it does not produce environment-observation records. A separate, optional observer creates environment memories from visual input. Disabling the updater does not delete environment memories, and its output schema is independent of observer capture and environment retrieval.
 
-预载参数：
+Updater and observer use same-region `/compatible-mode/v1/chat/completions` derived from the Realtime endpoint by default; vector retrieval uses `/compatible-mode/v1/embeddings`. The updater defaults to `qwen3.7-plus`; an omitted `observer.model` inherits it. Visual observation requires image support.
 
-| 字段                                               | 默认值      | 用途                                                 |
-| -------------------------------------------------- | ----------- | ---------------------------------------------------- |
-| `preload.ltmMaxPerField`                           | `6`         | 长期记忆每个字段的预载条目上限；单值字段仍只取一个   |
-| `preload.ltmMaxChars`                              | `800`       | 预载长期记忆字符预算                                 |
-| `preload.stmUpcomingGraceDays`                     | `2`         | 未设置明确到期时间的未来事项，其事件日期后的宽限天数 |
-| `preload.stmMaxAgeDays`                            | `90`        | 近期事项的最大保留活跃天数                           |
-| `preload.recencyLambda`                            | `0.05`      | 近期事项的时间衰减系数                               |
-| `preload.upcomingWeight` / `preload.ongoingWeight` | `1.5` / `1` | 未来／进行中事项的基础权重                           |
-| `preload.urgentBoost` / `preload.urgentDays`       | `1.5` / `3` | 临近事项加权及其天数范围                             |
-| `preload.stmMaxItems`                              | `20`        | 预载近期事项数量上限                                 |
-| `preload.stmMaxChars`                              | `1200`      | 预载近期事项字符预算                                 |
+`updater.baseUrl` / `observer.baseUrl` override the respective HTTP(S) compatible API base URL, without a `/chat/completions` suffix. `apiKeyEnv` names a credential environment variable and requires its corresponding `baseUrl`. Overriding the base URL with an empty `apiKeyEnv` still reuses the main API key, so verify the destination's trust boundary. Embeddings always use the main DashScope connection.
 
-`retrieve.maxChars` 不能大于 `retrievedMaxChars`；`backfillTimeoutMs` 不能小于 `timeoutMs`；`segment.minTurnsBeforeGapCut` 不能大于 `maxTurns`。高级参数的完整取值范围以 [Memory 配置校验](src/memory/config.ts)为准。
+### Memory tuning
 
-### 环境变量参考
+All fields below are under `memory`. Omitted values use these defaults. Users typically need only the toggle, model, directory, and observation interval. Context-entry and character limits do not delete local history or limit the entire database.
 
-总体优先级为：**环境变量 → `config.json` → 内置默认值**。API key 的优先级更具体为 `DASHSCOPE_API_KEY` → `QWEN_LIVE_HARNESS_REALTIME_API_KEY` → `realtimeApiKey`。更改文件却未生效时，请先检查 shell 中是否已有覆盖。
+| Field                                     | Default                 | Purpose                                                |
+| ----------------------------------------- | ----------------------- | ------------------------------------------------------ |
+| `enabled`                                 | `true`                  | Master Memory toggle                                   |
+| `dir`                                     | `""`                    | Empty uses `<dataDir>/memories`                        |
+| `defaultId`                               | `"default"`             | Selected library ID                                    |
+| `updater.enabled`                         | `true`                  | Long-/short-term consolidation after calls             |
+| `updater.model`                           | `"qwen3.7-plus"`        | Updater model                                          |
+| `updater.baseUrl` / `updater.apiKeyEnv`   | `""` / `""`             | Optional connection overrides                          |
+| `updater.timeoutMs`                       | `120000`                | Request timeout, milliseconds                          |
+| `updater.temperature`                     | `0`                     | Generation temperature                                 |
+| `updater.maxTokens`                       | `2048`                  | Output token limit                                     |
+| `updater.maxWmEntries`                    | `64`                    | Working-memory entries per update                      |
+| `updater.shutdownWaitSec`                 | `2`                     | Shutdown wait for consolidation, seconds               |
+| `observer.enabled`                        | `false`                 | Visual memory toggle                                   |
+| `observer.model`                          | Inherit `updater.model` | Image-capable observer model                           |
+| `observer.baseUrl` / `observer.apiKeyEnv` | `""` / `""`             | Optional observer connection overrides                 |
+| `observer.intervalSec`                    | `60`                    | Observation interval, seconds                          |
+| `observer.timeoutMs`                      | `60000`                 | Request timeout, milliseconds                          |
+| `observer.temperature`                    | `0`                     | Generation temperature                                 |
+| `observer.maxTokens`                      | `400`                   | Output token limit                                     |
+| `observer.maxContentChars`                | `400`                   | Stored description character limit                     |
+| `observer.maxFrameAgeSec`                 | `15`                    | Maximum accepted frame age, seconds                    |
+| `wm.maxEntries` / `wm.maxEntryChars`      | `128` / `200`           | Working-memory entry count / per-entry character limit |
+| `segment.maxTurns`                        | `4`                     | Maximum turns per conversation segment                 |
+| `segment.minTurnsBeforeGapCut`            | `2`                     | Minimum turns before splitting on silence              |
+| `segment.maxChars`                        | `1000`                  | Segment character threshold                            |
+| `segment.silenceGapSec`                   | `60`                    | Silence gap for splitting, seconds                     |
 
-| 环境变量                                                  | 对应配置／用途                                         |
-| --------------------------------------------------------- | ------------------------------------------------------ |
-| `DASHSCOPE_API_KEY`、`QWEN_LIVE_HARNESS_REALTIME_API_KEY` | 主 DashScope key                                       |
-| `QWEN_LIVE_HARNESS_REALTIME_ENDPOINT`                     | `realtimeEndpoint`                                     |
-| `QWEN_LIVE_HARNESS_REALTIME_MODEL`                        | `realtimeModel`                                        |
-| `QWEN_LIVE_HARNESS_VOICE`                                 | `voice`                                                |
-| `QWEN_LIVE_HARNESS_BACKENDS`                              | `backends` 的 JSON 字符串；`'[]'` 明确关闭后台         |
-| `QWEN_LIVE_HARNESS_CWD`                                   | `defaultCwd`                                           |
-| `QWEN_LIVE_HARNESS_SHORTCUT`                              | `shortcut`                                             |
-| `QWEN_LIVE_HARNESS_PORT`                                  | `port`                                                 |
-| `QWEN_LIVE_HARNESS_DATA_DIR`                              | 配置、会话日志、默认 Memory 的基础目录                 |
-| `QWEN_LIVE_HARNESS_DISCOVERY_DIR`                         | daemon 发现目录基础路径；独立于 DATA_DIR               |
-| `QWEN_LIVE_HARNESS_DISCOVERY_FILE`                        | 单独启动 Host 时指定完整 `run/daemon.json` 路径        |
-| `QWEN_LIVE_HARNESS_VISUAL_SOURCE`                         | `visualInput.source`                                   |
-| `QWEN_LIVE_HARNESS_VISUAL_MODE`                           | `visualInput.mode`                                     |
-| `QWEN_LIVE_HARNESS_VISUAL_FPS`                            | `visualInput.fps`                                      |
-| `QWEN_LIVE_HARNESS_CAMERA_RESOLUTION`                     | `cameraResolution`，例如 `1280x720`                    |
-| `QWEN_LIVE_HARNESS_CAMERA_SNAPSHOT_RESOLUTION`            | `cameraSnapshotResolution`，`native` 或 `WIDTHxHEIGHT` |
-| `QWEN_LIVE_HARNESS_VISUAL_LIVE_RESOLUTION`                | `liveResolution`，例如 `1280x720`                      |
-| `QWEN_LIVE_HARNESS_VISUAL_SNAPSHOT_RESOLUTION`            | `snapshotResolution`，`native` 或 `WIDTHxHEIGHT`       |
-| `QWEN_LIVE_HARNESS_PROACTIVE_ENABLED`                     | `proactive.enabled`，接受 `true` / `1` / `false` / `0` |
-| `QWEN_LIVE_HARNESS_LOG_LEVEL`                             | `debug` / `info` / `warn` / `error`，默认 `info`       |
+Retrieval:
 
-省略 `backends` 的兼容配置还支持 `serveUrl` / `serveToken`，以及环境变量 `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`；新配置建议使用明确的 `backends` 数组。
+| Field                                     | Default               | Purpose                                                                                          |
+| ----------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------ |
+| `retrieve.topK`                           | `3`                   | Maximum results                                                                                  |
+| `retrieve.maxChars`                       | `5000`                | Raw result text budget                                                                           |
+| `retrieve.retrievedMaxChars`              | `6000`                | Retrieved section budget after rendering into context                                            |
+| `retrieve.useVector`                      | `true`                | Hybrid vector/keyword retrieval                                                                  |
+| `retrieve.model`                          | `"text-embedding-v4"` | Embedding model                                                                                  |
+| `retrieve.timeoutMs`                      | `400`                 | Live-query embedding timeout, milliseconds                                                       |
+| `retrieve.backfillTimeoutMs`              | `10000`               | Background embedding timeout, milliseconds                                                       |
+| `retrieve.cacheSize`                      | `1000`                | Embedding cache entries                                                                          |
+| `retrieve.minSim`                         | `0.4`                 | Vector-candidate similarity threshold                                                            |
+| `retrieve.vecLimit` / `retrieve.ftsLimit` | `50` / `50`           | Vector/full-text candidate limits                                                                |
+| `retrieve.ftsAndTryThreshold`             | `20`                  | OR-hit threshold for trying AND matching                                                         |
+| `retrieve.andBoost`                       | `1.2`                 | AND-match weighting                                                                              |
+| `retrieve.timeRangeBoost`                 | `2`                   | Weighting for in-range candidates                                                                |
+| `retrieve.timeEdgeDays`                   | `2`                   | Time-range edge tolerance, days                                                                  |
+| `retrieve.rrfK`                           | `60`                  | Rank-fusion parameter                                                                            |
+| `retrieve.envMinGapSec`                   | `600`                 | Minimum spacing between retrieved visual observations to reduce duplicates, not capture interval |
 
-安装版的桌面启动登记保存 Node／CLI 的绝对路径、PATH、配置／发现目录和工作目录，不复制任意 shell 环境变量。需通过双击 Host 使用的参数，建议写入配置文件；仅存在于某个终端的环境变量，不保证从启动器打开应用时仍存在。
+Preloading:
 
-`DATA_DIR` 改变配置与默认数据位置，**不会**自动改变 discovery 基础目录；默认仍为 `~/.qwen-live-harness`。例如，已安装 CLI 可使用独立配置：
+| Field                                              | Default     | Purpose                                                               |
+| -------------------------------------------------- | ----------- | --------------------------------------------------------------------- |
+| `preload.ltmMaxPerField`                           | `6`         | Long-term entries per field; single-value fields still take one       |
+| `preload.ltmMaxChars`                              | `800`       | Long-term context character budget                                    |
+| `preload.stmUpcomingGraceDays`                     | `2`         | Grace period after an upcoming item's date when no expiry is explicit |
+| `preload.stmMaxAgeDays`                            | `90`        | Maximum active age for short-term items                               |
+| `preload.recencyLambda`                            | `0.05`      | Recency decay                                                         |
+| `preload.upcomingWeight` / `preload.ongoingWeight` | `1.5` / `1` | Upcoming/ongoing base weights                                         |
+| `preload.urgentBoost` / `preload.urgentDays`       | `1.5` / `3` | Urgency weighting and day range                                       |
+| `preload.stmMaxItems`                              | `20`        | Maximum preloaded short-term items                                    |
+| `preload.stmMaxChars`                              | `1200`      | Short-term context character budget                                   |
+
+`retrieve.maxChars` cannot exceed `retrievedMaxChars`; `backfillTimeoutMs` cannot be shorter than `timeoutMs`; `segment.minTurnsBeforeGapCut` cannot exceed `maxTurns`. See [Memory configuration validation](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/memory/config.ts) for complete ranges.
+
+### Environment variables
+
+General precedence is **environment → `config.json` → built-in defaults**. API key precedence is more specific: `DASHSCOPE_API_KEY` → `QWEN_LIVE_HARNESS_REALTIME_API_KEY` → `realtimeApiKey`. Check shell overrides if a file edit appears ineffective.
+
+| Variable                                                  | Setting or purpose                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------- |
+| `DASHSCOPE_API_KEY`, `QWEN_LIVE_HARNESS_REALTIME_API_KEY` | Main DashScope key                                            |
+| `QWEN_LIVE_HARNESS_REALTIME_ENDPOINT`                     | `realtimeEndpoint`                                            |
+| `QWEN_LIVE_HARNESS_REALTIME_MODEL`                        | `realtimeModel`                                               |
+| `QWEN_LIVE_HARNESS_VOICE`                                 | `voice`                                                       |
+| `QWEN_LIVE_HARNESS_BACKENDS`                              | JSON `backends`; `'[]'` explicitly disables backends          |
+| `QWEN_LIVE_HARNESS_CWD`                                   | `defaultCwd`                                                  |
+| `QWEN_LIVE_HARNESS_SHORTCUT`                              | `shortcut`                                                    |
+| `QWEN_LIVE_HARNESS_PORT`                                  | `port`                                                        |
+| `QWEN_LIVE_HARNESS_DATA_DIR`                              | Base for configuration, session logs, and default Memory      |
+| `QWEN_LIVE_HARNESS_DISCOVERY_DIR`                         | Discovery base directory, independent of DATA_DIR             |
+| `QWEN_LIVE_HARNESS_DISCOVERY_FILE`                        | Complete `run/daemon.json` path for a separately started Host |
+| `QWEN_LIVE_HARNESS_VISUAL_SOURCE`                         | `visualInput.source`                                          |
+| `QWEN_LIVE_HARNESS_VISUAL_MODE`                           | `visualInput.mode`                                            |
+| `QWEN_LIVE_HARNESS_VISUAL_FPS`                            | `visualInput.fps`                                             |
+| `QWEN_LIVE_HARNESS_CAMERA_RESOLUTION`                     | `cameraResolution`, such as `1280x720`                        |
+| `QWEN_LIVE_HARNESS_CAMERA_SNAPSHOT_RESOLUTION`            | `cameraSnapshotResolution`, `native` or `WIDTHxHEIGHT`        |
+| `QWEN_LIVE_HARNESS_VISUAL_LIVE_RESOLUTION`                | `liveResolution`, such as `1280x720`                          |
+| `QWEN_LIVE_HARNESS_VISUAL_SNAPSHOT_RESOLUTION`            | `snapshotResolution`, `native` or `WIDTHxHEIGHT`              |
+| `QWEN_LIVE_HARNESS_PROACTIVE_ENABLED`                     | `proactive.enabled`; accepts `true` / `1` / `false` / `0`     |
+| `QWEN_LIVE_HARNESS_LOG_LEVEL`                             | `debug` / `info` / `warn` / `error`; default `info`           |
+
+Legacy configuration without `backends` also supports `serveUrl` / `serveToken` and `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`. Prefer explicit backend arrays in new configurations.
+
+Installed desktop registration records absolute Node/CLI paths, PATH, configuration/discovery directories, and working directory, not arbitrary shell environment variables. Prefer the configuration file for settings needed when double-clicking Host; a variable present in one terminal may not exist in desktop startup.
+
+`DATA_DIR` moves configuration and default data, **not** the discovery base, which remains `~/.qwen-live-harness` unless overridden. For example, an installed CLI can use an isolated configuration:
 
 ```sh
 export QWEN_LIVE_HARNESS_DATA_DIR="$HOME/.qwen-live-harness-work"
@@ -462,11 +480,17 @@ qwen-live-harness init
 qwen-live-harness
 ```
 
-源码开发将这两条 CLI 命令换成 `npm run init` 和 `npm start`。`DATA_DIR` 只能通过环境变量指定，没有对应的 `dataDir` 配置字段；`discoveryDir` 可以写入配置，并被 `QWEN_LIVE_HARNESS_DISCOVERY_DIR` 覆盖。手动配置独立 Host 连接时，将 `QWEN_LIVE_HARNESS_DISCOVERY_FILE` 设为对应完整发现文件路径。
+For source development, replace the final two commands with `npm run init` and `npm start`. `DATA_DIR` is environment-only; there is no `dataDir` configuration field. `discoveryDir` can be configured and overridden by `QWEN_LIVE_HARNESS_DISCOVERY_DIR`. A manually connected Host uses `QWEN_LIVE_HARNESS_DISCOVERY_FILE` with the complete discovery-file path.
 
-### Monitor 诊断归档
+### Monitor diagnostic archives
 
-使用 daemon `--debug` 或 `QWEN_LIVE_HARNESS_LOG_LEVEL=debug` 时，视觉 Monitor（包括音视频组合）将实际请求保存在系统临时目录；纯音频 Monitor 不生成这种媒体归档：
+With daemon `--debug` or `QWEN_LIVE_HARNESS_LOG_LEVEL=debug`, audio-only, video-only, and combined monitors archive actual requests under the system temporary directory. Non-debug runs do not archive media, and unsaved input cannot be recovered afterward. From source:
+
+```sh
+npm start -- --debug
+```
+
+Archives are per inference round, not continuous recordings:
 
 ```text
 qwen-live-harness-monitor-debug/
@@ -474,23 +498,38 @@ qwen-live-harness-monitor-debug/
     monitor.json
     requests/000001/
       request.json
-      image-0001.jpg
+      image-0001.jpg   # Present only for rounds containing images
       input.wav
       response.json
 ```
 
-- `proactive.monitor_debug_started` 和 `proactive.monitor_request_saved` 记录绝对目录。一次 Monitor 的 WebSocket 回收重建仍使用同一目录。
-- JPEG 是成功写入模型连接的帧；WAV 为发送的单声道 16 kHz PCM16，包含协议静音。JSON 保存指令、事件顺序、帧哈希、音频偏移与上次请求引用，响应文件记录原始文本及解析结果。
-- 对照 Host、daemon 和 `proactive.monitor_image_sent` 的 `frameHash`；`proactive.monitor_commit` 的计数只包含成功 socket 写入，`proactive.monitor_committed` 对应服务端确认。队列中或已丢弃的帧不能当作已发送证据。
-- 保留最近创建的 10 个 Monitor 目录，不是 10 次请求或磁盘容量上限；被移出归档的任务继续运行但不再录制。磁盘错误或超出写入预算可能导致归档不完整，不应因此中断通话。
-- 归档不含连接凭据，但用户画面、语音和提示词中的秘密不会自动脱敏。它与普通诊断事件、会话 JSONL 和 Memory 数据库的隐私范围不同。
+- `proactive.monitor_debug_started` and `proactive.monitor_request_saved` log absolute directories. Rebuilding a Monitor WebSocket keeps the same Monitor directory.
+- JPEGs are frames successfully written to the model connection. `input.wav` contains mono 16 kHz PCM16 successfully sent before that commit and not discarded by `input_audio_buffer.clear`, concatenated in send order, including protocol silence. It is not an uninterrupted microphone recording. Audio offsets exclude the WAV header.
+- Audio events in `request.json.events` have `origin`: `microphone`, `protocol_silence` for a video-only carrier track, or `unknown`. `audioSummary` lists `totalBytes`, `microphoneBytes`, `protocolSilenceBytes`, and `unknownBytes`. These archive-only fields are not sent to the model and do not classify energy or events. Media buffered during a handshake or slow inference may be sent later; send time is not capture time.
+- `request.json` records initialization settings, task text, event order, frame hashes, audio offsets, and `previousRequest`. `transportGeneration` identifies connection history boundaries. `previousRequest` links only within a transport and resets after reconnection. Server context can retain earlier committed media and replies; a single WAV is not the entire context visible to the model.
+- `request.json.session` is an initialization snapshot included for standalone inspection, **not a replay of system instructions or task text each round**. Event IDs in that snapshot stay the same within a transport. Actual incremental sends are in `events`, normally media append, commit, and `response.create`. Only a new transport resends initialization.
+- Valid `providerSessionId` values are recorded when available. `response.json` contains raw action text and parsed results, plus `responseId`, `eventId`, and `usage` when provided. Request events preserve available send IDs. Do not infer missing identifiers; usage is not equivalent to useful microphone duration.
+- Correlate Host, daemon, and `proactive.monitor_image_sent` frame hashes. `proactive.monitor_commit` counts successful socket writes; `proactive.monitor_committed` records service acknowledgement. Queued or dropped frames are not evidence of delivery.
+- `proactive.monitor_chunk_prepared` records capture ranges and actual frame counts. `proactive.monitor_chunk_dropped` records missing images, capture gaps, invalidated pending chunks, or uncertain commit sends. `proactive.monitor_input_dropped` aggregates local eviction counts, bytes, and time ranges. These debug session events distinguish missing complete input from a model `wait` decision.
+- Retention is the **10 newest Monitor directories across all modalities**, not 10 per modality, 10 requests, or a total disk quota. Evicted monitors continue running without further archival. Directories/files use private permissions; pending and queued writes have a 32 MiB memory budget. Disk faults or budget limits can make archives incomplete but must not end a call.
+- JSON redacts connection credential fields and known API keys, not every secret spoken, shown, or written by the user. Inspect WAV, JPEG, and JSON before sharing, not just terminal output. Do not share the whole data directory.
 
-详细实现见 [`monitor-debug-store.ts`](src/proactive/monitor-debug-store.ts)。Host 自身的私有故障日志与设备诊断见 [Host 开发指南](../qwen-live-harness-host/README.md#日志与文案)。
+#### Scheduler decisions and session JSONL
 
-## 打包与发布
+Media archives show only input actually sent to an inference. Audio dropped during cooldown is not in WAV files. Debug mode also prints key Proactive metadata and stores it in session JSONL under `<dataDir>/sessions/`. Records have `type: "proactive.debug"` and the concrete event name in `payload.event`:
 
-根 workspace 是私有包，实际 npm 包是本目录的 `qwen-live-harness`。发布产物包含构建后的 `dist` 和许可证，不包含 Electron Host；`npm run check:package` 验证这一边界。
+- `proactive.monitor_commit`, `proactive.monitor_committed`, and `proactive.monitor_result`: submission, service acknowledgement, and inference result.
+- `proactive.evaluation_decision`, such as `notification_accepted`, `suppressed_awaiting_false`, `rearmed_false`, or `ignored_cooldown`: separates a model trigger from permission to deliver a notification.
+- `proactive.cooldown_started`, `proactive.cooldown_resumed`, `proactive.cooldown_audio_dropped`, and `proactive.buffer_reset`: cooldown, dropped-audio statistics, and pending-buffer cleanup, not separate recordings of discarded audio.
 
-公开 npm 包与签名 Host 需要匹配版本和协议。构建、签名、公证、GitHub Release、OSS 同步及 npm 发布的维护入口见 [Host 开发指南](../qwen-live-harness-host/README.md)；日常源码调试不需要发布或修改安装器信任规则。
+First match `taskId` and task generation (`taskGeneration` for Monitor events; `generation` for some scheduler events), then correlate nearby results by `evaluation`, `transportGeneration`, and available `providerSessionId` / `responseId`. Not every event has every identifier; timestamps alone can mix tasks or connections. JSONL holds bounded diagnostic metadata, not per-frame media or input from before debug was enabled.
 
-许可证：[Apache License 2.0](../../LICENSE)。
+See [`monitor-debug-store.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/proactive/monitor-debug-store.ts). For Host-private failure logs and device diagnostics, see [Logs and shared text](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness-host/README.md#logs-and-shared-text).
+
+## Packaging and releases
+
+The root workspace is private; this directory publishes the `qwen-live-harness` npm package. Its tarball contains built `dist` and licensing, not Electron Host. `npm run check:package` verifies that boundary.
+
+Public npm and signed Host releases must match versions and protocol. The [Host development guide](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness-host/README.md#release-maintenance) covers building, signing, notarization, GitHub Releases, OSS, and npm publication. Everyday source debugging does not require publishing or changing installer trust rules.
+
+License: [Apache License 2.0](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/LICENSE).

@@ -151,6 +151,77 @@ export function contextTextOf(message: JsonObject): string | undefined {
   return typeof first['text'] === 'string' ? first['text'] : undefined;
 }
 
+/** The daemon's quoted pending-approval facts, never a verbatim speech item. */
+export function permissionPayloadOf(message: JsonObject):
+  | {
+      request_id: string;
+      session: string;
+      action: string;
+      fallback_language: 'en' | 'zh-CN';
+    }
+  | undefined {
+  const text = contextTextOf(message);
+  const body = text?.match(
+    /^\[(?:BACKEND|MERGE_WITH_USER)\] \[PERMISSION\]\s+([\s\S]+)$/u,
+  )?.[1];
+  if (!body) return undefined;
+  try {
+    const value: unknown = JSON.parse(body);
+    if (
+      !isRecord(value) ||
+      typeof value['request_id'] !== 'string' ||
+      typeof value['session'] !== 'string' ||
+      typeof value['action'] !== 'string' ||
+      (value['fallback_language'] !== 'en' &&
+        value['fallback_language'] !== 'zh-CN')
+    )
+      return undefined;
+    return {
+      request_id: value['request_id'],
+      session: value['session'],
+      action: value['action'],
+      fallback_language: value['fallback_language'],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Runtime-confirmed managed task outcome, distinct from an external report. */
+export function taskResultPayloadOf(message: JsonObject):
+  | {
+      status: 'completed' | 'failed';
+      session: string;
+      summary: string;
+      job?: string;
+      task?: string;
+    }
+  | undefined {
+  const body = contextTextOf(message)?.match(
+    /^\[(?:BACKEND|MERGE_WITH_USER)\] \[(?:COMPLETE|ERROR) [^\]]+\]\s+([\s\S]+)$/u,
+  )?.[1];
+  if (!body) return undefined;
+  try {
+    const value: unknown = JSON.parse(body);
+    if (
+      !isRecord(value) ||
+      (value['status'] !== 'completed' && value['status'] !== 'failed') ||
+      typeof value['session'] !== 'string' ||
+      typeof value['summary'] !== 'string'
+    )
+      return undefined;
+    return {
+      status: value['status'],
+      session: value['session'],
+      summary: value['summary'],
+      ...(typeof value['job'] === 'string' ? { job: value['job'] } : {}),
+      ...(typeof value['task'] === 'string' ? { task: value['task'] } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function startFakeDashScopeServer(
   options: {
     nativeSearchReply?: { answer: string; searchCount: number };

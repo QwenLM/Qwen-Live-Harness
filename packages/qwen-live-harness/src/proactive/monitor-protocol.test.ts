@@ -9,9 +9,25 @@ import {
   buildMonitorInstruction,
   formatProactiveEvent,
   parseMonitorAction,
+  PROACTIVE_MONITOR_SYSTEM_PROMPT,
 } from './monitor-protocol.js';
 
 describe('Proactive monitor protocol', () => {
+  it('distinguishes later recurring events from repeat responses for the same event', () => {
+    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toContain(
+      'Recurring ("whenever", "every time", "each time"): respond on EVERY later occurrence of the trigger.',
+    );
+    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toContain(
+      'Single ("when", "if", "once"): respond on the first qualifying occurrence, then return to `wait` unless the user asks again.',
+    );
+    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toContain(
+      'Do not repeat a response for the same occurrence',
+    );
+    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toContain(
+      "Use the user's language.",
+    );
+  });
+
   it('uses only the condition as the event standing instruction', () => {
     expect(
       buildMonitorInstruction({

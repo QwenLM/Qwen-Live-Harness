@@ -80,16 +80,16 @@ describe('Qwen Live Harness display text catalogue', () => {
 
   it('warns about sensitive debug recordings in both languages', () => {
     expect(liveText('en', 'cli.usage')).toContain(
-      'save sensitive visual Monitor archives',
+      'save sensitive audio/visual Monitor archives',
     );
     expect(liveText('zh-CN', 'cli.usage')).toContain(
-      '保存含敏感内容的视觉 Monitor 归档',
+      '保存含敏感内容的音频／视觉 Monitor 归档',
     );
     expect(liveText('en', 'cli.debugNotice')).toContain(
-      'archives contain real screen/camera frames, audio and prompt/response text',
+      'archives contain real microphone audio, screen/camera frames, and prompt/response text',
     );
     expect(liveText('zh-CN', 'cli.debugNotice')).toContain(
-      '归档包含真实屏幕／摄像头画面、音频和提示词／回复文本',
+      '归档包含真实麦克风音频、屏幕／摄像头画面和提示词／回复文本',
     );
   });
 
