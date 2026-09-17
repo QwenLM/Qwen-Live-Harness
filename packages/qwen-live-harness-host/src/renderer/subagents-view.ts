@@ -43,6 +43,12 @@ const EVENT_KEYS = {
   notification: 'subagents.eventNotification',
 } as const satisfies Record<SubagentActivity['kind'], LiveMessageKey>;
 
+const TASK_KIND_KEYS = {
+  harness: 'subagents.harness',
+  proactive: 'subagents.proactive',
+  search: 'subagents.kind.search',
+} as const satisfies Record<SubagentTask['kind'], LiveMessageKey>;
+
 const DELIVERY_STATUS_KEYS = {
   pending: 'subagents.deliveryPending',
   held: 'subagents.deliveryHeld',
@@ -720,8 +726,14 @@ export class SubagentsView {
         this.rows.set(task.id, row);
       }
       text(row.title, task.title);
-      text(row.status, liveText(state.language, STATUS_KEYS[task.status]));
+      const status = liveText(state.language, STATUS_KEYS[task.status]);
+      const kind = liveText(state.language, TASK_KIND_KEYS[task.kind]);
+      const statusLabel =
+        task.kind === 'search' ? `${kind} · ${status}` : status;
+      text(row.status, statusLabel);
+      row.status.title = statusLabel;
       row.status.dataset.status = task.status;
+      row.button.dataset.kind = task.kind;
       text(
         row.activity,
         displayLiveMessage(state.language, task.activity) ||
@@ -731,7 +743,7 @@ export class SubagentsView {
       this.renderStop(row.stop, task, state);
       row.button.setAttribute(
         'aria-label',
-        liveText(state.language, 'subagents.openTask', { title: task.title }),
+        `${task.kind === 'search' ? `${kind} · ` : ''}${liveText(state.language, 'subagents.openTask', { title: task.title })}`,
       );
     }
     const permissions = state.page?.unassignedPermissions ?? [];
@@ -1090,7 +1102,7 @@ export class SubagentsView {
     text(
       this.metadata,
       [
-        liveText(language, `subagents.${task.kind}`),
+        liveText(language, TASK_KIND_KEYS[task.kind]),
         task.backend &&
           `${liveText(language, 'subagents.backend')}: ${task.backend}`,
         task.source &&

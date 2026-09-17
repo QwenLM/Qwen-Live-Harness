@@ -890,18 +890,14 @@ export const LIVE_MESSAGES = {
       '操作尚未返回结果，当前结果未知，可能仍在进行。请勿立即重复操作，也不要声称操作已经完成。',
   },
   'runtime.webSearchUnavailable': {
-    en: 'This read-only search tool is available only for direct user queries without a background Harness, using a supported Qwen3.5 Omni Realtime model. It cannot execute tasks or run from an internal notification.',
+    en: 'This read-only search tool requires a direct user request and an available search service. It cannot execute tasks or run from an internal notification.',
     'zh-CN':
-      '此只读查询工具仅在未接入后台 Harness、使用受支持的 Qwen3.5 Omni Realtime 模型时，供用户直接查询使用；不能执行任务，也不能由内部通知触发。',
+      '此只读查询工具需要用户直接发起请求，并有可用的搜索服务；不能执行任务，也不能由内部通知触发。',
   },
   'runtime.webSearchInvalidQuery': {
     en: 'Provide one nonempty query of at most 4096 characters. Do not send audio, images, memory contents, or additional fields.',
     'zh-CN':
       '请提供一条非空、最多 4096 字符的查询，不要传入音视频、记忆内容或其他字段。',
-  },
-  'runtime.webSearchBusy': {
-    en: 'A search is already in progress. Wait for its result instead of starting another search.',
-    'zh-CN': '已有查询正在进行，请等待结果，不要重复发起查询。',
   },
   'runtime.webSearchCancelled': {
     en: 'The search was cancelled. No search result is available.',
@@ -2060,6 +2056,59 @@ export const LIVE_MESSAGES = {
   'subagents.source': { en: 'Source', 'zh-CN': '输入源' },
   'subagents.harness': { en: 'Agent task', 'zh-CN': '智能体任务' },
   'subagents.proactive': { en: 'Proactive task', 'zh-CN': '主动任务' },
+  'subagents.kind.search': { en: 'Web Search', 'zh-CN': '联网搜索' },
+  'search.queued': {
+    en: 'Waiting to search.',
+    'zh-CN': '正在等待搜索。',
+  },
+  'search.running': {
+    en: 'Looking up public information.',
+    'zh-CN': '正在查询公开信息。',
+  },
+  'search.completed': {
+    en: 'Search result received.',
+    'zh-CN': '已收到查询结果。',
+  },
+  'search.failed': {
+    en: 'Search failed.',
+    'zh-CN': '查询失败。',
+  },
+  'search.cancelled': {
+    en: 'Search cancelled.',
+    'zh-CN': '查询已取消。',
+  },
+  'search.fallback': {
+    en: 'Search failed; requesting a background lookup.',
+    'zh-CN': '搜索失败，正在请求后台查阅。',
+  },
+  'search.fallbackStarted': {
+    en: 'Background lookup started with {backend}.',
+    'zh-CN': '已交由 {backend} 进行后台查阅。',
+  },
+  'search.fallbackFailed': {
+    en: 'Background lookup failed.',
+    'zh-CN': '后台查阅失败。',
+  },
+  'search.awaitingAnswer': {
+    en: 'Result ready; waiting to answer.',
+    'zh-CN': '结果已就绪，正在等待回答。',
+  },
+  'search.answering': {
+    en: 'Speaking the search result.',
+    'zh-CN': '正在播报查询结果。',
+  },
+  'search.answered': {
+    en: 'Search answer delivered.',
+    'zh-CN': '查询结果已播报。',
+  },
+  'search.answerInterrupted': {
+    en: 'Search answer interrupted.',
+    'zh-CN': '查询结果播报已中断。',
+  },
+  'search.answerMuted': {
+    en: 'Search answer muted; the result is still available here.',
+    'zh-CN': '查询结果播报已静音，仍可在此查看结果。',
+  },
   'subagents.triggers': {
     en: 'Triggers: {count}',
     'zh-CN': '触发次数：{count}',

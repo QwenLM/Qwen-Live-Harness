@@ -92,11 +92,13 @@ server.listen(0, '127.0.0.1', () => console.log('qwen serve listening on http://
           try {
             return kill(target, signal);
           } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
             if (
               target === -pid &&
               signal === 0 &&
-              (error as NodeJS.ErrnoException).code === 'ESRCH'
+              (code === 'ESRCH' || code === 'EPERM')
             ) {
+              // Some platforms already return EPERM for an absent group.
               deniedProbe = true;
               throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
             }
@@ -151,20 +153,61 @@ server.listen(0, '127.0.0.1', () => console.log('qwen serve listening on http://
       const { service, cwd } = await fixture(
         `
 const fs = require('node:fs');
-const worker = require('node:child_process').spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{}); setInterval(()=>{},1000)'], {stdio:'ignore'});
-fs.writeFileSync('pids.json', JSON.stringify([process.pid, worker.pid]));
 process.on('SIGTERM',()=>{});
+const worker = require('node:child_process').spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{}); process.send("ready"); setInterval(()=>{},1000)'], {stdio:['ignore','ignore','ignore','ipc']});
+worker.once('message', () => fs.writeFileSync('pids.json', JSON.stringify([process.pid, worker.pid])));
 setInterval(()=>{},1000);`,
         500,
       );
-      await expect(service.start()).rejects.toThrow('startup timed out');
-      const pids = JSON.parse(
-        await readFile(join(cwd, 'pids.json'), 'utf8'),
-      ) as number[];
-      // Reaping by the OS can follow group termination asynchronously.
-      for (let i = 0; i < 30 && pids.some(alive); i++)
-        await new Promise((r) => setTimeout(r, 20));
-      expect(pids.map(alive)).toEqual([false, false]);
+      // Cold process startup must not race the timeout being tested. Capture
+      // only that timer; group termination and OS reaping keep their real clock.
+      const schedule = globalThis.setTimeout;
+      let expireStartup: (() => void) | undefined;
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementationOnce((callback, delay, ...args) => {
+          expect(delay).toBe(500);
+          expireStartup = () => callback(...args);
+          // A safety watchdog, cleared by the normal startup completion path.
+          return schedule(callback, 30_000, ...args);
+        });
+      let pending: ReturnType<ManagedQwenServe['start']>;
+      try {
+        pending = service.start();
+      } finally {
+        timer.mockRestore();
+      }
+      // Observe early failures while waiting for the fixture, then assert the
+      // original promise's rejection once the controlled timeout has fired.
+      void pending.catch(() => undefined);
+      try {
+        let pids: number[] = [];
+        await expect
+          .poll(
+            async () => {
+              pids = JSON.parse(
+                await readFile(join(cwd, 'pids.json'), 'utf8'),
+              ) as number[];
+              return (
+                pids.length === 2 &&
+                pids.every((pid) => Number.isSafeInteger(pid) && pid > 0)
+              );
+            },
+            { timeout: 10_000 },
+          )
+          .toBe(true);
+        expect(pids.map(alive)).toEqual([true, true]);
+        expect(expireStartup).toBeTypeOf('function');
+        expireStartup!();
+        await expect(pending).rejects.toThrow('startup timed out');
+        // Reaping by the OS can follow group termination asynchronously.
+        await expect
+          .poll(() => pids.map(alive), { timeout: 5_000 })
+          .toEqual([false, false]);
+      } finally {
+        // Also clear the watchdog and start cleanup if fixture readiness fails.
+        expireStartup?.();
+      }
     });
 
     it('fails a missing executable with a safe actionable message', async () => {

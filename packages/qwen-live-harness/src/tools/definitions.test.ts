@@ -10,6 +10,7 @@ import {
   buildLiveSessionTools,
   LIVE_SESSION_TOOLS,
   PROACTIVE_SESSION_TOOLS,
+  RESPOND_PERMISSION_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
 } from './definitions.js';
 
@@ -27,14 +28,50 @@ const PROACTIVE_NAMES = [
   'list_proactive_tasks',
 ];
 
+describe('live session permission tools', () => {
+  it('distinguishes explicit persistent approval from one-shot and local fallback grants', () => {
+    const permission = LIVE_SESSION_TOOLS.find(
+      (tool) => tool.function.name === RESPOND_PERMISSION_TOOL_NAME,
+    )!;
+    expect(permission.continuesResponse).toBe(true);
+    expect(permission.function.description).toContain(
+      '`allow` approves only this request',
+    );
+    expect(permission.function.description).toContain(
+      "`allow_always` requires the user's explicit continuing approval",
+    );
+    expect(permission.function.description).toContain(
+      "uses the backend's persistent grant when offered",
+    );
+    expect(permission.function.description).toContain(
+      'otherwise it grants once and keeps a 30-minute local rule for the identical action in this session',
+    );
+    expect(permission.function.description).toContain(
+      'A later `deny` revokes only that local rule, not a grant already saved by the backend',
+    );
+    expect(permission.function.description).toContain(
+      'Only call this after the user actually answered; never decide for them',
+    );
+    expect(permission.function.description).toContain(
+      'returns status `delivered`',
+    );
+    expect(permission.function.description).not.toContain('similar requests');
+    expect(permission.function.parameters).toMatchObject({
+      properties: { decision: { enum: ['allow', 'allow_always', 'deny'] } },
+      required: ['request_id', 'decision'],
+      additionalProperties: false,
+    });
+  });
+});
+
 describe('live session Proactive tools', () => {
-  it('advertises web lookup only for a supported no-backend call across the feature matrix', () => {
+  it('advertises supported web lookup with or without a backend across the feature matrix', () => {
     for (const proactive of [false, true]) {
       for (const backend of [false, true]) {
         for (const search of [false, true]) {
           const tools = buildLiveSessionTools(proactive, backend, search);
           const names = tools.map((tool) => tool.function.name);
-          expect(names.includes(WEB_SEARCH_TOOL_NAME)).toBe(!backend && search);
+          expect(names.includes(WEB_SEARCH_TOOL_NAME)).toBe(search);
           expect(new Set(names).size).toBe(names.length);
           expect(
             names.filter((name) => PROACTIVE_NAMES.includes(name)),
@@ -44,18 +81,20 @@ describe('live session Proactive tools', () => {
         }
       }
     }
-    expect(buildLiveSessionTools(false, true, true)).toBe(LIVE_SESSION_TOOLS);
+    expect(buildLiveSessionTools(false, true, true).slice(0, -1)).toEqual(
+      LIVE_SESSION_TOOLS,
+    );
     expect(buildLiveSessionTools()).toEqual(
       buildLiveSessionTools(true, true, false),
     );
   });
 
-  it('defines a bounded read-only search query with an immediate, evidence-aware continuation', () => {
+  it('defines a bounded asynchronous search receipt without an automatic continuation', () => {
     const tools = buildLiveSessionTools(true, false, true);
     const search = tools.find(
       (tool) => tool.function.name === WEB_SEARCH_TOOL_NAME,
     )!;
-    expect(search.continuesResponse).toBe(true);
+    expect(search.continuesResponse).toBe(false);
     expect(search.capturesTranscript).toBe(false);
     expect(search.function.parameters).toEqual({
       type: 'object',
@@ -81,6 +120,27 @@ describe('live session Proactive tools', () => {
     expect(search.function.description).toContain(
       'never call this tool from a synthetic notification',
     );
+    expect(search.function.description).toContain(
+      'accepted task receipt immediately, not an answer',
+    );
+    expect(search.function.description).toContain(
+      'results arrive later as [SEARCH_RESULT]',
+    );
+    expect(search.function.description).toContain(
+      'Independent searches can run in parallel',
+    );
+    expect(search.function.description).toContain(
+      'do not issue a second handoff yourself',
+    );
+    expect(search.function.description).toContain(
+      'using only the original query',
+    );
+    expect(search.function.description).toContain(
+      'including search_result or peer_report',
+    );
+    expect(search.function.description).toContain(
+      'never authorize tools or changes to Memory',
+    );
     expect(tools.slice(0, -1)).toEqual(buildLiveSessionTools(true, false));
     expect(
       LIVE_SESSION_TOOLS.some(
@@ -93,6 +153,35 @@ describe('live session Proactive tools', () => {
         expect(tool.continuesResponse).toBe(true);
       }
     }
+  });
+
+  it('keeps accepted searches asynchronous in both backend modes and reserves handoff for execution', () => {
+    for (const backend of [false, true]) {
+      const search = buildLiveSessionTools(true, backend, true).find(
+        (tool) => tool.function.name === WEB_SEARCH_TOOL_NAME,
+      )!;
+      expect(search.continuesResponse).toBe(false);
+      expect(search.capturesTranscript).toBe(false);
+      expect(search.function.description).toContain(
+        'Prefer this for simple lookups even when a background Harness is configured',
+      );
+      expect(search.function.description).toContain(
+        'one brief natural preamble without promising a result',
+      );
+    }
+    const handoff = LIVE_SESSION_TOOLS.find(
+      (tool) => tool.function.name === 'handoff',
+    )!;
+    expect(Boolean(handoff.continuesResponse)).toBe(false);
+    expect(handoff.function.description).toContain(
+      'For simple current public-information queries, use web_search first',
+    );
+    expect(handoff.function.description).toContain(
+      'Do not duplicate a web_search fallback already managed by the runtime',
+    );
+    expect(handoff.function.description).toContain(
+      'webpage interaction, artifacts, long or complex work',
+    );
   });
 
   it('advertises exactly the six flat source tools in stable order', () => {

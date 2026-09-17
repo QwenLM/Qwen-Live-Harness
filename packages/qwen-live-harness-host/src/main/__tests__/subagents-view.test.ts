@@ -119,6 +119,153 @@ function setup(
 }
 
 describe('Subagents read-only surfaces', () => {
+  it('identifies search rows and details, preserves query/output as text, and localizes real activity', async () => {
+    const query = '<b>What is the current price?</b>';
+    const answer = '<script>not executable</script> Search result text.';
+    const entry = task({
+      id: 'search:1',
+      kind: 'search',
+      title: query,
+      request: query,
+      output: answer,
+      activity: liveMessage('search.running'),
+      events: [{ at: 1, kind: 'status', text: liveMessage('search.queued') }],
+      canStop: true,
+    });
+    const h = setup(
+      {},
+      {
+        mode: 'list',
+        snapshot: snapshot([entry]),
+        instanceId: 'daemon-search',
+        controlsAvailable: true,
+      },
+    );
+    const row = h.get<HTMLButtonElement>('[data-task-id="search:1"]');
+    assert.equal(row.dataset.kind, 'search');
+    assert.match(row.textContent ?? '', /Web Search/);
+    assert.match(row.getAttribute('aria-label') ?? '', /Web Search/);
+    row.click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), ['detail', entry.id]);
+    h.update({ mode: 'detail', selectedId: entry.id });
+    assert.equal(h.get('.subagent-metadata').textContent, 'Web Search');
+    assert.equal(h.get('.subagent-title').textContent, query);
+    assert.equal(h.get('.subagent-request').textContent, query);
+    const output = h.get('.subagent-output');
+    assert.equal(output.textContent, answer);
+    assert.equal(
+      h.app.querySelector('script, .subagent-title b, [role="progressbar"]'),
+      null,
+    );
+    h.update({ language: 'zh-CN' });
+    assert.equal(h.get('.subagent-metadata').textContent, '联网搜索');
+    assert.equal(
+      h.get('.subagent-latest').textContent,
+      liveText('zh-CN', 'search.running'),
+    );
+    assert.match(h.get('.subagent-events').textContent ?? '', /正在等待搜索/);
+    assert.equal(h.get('.subagent-output'), output);
+    assert.equal(output.textContent, answer);
+  });
+
+  it('stops the exact search task from the list or detail and waits for its confirmed result', async () => {
+    for (const mode of ['list', 'detail'] as const) {
+      const entry = task({
+        id: `search:${mode}`,
+        kind: 'search',
+        title: 'Weather today',
+        canStop: true,
+      });
+      const h = setup(
+        {},
+        {
+          mode,
+          selectedId: entry.id,
+          snapshot: snapshot([entry]),
+          instanceId: 'daemon-search',
+          controlsAvailable: true,
+        },
+      );
+      const selector =
+        mode === 'list'
+          ? '.subagent-row > .subagents-stop'
+          : '.subagent-identity .subagents-stop';
+      const stop = h.get<HTMLButtonElement>(selector);
+      stop.click();
+      stop.click();
+      await settled();
+      assert.deepEqual(h.calls, [
+        ['control', 'daemon-search', { action: 'stop', taskId: entry.id }],
+      ]);
+      const updated = {
+        ...entry,
+        status: 'cancelled' as const,
+        canStop: false,
+        stopReason: 'ended' as const,
+        activity: liveMessage('search.cancelled'),
+      };
+      h.update({ language: 'zh-CN', snapshot: snapshot([updated]) });
+      assert.equal(stop.hidden, true);
+      const status = h.get(
+        mode === 'list'
+          ? '.subagent-task > .subagent-status'
+          : '.subagent-identity .subagent-status',
+      );
+      assert.match(status.textContent ?? '', /已取消/);
+      assert.equal(h.calls.length, 1);
+    }
+  });
+
+  it('localizes search lifecycle and answer-delivery states without inventing completion percentages', () => {
+    const entry = task({
+      id: 'search:activity',
+      kind: 'search',
+      title: 'Actual query',
+    });
+    const h = setup(
+      {},
+      { mode: 'detail', selectedId: entry.id, snapshot: snapshot([entry]) },
+    );
+    const keys = [
+      'search.queued',
+      'search.running',
+      'search.completed',
+      'search.failed',
+      'search.cancelled',
+      'search.fallback',
+      'search.fallbackStarted',
+      'search.fallbackFailed',
+      'search.awaitingAnswer',
+      'search.answering',
+      'search.answered',
+      'search.answerInterrupted',
+      'search.answerMuted',
+    ] as const;
+    for (const language of ['en', 'zh-CN'] as const) {
+      for (const key of keys) {
+        const params =
+          key === 'search.fallbackStarted' ? { backend: 'Codex' } : undefined;
+        h.update({
+          language,
+          snapshot: snapshot([
+            {
+              ...entry,
+              status: 'delivering',
+              activity: liveMessage(key, params),
+            },
+          ]),
+        });
+        assert.equal(
+          h.get('.subagent-latest').textContent,
+          liveText(language, key, params),
+        );
+        assert.equal(h.get('.subagent-title').textContent, entry.title);
+      }
+    }
+    assert.equal(h.app.querySelector('[role="progressbar"], progress'), null);
+  });
+
   it('keeps self-reported results separate from tasks and updates announcement state without interpreting report text', () => {
     const value = snapshot([]);
     value.omitted = 0;

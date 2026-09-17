@@ -35,6 +35,68 @@ function task(
 afterEach(() => vi.useRealTimers());
 
 describe('SubagentsLedger', () => {
+  it('counts search work and delivery with other tasks while keeping failed and cancelled outcomes distinct', () => {
+    const ledger = new SubagentsLedger();
+    try {
+      ledger.upsert({
+        ...task('search:1'),
+        kind: 'search',
+        status: 'queued',
+        title: 'Actual query',
+        request: 'Actual query',
+      });
+      for (const status of ['starting', 'running', 'delivering'] as const) {
+        ledger.update('search:1', { status, activity: status });
+        expect(ledger.snapshot().counts).toMatchObject({
+          running: 1,
+          completed: 0,
+          needsAttention: 0,
+        });
+      }
+      for (const status of ['failed', 'cancelled'] as const) {
+        const id = `search:${status}`;
+        ledger.upsert({ ...task(id), kind: 'search' });
+        ledger.result(id, status, status);
+      }
+      ledger.upsert(task('harness:active'));
+      ledger.upsert({
+        ...task('proactive:monitor'),
+        kind: 'proactive',
+        source: 'audio',
+      });
+      ledger.result('proactive:monitor', 'cancelled', 'Stopped');
+      expect(ledger.snapshot().counts).toEqual({
+        running: 2,
+        completed: 1,
+        needsAttention: 0,
+        failed: 1,
+        cancelled: 1,
+        interrupted: 0,
+      });
+      ledger.result('search:1', 'completed', 'Actual answer');
+      const completed = ledger.snapshot();
+      expect(completed.counts).toEqual({
+        running: 1,
+        completed: 2,
+        needsAttention: 0,
+        failed: 1,
+        cancelled: 1,
+        interrupted: 0,
+      });
+      expect(
+        completed.tasks.find((entry) => entry.id === 'search:1'),
+      ).toMatchObject({
+        kind: 'search',
+        title: 'Actual query',
+        request: 'Actual query',
+        output: 'Actual answer',
+      });
+      expect(parseSubagentsSnapshot(completed)).toBeDefined();
+    } finally {
+      ledger.dispose();
+    }
+  });
+
   it('counts cancelled monitors as completed while keeping their cancellation detail and other terminal outcomes', () => {
     const ledger = new SubagentsLedger();
     for (const [id, kind, source, status] of [

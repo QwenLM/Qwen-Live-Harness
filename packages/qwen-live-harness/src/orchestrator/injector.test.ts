@@ -14,10 +14,12 @@ class FakeSink implements InjectorSink {
   contextCalls: string[] = [];
   speechCalls: string[] = [];
   peerReportCalls: string[] = [];
+  searchResultCalls: Array<{ text: string; searchId?: string }> = [];
   injected: Array<{ item: InjectorItem; spoken: boolean }> = [];
   contextResult = true;
   speechResult = true;
   peerReportResult = true;
+  searchResultResult = true;
 
   injectContext(text: string): boolean {
     this.contextCalls.push(text);
@@ -32,6 +34,11 @@ class FakeSink implements InjectorSink {
   injectPeerReport(text: string): boolean {
     this.peerReportCalls.push(text);
     return this.peerReportResult;
+  }
+
+  injectSearchResult(text: string, searchId?: string): boolean {
+    this.searchResultCalls.push({ text, ...(searchId ? { searchId } : {}) });
+    return this.searchResultResult;
   }
 
   onInjected(item: InjectorItem, spoken: boolean): void {
@@ -147,6 +154,289 @@ describe('Injector context budget', () => {
     // Permissions sort first, so the handle the model needs is never the
     // part that gets deferred.
     expect(sink.contextCalls[0]).toBe(permission.context);
+  });
+});
+
+describe('Injector asynchronous search results', () => {
+  function result(searchId: string, answer = searchId): InjectorItem {
+    return {
+      kind: 'search_result',
+      searchId,
+      context: JSON.stringify({
+        query: `Question ${searchId}`,
+        answer,
+        searchStatus: 'performed',
+      }),
+    };
+  }
+
+  function completeSearch(): void {
+    injector.noteResponseCreated('search_result');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('search_result');
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+  }
+
+  it('uses only the specialized sink and preserves a large evidence payload', () => {
+    const item = result('large', 'x'.repeat(20_000));
+    injector.enqueue(item);
+    expect(sink.searchResultCalls).toEqual([
+      { text: item.context, searchId: 'large' },
+    ]);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+    expect(sink.peerReportCalls).toEqual([]);
+    expect(sink.injected).toEqual([{ item, spoken: true }]);
+  });
+
+  it('keeps deferred ordinary items and full search evidence separate in a mixed queue', () => {
+    const huge = complete('[COMPLETE job_1] ' + 'B'.repeat(12_000));
+    const deferred = complete('[COMPLETE job_2] Deferred ordinary result.');
+    const search = result('mixed', 'S'.repeat(20_000));
+    const after = complete('[COMPLETE job_3] After search.', 'After search.');
+    injector.noteSpeechStarted();
+    for (const item of [huge, deferred, search, after]) injector.enqueue(item);
+    injector.noteInputCommitted();
+
+    expect(sink.contextCalls).toHaveLength(2);
+    expect(sink.contextCalls[0]).toHaveLength(6_000);
+    expect(sink.contextCalls[0]?.startsWith('[COMPLETE job_1] ')).toBe(true);
+    expect(sink.contextCalls[0]?.endsWith('…')).toBe(true);
+    expect(sink.contextCalls[1]).toBe(deferred.context);
+    expect(sink.searchResultCalls).toEqual([
+      { text: search.context, searchId: 'mixed' },
+    ]);
+    expect(sink.speechCalls).toEqual([]);
+    expect(sink.injected.map(({ item }) => item)).toEqual([
+      huge,
+      deferred,
+      search,
+    ]);
+    expect(injector.pendingCount).toBe(1);
+
+    completeSearch();
+    expect(sink.contextCalls.at(-1)).toBe(after.context);
+    expect(sink.speechCalls).toEqual(['After search.']);
+    expect(sink.injected.map(({ item }) => item)).toEqual([
+      huge,
+      deferred,
+      search,
+      after,
+    ]);
+    expect(injector.pendingCount).toBe(0);
+  });
+
+  it('waits through a new user turn, its direct response and Host quiet gap', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(result('one'));
+    injector.noteInputCommitted(true);
+    expect(sink.searchResultCalls).toEqual([]);
+    injector.noteResponseCreated('direct');
+    injector.notePlaybackStarted();
+    injector.noteResponseDone('direct');
+    expect(sink.searchResultCalls).toEqual([]);
+    injector.notePlaybackCompleted();
+    vi.advanceTimersByTime(QUIET_GAP_MS - 1);
+    expect(sink.searchResultCalls).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(sink.searchResultCalls.map((item) => item.searchId)).toEqual([
+      'one',
+    ]);
+  });
+
+  it.each(['response-before-playback-start', 'playback-before-response-done'])(
+    'keeps completion-arrival order and waits for real playback (%s)',
+    (order) => {
+      injector.enqueue(result('finished-second-task-first'));
+      injector.enqueue(result('finished-first-task-second'));
+      injector.noteResponseCreated('search_result');
+      if (order === 'response-before-playback-start') {
+        injector.noteResponseDone('search_result');
+        vi.advanceTimersByTime(2 * QUIET_GAP_MS);
+        expect(sink.searchResultCalls).toHaveLength(1);
+        injector.notePlaybackStarted();
+        injector.notePlaybackCompleted();
+      } else {
+        injector.notePlaybackStarted();
+        injector.notePlaybackCompleted();
+        vi.advanceTimersByTime(2 * QUIET_GAP_MS);
+        expect(sink.searchResultCalls).toHaveLength(1);
+        injector.noteResponseDone('search_result');
+      }
+      vi.advanceTimersByTime(QUIET_GAP_MS);
+      expect(sink.searchResultCalls.map((item) => item.searchId)).toEqual([
+        'finished-second-task-first',
+        'finished-first-task-second',
+      ]);
+    },
+  );
+
+  it('coexists with control, peer and proactive items without mixing evidence', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(result('one'));
+    injector.enqueue({
+      kind: 'control',
+      controlId: 'control',
+      context: 'Control',
+    });
+    injector.enqueue({
+      kind: 'peer_report',
+      reportId: 'peer',
+      context: 'Peer',
+    });
+    injector.enqueue({
+      kind: 'proactive',
+      deliveryId: 'proactive',
+      context: 'Proactive',
+    });
+    injector.enqueue(result('two'));
+    injector.noteInputCommitted();
+    expect(sink.searchResultCalls).toHaveLength(1);
+    completeSearch();
+    expect(sink.contextCalls).toEqual(['Control']);
+    expect(sink.peerReportCalls).toEqual(['Peer']);
+    injector.noteResponseCreated('peer_report');
+    injector.noteResponseDone('peer_report');
+    expect(sink.speechCalls).toEqual(['Proactive']);
+    injector.noteResponseCreated('proactive');
+    injector.notePlaybackStarted();
+    injector.notePlaybackCompleted();
+    injector.noteResponseDone('proactive');
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.searchResultCalls.map((item) => item.searchId)).toEqual([
+      'one',
+      'two',
+    ]);
+    expect(sink.injected.map(({ item }) => item.kind)).toEqual([
+      'search_result',
+      'control',
+      'peer_report',
+      'proactive',
+      'search_result',
+    ]);
+  });
+
+  it('retracts exact queued results and drops remaining search speech only', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.enqueue({ kind: 'control', controlId: 'keep', context: 'Keep' });
+    expect(injector.retractSearchResult('one')).toBe(true);
+    expect(injector.retractSearchResult('missing')).toBe(false);
+    expect(injector.dropSearchResults()).toEqual(['two']);
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.noteInputCommitted();
+    expect(sink.searchResultCalls).toEqual([]);
+    expect(sink.contextCalls).toEqual(['Keep']);
+  });
+
+  it('deduplicates a result while queued, submitted and after playback', () => {
+    injector.noteSpeechStarted();
+    injector.enqueue(result('one'));
+    injector.enqueue(result('one'));
+    expect(injector.pendingCount).toBe(1);
+    injector.noteInputCommitted();
+    injector.enqueue(result('one'));
+    completeSearch();
+    injector.enqueue(result('one'));
+    expect(sink.searchResultCalls).toHaveLength(1);
+    expect(injector.pendingCount).toBe(0);
+  });
+
+  it('does not replay an interrupted submission or inject the next result into the new turn', () => {
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.noteResponseCreated('search_result');
+    injector.notePlaybackStarted();
+    injector.noteSpeechStarted();
+    injector.noteOutputCleared();
+    injector.noteResponseDone('search_result');
+    injector.noteInputCommitted(true);
+    expect(sink.searchResultCalls).toHaveLength(1);
+    injector.noteResponseCreated('direct');
+    injector.noteResponseDone('direct');
+    expect(sink.searchResultCalls.map((item) => item.searchId)).toEqual([
+      'one',
+      'two',
+    ]);
+  });
+
+  it('requires explicit suppression to release a silent or failed search response', () => {
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.noteResponseDone('search_result');
+    vi.advanceTimersByTime(2 * QUIET_GAP_MS);
+    expect(sink.searchResultCalls).toHaveLength(1);
+    injector.noteOutputSuppressed();
+    expect(sink.searchResultCalls).toHaveLength(2);
+  });
+
+  it('waits for response completion when output is suppressed first', () => {
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.noteResponseCreated('search_result');
+    injector.noteOutputSuppressed();
+    expect(sink.searchResultCalls).toHaveLength(1);
+    injector.noteResponseDone('search_result');
+    expect(sink.searchResultCalls).toHaveLength(2);
+  });
+
+  it('retries a refused result without acknowledging it or falling back to another sink', () => {
+    sink.searchResultResult = false;
+    injector.enqueue(result('one'));
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.injected).toEqual([]);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+    sink.searchResultResult = true;
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.injected).toHaveLength(1);
+    expect(injector.pendingCount).toBe(0);
+  });
+
+  it('keeps later results when a sink synchronously retracts the submitted entry', () => {
+    const original = sink.injectSearchResult.bind(sink);
+    sink.injectSearchResult = (text, searchId) => {
+      if (searchId === 'one') injector.retractSearchResult('one');
+      return original(text, searchId);
+    };
+    injector.noteSpeechStarted();
+    injector.enqueue(result('one'));
+    injector.enqueue(result('two'));
+    injector.noteInputCommitted();
+    expect(injector.pendingCount).toBe(1);
+    completeSearch();
+    expect(sink.searchResultCalls.map((item) => item.searchId)).toEqual([
+      'one',
+      'two',
+    ]);
+  });
+
+  it('does not route through another sink if the search sink is absent', () => {
+    injector.dispose();
+    injector = new Injector({
+      sink: {
+        injectContext: (text) => sink.injectContext(text),
+        injectSpeech: (text) => sink.injectSpeech(text),
+      },
+    });
+    injector.enqueue(result('one'));
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.contextCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual([]);
+  });
+
+  it('disposes queued results without late callbacks into a later conversation', () => {
+    sink.searchResultResult = false;
+    injector.enqueue(result('one'));
+    injector.dispose();
+    sink.searchResultResult = true;
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(sink.injected).toEqual([]);
+    expect(injector.enqueue(result('two'))).toBe(false);
   });
 });
 

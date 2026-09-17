@@ -43,6 +43,46 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
+  it('accepts search tasks through snapshot, detail and Stop contracts without inventing progress', () => {
+    for (const status of [
+      'queued',
+      'starting',
+      'running',
+      'delivering',
+      'completed',
+      'failed',
+      'cancelled',
+    ] as const) {
+      const search = {
+        ...task,
+        id: 'search:1',
+        kind: 'search',
+        status,
+        title: 'Current launch date?',
+        request: 'Current launch date?',
+        activity: 'Waiting for a result',
+        output: 'Actual result text',
+        canStop: status === 'running',
+        events: [{ at: 1, kind: 'status', text: 'Query submitted' }],
+      };
+      const value = { ...snapshot, tasks: [search] };
+      expect(parseSubagentsSnapshot(value)).toEqual(value);
+      const page = {
+        type: 'page',
+        page: { snapshot: value, offset: 0, total: 1, selected: search },
+      };
+      expect(parseSubagentsControlResult(page)).toEqual(page);
+      expect(
+        parseSubagentsControlRequest({ action: 'stop', taskId: search.id }),
+      ).toEqual({ action: 'stop', taskId: 'search:1' });
+      expect(search).not.toHaveProperty('progress');
+    }
+    for (const kind of ['web_search', ['search'], null])
+      expect(
+        parseSubagentsSnapshot({ ...snapshot, tasks: [{ ...task, kind }] }),
+      ).toBeUndefined();
+  });
+
   it('accepts independent delivery and report revisions without changing task counts', () => {
     expect(
       parseSubagentsSnapshot({ ...snapshot, deliveryRevision: 0 }),

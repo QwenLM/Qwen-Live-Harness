@@ -41,7 +41,7 @@ export const SUBAGENT_STOP_REASONS = [
 ] as const;
 export type SubagentTask = {
   id: string;
-  kind: 'harness' | 'proactive';
+  kind: 'harness' | 'proactive' | 'search';
   title: string;
   status: SubagentStatus;
   createdAt: number;
@@ -367,7 +367,7 @@ function validTask(task: unknown): task is SubagentTask {
     !record(task) ||
     !identifier(task['id']) ||
     typeof task['kind'] !== 'string' ||
-    !['harness', 'proactive'].includes(task['kind']) ||
+    !['harness', 'proactive', 'search'].includes(task['kind']) ||
     !text(task['title'], 240) ||
     !SUBAGENT_STATUSES.includes(task['status'] as SubagentStatus) ||
     !number(task['createdAt']) ||

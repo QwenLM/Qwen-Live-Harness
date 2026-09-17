@@ -11,8 +11,8 @@
  * Spoken/detail split: every item lands as silent context (the model can
  * answer follow-ups from it), and speech-worthy items additionally trigger a
  * short verbatim spoken line.
- * External peer reports instead use a dedicated speech lane, without silent
- * context injection or a job/task association.
+ * External peer reports and asynchronous search results instead use dedicated
+ * response lanes, without silent context injection or verbatim speech clamps.
  *
  * The injection window is closed while any of these hold:
  *  1. the user is speaking (VAD),
@@ -28,6 +28,7 @@ const MAX_SPOKEN_CHARS = 280;
 const MAX_CONTEXT_CHARS = 6_000;
 const MAX_PENDING_PEER_REPORTS = 32;
 const MAX_SEEN_PEER_REPORTS = 256;
+const MAX_SEEN_SEARCH_RESULTS = 256;
 
 export type InjectorItemKind =
   | 'complete'
@@ -37,6 +38,7 @@ export type InjectorItemKind =
   | 'speak'
   | 'control'
   | 'peer_report'
+  | 'search_result'
   | 'proactive';
 
 export interface InjectorItem {
@@ -54,6 +56,8 @@ export interface InjectorItem {
   controlId?: string;
   /** Call-scoped external report identity, separate from jobs and controls. */
   reportId?: string;
+  /** Call-scoped search task identity, separate from backend job handles. */
+  searchId?: string;
 }
 
 export interface InjectorSink {
@@ -65,6 +69,8 @@ export interface InjectorSink {
   injectProactive?(text: string): boolean;
   /** Isolated external quotation; must never fall back to ordinary speech. */
   injectPeerReport?(text: string, reportId?: string): boolean;
+  /** Answer from quoted search evidence; never fall back to ordinary speech. */
+  injectSearchResult?(text: string, searchId?: string): boolean;
   /** Accepted by the transport; this does not acknowledge Host playback. */
   onInjected?(item: InjectorItem, spoken: boolean): void;
 }
@@ -115,6 +121,16 @@ export class Injector {
       }
     | undefined;
   private readonly seenPeerReports = new Set<string>();
+  private searchResultCycle:
+    | {
+        searchId?: string;
+        responseStarted: boolean;
+        responseDone: boolean;
+        playbackStarted: boolean;
+        playbackDone: boolean;
+      }
+    | undefined;
+  private readonly seenSearchResults = new Set<string>();
   private lastProgressAt = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
@@ -137,6 +153,7 @@ export class Injector {
     this.speechInProgress = true;
     // An accepted external quotation is never replayed after a barge-in.
     this.peerReportCycle = undefined;
+    this.searchResultCycle = undefined;
     // Barge-in semantics: pending progress is stale the moment the user
     // speaks; conclusions and permission asks stay queued. A dropped item
     // was never delivered, so its throttle stamp must not stand — the job's
@@ -169,6 +186,9 @@ export class Injector {
     if (authority === 'peer_report' && this.peerReportCycle) {
       this.peerReportCycle.responseStarted = true;
     }
+    if (authority === 'search_result' && this.searchResultCycle) {
+      this.searchResultCycle.responseStarted = true;
+    }
   }
 
   noteResponseDone(authority?: string): void {
@@ -185,6 +205,13 @@ export class Injector {
         this.finishPeerReportCycleIfComplete();
       }
     }
+    if (authority === 'search_result') {
+      this.responseRequestPending = false;
+      if (this.searchResultCycle) {
+        this.searchResultCycle.responseDone = true;
+        this.finishSearchResultCycleIfComplete();
+      }
+    }
     this.poke();
   }
 
@@ -196,6 +223,9 @@ export class Injector {
     }
     if (this.peerReportCycle?.responseStarted) {
       this.peerReportCycle.playbackStarted = true;
+    }
+    if (this.searchResultCycle?.responseStarted) {
+      this.searchResultCycle.playbackStarted = true;
     }
   }
 
@@ -210,6 +240,10 @@ export class Injector {
       this.peerReportCycle.playbackDone = true;
       this.finishPeerReportCycleIfComplete();
     }
+    if (this.searchResultCycle?.playbackStarted) {
+      this.searchResultCycle.playbackDone = true;
+      this.finishSearchResultCycleIfComplete();
+    }
     this.poke();
   }
 
@@ -217,6 +251,7 @@ export class Injector {
     this.playbackInProgress = false;
     this.playbackCompletedAt = 0;
     this.peerReportCycle = undefined;
+    this.searchResultCycle = undefined;
     this.poke();
   }
 
@@ -237,6 +272,11 @@ export class Injector {
       this.peerReportCycle.playbackDone = true;
       this.finishPeerReportCycleIfComplete();
     }
+    if (this.searchResultCycle) {
+      // The caller records suppressed/failed output separately from delivery.
+      this.searchResultCycle.playbackDone = true;
+      this.finishSearchResultCycleIfComplete();
+    }
     this.poke();
   }
 
@@ -244,6 +284,23 @@ export class Injector {
 
   enqueue(item: InjectorItem): boolean {
     if (this.disposed) return false;
+    if (item.kind === 'search_result' && item.searchId) {
+      if (
+        this.seenSearchResults.has(item.searchId) ||
+        this.searchResultCycle?.searchId === item.searchId ||
+        this.queue.some(
+          (queued) =>
+            queued.kind === 'search_result' &&
+            queued.searchId === item.searchId,
+        )
+      )
+        return true;
+      this.seenSearchResults.add(item.searchId);
+      if (this.seenSearchResults.size > MAX_SEEN_SEARCH_RESULTS)
+        this.seenSearchResults.delete(
+          this.seenSearchResults.values().next().value!,
+        );
+    }
     if (item.kind === 'peer_report') {
       if (item.reportId && this.seenPeerReports.has(item.reportId)) return true;
       if (
@@ -364,11 +421,34 @@ export class Injector {
     return ids;
   }
 
+  /** Retract a result not yet submitted; active responses require Realtime cancellation. */
+  retractSearchResult(searchId: string): boolean {
+    const before = this.queue.length;
+    this.queue = this.queue.filter(
+      (item) => item.kind !== 'search_result' || item.searchId !== searchId,
+    );
+    const removed = before !== this.queue.length;
+    this.poke();
+    return removed;
+  }
+
+  /** Muting or ending a call can discard pending speech without changing task outcomes. */
+  dropSearchResults(): string[] {
+    const ids = this.queue.flatMap((item) =>
+      item.kind === 'search_result' && item.searchId ? [item.searchId] : [],
+    );
+    this.queue = this.queue.filter((item) => item.kind !== 'search_result');
+    this.poke();
+    return ids;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.queue = [];
     this.peerReportCycle = undefined;
     this.seenPeerReports.clear();
+    this.searchResultCycle = undefined;
+    this.seenSearchResults.clear();
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
   }
@@ -380,13 +460,15 @@ export class Injector {
       this.speechInProgress ||
       this.responseInFlight ||
       this.proactiveCycle ||
-      this.peerReportCycle
+      this.peerReportCycle ||
+      this.searchResultCycle
     ) {
       return -1;
     }
     if (
       (this.queue[0]?.kind === 'proactive' ||
         this.queue[0]?.kind === 'peer_report' ||
+        this.queue[0]?.kind === 'search_result' ||
         this.queue[0]?.kind === 'control') &&
       (this.directResponsePending || this.responseRequestPending)
     ) {
@@ -440,11 +522,14 @@ export class Injector {
       (item) =>
         item.kind === 'proactive' ||
         item.kind === 'control' ||
-        item.kind === 'peer_report',
+        item.kind === 'peer_report' ||
+        item.kind === 'search_result',
     );
     if (firstIndependent === 0) {
       if (this.queue[0]?.kind === 'control') this.flushControl();
       else if (this.queue[0]?.kind === 'peer_report') this.flushPeerReport();
+      else if (this.queue[0]?.kind === 'search_result')
+        this.flushSearchResult();
       else this.flushProactive();
       return;
     }
@@ -618,6 +703,54 @@ export class Injector {
       return;
     }
     this.peerReportCycle = undefined;
+  }
+
+  private flushSearchResult(): void {
+    const item = this.queue[0];
+    if (!item || item.kind !== 'search_result') return;
+    const cycle = {
+      searchId: item.searchId,
+      responseStarted: false,
+      responseDone: false,
+      playbackStarted: false,
+      playbackDone: false,
+    };
+    this.searchResultCycle = cycle;
+    const previousResponseRequestPending = this.responseRequestPending;
+    this.responseRequestPending = true;
+    let accepted = false;
+    try {
+      accepted =
+        this.sink.injectSearchResult?.(item.context, item.searchId) === true;
+    } catch {
+      // A refused result remains queued; it must not escape through another lane.
+    }
+    if (!accepted) {
+      if (this.searchResultCycle === cycle) this.searchResultCycle = undefined;
+      this.responseRequestPending = previousResponseRequestPending;
+      if (this.timer !== undefined) clearTimeout(this.timer);
+      this.timer = setTimeout(
+        () => {
+          this.timer = undefined;
+          this.poke();
+        },
+        Math.max(this.quietGapMs, RECHECK_MIN_MS),
+      );
+      this.timer.unref?.();
+      return;
+    }
+    // A synchronous sink callback may have retracted this exact queue entry.
+    const index = this.queue.indexOf(item);
+    if (index >= 0) this.queue.splice(index, 1);
+    this.sink.onInjected?.(item, true);
+  }
+
+  private finishSearchResultCycleIfComplete(): void {
+    const cycle = this.searchResultCycle;
+    // response.done can precede the Host's first playback receipt. A response
+    // ending alone must not let the next result overtake its buffered audio.
+    if (!cycle || !cycle.responseDone || !cycle.playbackDone) return;
+    this.searchResultCycle = undefined;
   }
 
   private finishProactiveCycleIfComplete(): void {

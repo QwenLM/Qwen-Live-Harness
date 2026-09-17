@@ -50,6 +50,8 @@ import {
 } from '../proactive/scheduler.js';
 import type { ProactiveTask } from '../proactive/task-manager.js';
 import {
+  MAX_REALTIME_INSTRUCTIONS_CHARS,
+  QWEN_REALTIME_LIMITS,
   QwenRealtimeError,
   type openQwenRealtimeSession,
   type QwenRealtimeCallbacks,
@@ -304,6 +306,7 @@ function createFakeRealtime() {
     sendBackendContext: vi.fn((_text: string): boolean => true),
     speakToUser: vi.fn((_message: string): boolean => true),
     speakPeerReport: vi.fn((_message: string): boolean => true),
+    respondToSearchResult: vi.fn((_message: string): boolean => true),
     respondToProactiveEvent: vi.fn((_event: string): boolean => true),
     requestProactiveRepair: vi.fn(
       (_instruction: string, _allowedToolNames: readonly string[]): boolean =>
@@ -633,55 +636,475 @@ async function awaitReceipts(
 
 // -- tests --------------------------------------------------------------------
 
-describe('LiveSession without a background Harness', () => {
-  it('uses an isolated read-only search and sends only the query', async () => {
+type DeferredSearchResult = Awaited<ReturnType<typeof searchQwenRealtime>>;
+
+function deferredWebSearch() {
+  let resolve!: (value: DeferredSearchResult) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<DeferredSearchResult>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function beginSearchUserTurn(rig: Rig, responseId: string): void {
+  rig.callbacks.onResponseCreated?.({
+    callEpoch: 1,
+    responseId,
+    authority: 'direct',
+  });
+}
+
+function finishSearchUserTurn(rig: Rig, responseId: string): void {
+  rig.callbacks.onResponseDone?.({
+    callEpoch: 1,
+    responseId,
+    authority: 'direct',
+    status: 'completed',
+  });
+}
+
+function searchTaskFrom(rig: Rig, taskId: string) {
+  return rig.session
+    .getSubagentsSnapshot()
+    .tasks.find((task) => task.id === taskId);
+}
+
+describe('LiveSession asynchronous web search', () => {
+  it.each([false, true])(
+    'accepts before lookup completes, exposes a search task and waits for result playback (withoutBackends=%s)',
+    async (withoutBackends) => {
+      const pending = deferredWebSearch();
+      const search = vi
+        .fn<typeof searchQwenRealtime>()
+        .mockReturnValue(pending.promise);
+      const rig = await startSession(undefined, {
+        withoutBackends,
+        realtimeModel: 'qwen3.5-omni-plus-realtime',
+        searchRealtime: search,
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+      });
+      try {
+        expect(rig.config.tools.map((tool) => tool.function.name)).toEqual(
+          expect.arrayContaining([
+            'web_search',
+            'appshot',
+            'create_proactive_monitor',
+          ]),
+        );
+        expect(rig.config).not.toHaveProperty('enable_search');
+        beginSearchUserTurn(rig, 'query-turn');
+        callToolForResponse(
+          rig.callbacks,
+          'query-turn',
+          'web_search',
+          { query: 'Only this query' },
+          [{ role: 'user', text: 'PRIVATE-VOICE-CONTEXT' }],
+        );
+        const [receipt] = await awaitReceipts(rig.realtime, 1);
+        expect(receipt).toMatchObject({
+          status: 'accepted',
+          taskId: expect.stringMatching(/^search:\d+$/u),
+        });
+        expect(receipt).not.toHaveProperty('answer');
+        expect(receipt).not.toHaveProperty('searchStatus');
+        const taskId = String(receipt['taskId']);
+        expect(searchTaskFrom(rig, taskId)).toMatchObject({
+          id: taskId,
+          kind: 'search',
+          request: 'Only this query',
+        });
+        expect(
+          await rig.session.handleSubagentsRequest({
+            action: 'list',
+            selectedId: taskId,
+          }),
+        ).toMatchObject({
+          type: 'page',
+          page: { selected: { id: taskId, canStop: true } },
+        });
+        expect(rig.session.getSubagentsSnapshot().counts.running).toBe(1);
+        expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+        expect(search).toHaveBeenCalledOnce();
+        const request = search.mock.calls[0]![0];
+        expect(Object.keys(request).sort()).toEqual([
+          'endpoint',
+          'model',
+          'query',
+          'signal',
+        ]);
+        expect(request.query).toBe('Only this query');
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+        expect(JSON.stringify(search.mock.calls)).not.toContain(
+          'PRIVATE-VOICE-CONTEXT',
+        );
+        expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+
+        pending.resolve({
+          answer: 'An untrusted web answer',
+          searchStatus: 'performed',
+        });
+        await vi.waitFor(() =>
+          expect(searchTaskFrom(rig, taskId)?.status).toBe('delivering'),
+        );
+        expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+        finishSearchUserTurn(rig, 'query-turn');
+        await vi.waitFor(() =>
+          expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+        );
+        expect(
+          JSON.parse(rig.realtime.respondToSearchResult.mock.calls[0]![0]),
+        ).toMatchObject({
+          query: 'Only this query',
+          answer: 'An untrusted web answer',
+          searchStatus: 'performed',
+        });
+        expect(rig.realtime.submitFunctionOutput).toHaveBeenCalledTimes(1);
+        expect(searchTaskFrom(rig, taskId)?.status).toBe('delivering');
+        expect(rig.session.getSubagentsSnapshot().counts.completed).toBe(0);
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'search-answer',
+          authority: 'search_result',
+        });
+        rig.callbacks.onOutputAudioDelta?.({
+          callEpoch: 1,
+          responseId: 'search-answer',
+          audio: Buffer.alloc(320),
+        });
+        rig.session.playbackStarted({ epoch: 1 });
+        rig.callbacks.onResponseDone?.({
+          callEpoch: 1,
+          responseId: 'search-answer',
+          authority: 'search_result',
+          status: 'completed',
+        });
+        expect(searchTaskFrom(rig, taskId)?.status).toBe('delivering');
+        expect(rig.session.getSubagentsSnapshot().counts.completed).toBe(0);
+        rig.session.playbackCompleted({ epoch: 1 });
+        await vi.waitFor(() =>
+          expect(searchTaskFrom(rig, taskId)?.status).toBe('completed'),
+        );
+        expect(rig.session.getSubagentsSnapshot().counts.completed).toBe(1);
+        expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+          'Only this query',
+        );
+        expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+          'An untrusted web answer',
+        );
+        expect(rig.host.failCall).not.toHaveBeenCalled();
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('accepts independent queries in parallel without returning busy', async () => {
+    const first = deferredWebSearch();
+    const second = deferredWebSearch();
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      beginSearchUserTurn(rig, 'parallel-turn');
+      callToolForResponse(rig.callbacks, 'parallel-turn', 'web_search', {
+        query: 'first',
+      });
+      callToolForResponse(rig.callbacks, 'parallel-turn', 'web_search', {
+        query: 'second',
+      });
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      expect(
+        accepted.every((receipt) => receipt['status'] === 'accepted'),
+      ).toBe(true);
+      const ids = accepted.map((receipt) => String(receipt['taskId']));
+      expect(new Set(ids).size).toBe(2);
+      expect(ids.every((id) => /^search:\d+$/u.test(id))).toBe(true);
+      expect(Number(ids[1]!.split(':')[1])).toBeGreaterThan(
+        Number(ids[0]!.split(':')[1]),
+      );
+      expect(search).toHaveBeenCalledTimes(2);
+      expect(search.mock.calls[0]![0].signal).not.toBe(
+        search.mock.calls[1]![0].signal,
+      );
+      expect(rig.session.getSubagentsSnapshot().counts.running).toBe(2);
+      second.resolve({ answer: 'Second answer', searchStatus: 'unknown' });
+      first.resolve({ answer: 'First answer', searchStatus: 'performed' });
+      await vi.waitFor(() => {
+        expect(searchTaskFrom(rig, ids[0]!)?.status).toBe('delivering');
+        expect(searchTaskFrom(rig, ids[1]!)?.status).toBe('delivering');
+      });
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      finishSearchUserTurn(rig, 'parallel-turn');
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      const firstDelivery = JSON.parse(
+        rig.realtime.respondToSearchResult.mock.calls[0]![0],
+      ) as Record<string, unknown>;
+      expect(firstDelivery).toMatchObject({
+        query: 'second',
+        answer: 'Second answer',
+        searchStatus: 'unknown',
+      });
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it.each([false, true])(
+    'finishes a result without claiming delivery if playback start is missing and continues the queue (responseDoneFirst=%s)',
+    async (responseDoneFirst) => {
+      const pending = [deferredWebSearch(), deferredWebSearch()];
+      const search = vi
+        .fn<typeof searchQwenRealtime>()
+        .mockReturnValueOnce(pending[0]!.promise)
+        .mockReturnValueOnce(pending[1]!.promise);
+      const rig = await startSession(undefined, {
+        withoutBackends: true,
+        realtimeModel: 'qwen3.5-omni-plus-realtime',
+        searchRealtime: search,
+      });
+      try {
+        beginSearchUserTurn(rig, 'two-lookups');
+        callToolForResponse(rig.callbacks, 'two-lookups', 'web_search', {
+          query: 'first public query',
+        });
+        callToolForResponse(rig.callbacks, 'two-lookups', 'web_search', {
+          query: 'second public query',
+        });
+        const accepted = await awaitReceipts(rig.realtime, 2);
+        const [firstId, secondId] = accepted.map((receipt) =>
+          String(receipt['taskId']),
+        );
+        pending[0]!.resolve({
+          answer: 'First answer.',
+          searchStatus: 'performed',
+        });
+        pending[1]!.resolve({
+          answer: 'Second answer.',
+          searchStatus: 'performed',
+        });
+        await vi.waitFor(() => {
+          expect(searchTaskFrom(rig, firstId!)?.status).toBe('delivering');
+          expect(searchTaskFrom(rig, secondId!)?.status).toBe('delivering');
+        });
+        finishSearchUserTurn(rig, 'two-lookups');
+        await vi.waitFor(() =>
+          expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+        );
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'missing-start-answer',
+          authority: 'search_result',
+        });
+        rig.callbacks.onOutputAudioDelta?.({
+          callEpoch: 1,
+          responseId: 'missing-start-answer',
+          audio: Buffer.alloc(320),
+        });
+        const finishResponse = () =>
+          rig.callbacks.onResponseDone?.({
+            callEpoch: 1,
+            responseId: 'missing-start-answer',
+            authority: 'search_result',
+            status: 'completed',
+          });
+        if (responseDoneFirst) finishResponse();
+        rig.session.playbackCompleted({ epoch: 1 });
+        if (!responseDoneFirst) {
+          expect(searchTaskFrom(rig, firstId!)?.status).toBe('delivering');
+          finishResponse();
+        }
+        await vi.waitFor(() =>
+          expect(searchTaskFrom(rig, firstId!)?.status).toBe('completed'),
+        );
+        expect(searchTaskFrom(rig, firstId!)?.notification).not.toBe(
+          'delivered',
+        );
+        await vi.waitFor(
+          () =>
+            expect(rig.realtime.respondToSearchResult).toHaveBeenCalledTimes(2),
+          { timeout: 2500 },
+        );
+        expect(
+          JSON.parse(rig.realtime.respondToSearchResult.mock.calls[1]![0]),
+        ).toMatchObject({
+          query: 'second public query',
+          answer: 'Second answer.',
+        });
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'next-search-answer',
+          authority: 'search_result',
+        });
+        rig.callbacks.onOutputAudioDelta?.({
+          callEpoch: 1,
+          responseId: 'next-search-answer',
+          audio: Buffer.alloc(320),
+        });
+        rig.session.playbackStarted({ epoch: 1 });
+        rig.callbacks.onResponseDone?.({
+          callEpoch: 1,
+          responseId: 'next-search-answer',
+          authority: 'search_result',
+          status: 'completed',
+        });
+        rig.session.playbackCompleted({ epoch: 1 });
+        expect(searchTaskFrom(rig, secondId!)).toMatchObject({
+          status: 'completed',
+          notification: 'delivered',
+        });
+        expect(rig.host.failCall).not.toHaveBeenCalled();
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('bounds escaped search evidence before giving it to the dedicated result lane', async () => {
+    const answer = 'Public fact.' + '\u0000'.repeat(15988);
     const search = vi.fn<typeof searchQwenRealtime>().mockResolvedValue({
-      answer: 'An untrusted web answer',
+      answer,
       searchStatus: 'performed',
     });
     const rig = await startSession(undefined, {
       withoutBackends: true,
       realtimeModel: 'qwen3.5-omni-plus-realtime',
       searchRealtime: search,
-      proactive: DEFAULT_PROACTIVE_CONFIG,
     });
     try {
-      expect(rig.config.tools.map((tool) => tool.function.name)).toEqual(
-        expect.arrayContaining([
-          'web_search',
-          'appshot',
-          'create_proactive_monitor',
-        ]),
-      );
-      expect(rig.config).not.toHaveProperty('enable_search');
-      callTool(rig.callbacks, 'web_search', { query: 'Only this query' }, [
-        { role: 'user', text: 'PRIVATE-VOICE-CONTEXT' },
-      ]);
+      callTool(rig.callbacks, 'web_search', { query: 'public query' });
       const [receipt] = await awaitReceipts(rig.realtime, 1);
-      expect(receipt).toMatchObject({
-        status: 'ok',
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      const evidence = rig.realtime.respondToSearchResult.mock.calls[0]![0];
+      expect(evidence.length).toBeLessThanOrEqual(
+        QWEN_REALTIME_LIMITS.maxFunctionOutputChars,
+      );
+      expect(JSON.stringify(evidence).length).toBeLessThan(
+        MAX_REALTIME_INSTRUCTIONS_CHARS - 4000,
+      );
+      const payload = JSON.parse(evidence) as { answer: string };
+      expect(payload).toMatchObject({
+        query: 'public query',
         searchStatus: 'performed',
-        answer: 'An untrusted web answer',
+        truncated: true,
       });
-      expect(search).toHaveBeenCalledOnce();
-      const request = search.mock.calls[0]![0];
-      expect(Object.keys(request).sort()).toEqual([
-        'endpoint',
-        'model',
-        'query',
-        'signal',
-      ]);
-      expect(request.query).toBe('Only this query');
-      expect(request.signal).toBeInstanceOf(AbortSignal);
-      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
-        'Only this query',
+      expect(payload.answer.length).toBeLessThan(answer.length);
+      expect(payload.answer.startsWith('Public fact.')).toBe(true);
+      expect(searchTaskFrom(rig, String(receipt['taskId']))?.status).toBe(
+        'delivering',
       );
-      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
-        'An untrusted web answer',
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('stops only the selected search, tells Omni silently and never falls back after cancellation', async () => {
+    const first = deferredWebSearch();
+    const second = deferredWebSearch();
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'web_search', { query: 'cancel only first' });
+      callTool(rig.callbacks, 'web_search', { query: 'keep second' });
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      const firstId = String(accepted[0]!['taskId']);
+      const secondId = String(accepted[1]!['taskId']);
+      const outcome = await rig.session.handleSubagentsRequest({
+        action: 'stop',
+        taskId: firstId,
+      });
+      expect(outcome).toMatchObject({ type: 'outcome', taskId: firstId });
+      expect(['stopped', 'stopping']).toContain(
+        'outcome' in outcome ? outcome.outcome : '',
       );
-      expect(JSON.stringify(search.mock.calls)).not.toContain(
-        'PRIVATE-VOICE-CONTEXT',
+      expect(search.mock.calls[0]![0].signal?.aborted).toBe(true);
+      expect(search.mock.calls[1]![0].signal?.aborted).toBe(false);
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, firstId)?.status).toBe('cancelled'),
       );
+      expect(searchTaskFrom(rig, secondId)?.status).not.toBe('cancelled');
+      first.reject(
+        new QwenRealtimeError(
+          'PRIVATE-ERROR-AFTER-STOP',
+          'web_search_failed',
+          false,
+        ),
+      );
+      await delay(0);
+      expect(rig.adaptor.createSession).not.toHaveBeenCalled();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(
+          rig.realtime.sendBackendContext.mock.calls.some(([text]) =>
+            text.includes('[SUBAGENT_CONTROL ' + firstId + ']'),
+          ),
+        ).toBe(true),
+      );
+      expect(rig.realtime.speakToUser).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('cancels all call-owned searches on End call and does not inject their late results into a new call', async () => {
+    const pending = [deferredWebSearch(), deferredWebSearch()];
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValueOnce(pending[0]!.promise)
+      .mockReturnValueOnce(pending[1]!.promise);
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'web_search', { query: 'first old query' });
+      callTool(rig.callbacks, 'web_search', { query: 'second old query' });
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      await rig.session.stop({ epoch: 1, callId: 'call-1' });
+      expect(
+        search.mock.calls.every(([options]) => options.signal?.aborted),
+      ).toBe(true);
+      for (const receipt of accepted)
+        expect(searchTaskFrom(rig, String(receipt['taskId']))?.status).toBe(
+          'cancelled',
+        );
+      await rig.session.start({
+        epoch: 2,
+        callId: 'call-2',
+        mode: 'new',
+        visualInput: DEFAULT_VISUAL_INPUT,
+      });
+      for (const entry of pending)
+        entry.resolve({
+          answer: 'PRIVATE-LATE-OLD-RESULT',
+          searchStatus: 'performed',
+        });
+      await delay(0);
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(
+        JSON.stringify(rig.realtime.sendBackendContext.mock.calls),
+      ).not.toContain('PRIVATE-LATE-OLD-RESULT');
       expect(rig.adaptor.prompt).not.toHaveBeenCalled();
       expect(rig.host.failCall).not.toHaveBeenCalled();
     } finally {
@@ -689,116 +1112,631 @@ describe('LiveSession without a background Harness', () => {
     }
   });
 
-  it.each([
-    { withoutBackends: false, realtimeModel: 'qwen3.5-omni-plus-realtime' },
-    { withoutBackends: true, realtimeModel: 'qwen-omni-turbo-realtime' },
-  ])(
-    'does not expose or execute unavailable native search (%j)',
-    async (options) => {
-      const search = vi.fn<typeof searchQwenRealtime>();
-      const rig = await startSession(undefined, {
-        ...options,
-        searchRealtime: search,
+  it('retracts a finished lookup still waiting to be announced when the user stops that search', async () => {
+    const pending = deferredWebSearch();
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValue(pending.promise);
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      beginSearchUserTurn(rig, 'still-speaking');
+      callToolForResponse(rig.callbacks, 'still-speaking', 'web_search', {
+        query: 'cancel queued answer',
       });
-      try {
-        expect(
-          rig.config.tools.some((tool) => tool.function.name === 'web_search'),
-        ).toBe(false);
-        callTool(rig.callbacks, 'web_search', {
-          query: 'not authorized for this mode',
-        });
-        expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
-          status: 'error',
-          code: 'web_search_unavailable',
-        });
-        expect(search).not.toHaveBeenCalled();
-      } finally {
-        rig.session.dispose();
-      }
-    },
-  );
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      const taskId = String(receipt['taskId']);
+      pending.resolve({
+        answer: 'Do not announce this cancelled answer.',
+        searchStatus: 'performed',
+      });
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, taskId)?.status).toBe('delivering'),
+      );
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      await rig.session.handleSubagentsRequest({ action: 'stop', taskId });
+      expect(searchTaskFrom(rig, taskId)?.status).toBe('cancelled');
+      finishSearchUserTurn(rig, 'still-speaking');
+      await delay(0);
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
 
-  it('bounds concurrent searches and does not fail the call when a search fails', async () => {
-    let resolveSearch!: (
-      result: Awaited<ReturnType<typeof searchQwenRealtime>>,
-    ) => void;
-    const search = vi.fn<typeof searchQwenRealtime>().mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveSearch = resolve;
-        }),
-    );
+  it('clears a stopped search playback after response.done without cancelling another response and continues the queue', async () => {
+    const pending = [deferredWebSearch(), deferredWebSearch()];
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValueOnce(pending[0]!.promise)
+      .mockReturnValueOnce(pending[1]!.promise);
     const rig = await startSession(undefined, {
       withoutBackends: true,
       realtimeModel: 'qwen3.5-omni-plus-realtime',
       searchRealtime: search,
     });
     try {
-      callTool(rig.callbacks, 'web_search', { query: 'first' });
-      await vi.waitFor(() => expect(search).toHaveBeenCalledOnce());
-      callTool(rig.callbacks, 'web_search', { query: 'second' });
-      expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
-        code: 'web_search_busy',
+      beginSearchUserTurn(rig, 'parallel-before-stop');
+      callToolForResponse(rig.callbacks, 'parallel-before-stop', 'web_search', {
+        query: 'first search to stop during playback',
       });
-      resolveSearch({
-        answer: 'A result without evidence of search',
-        searchStatus: 'unknown',
+      callToolForResponse(rig.callbacks, 'parallel-before-stop', 'web_search', {
+        query: 'second search stays queued',
       });
-      expect((await awaitReceipts(rig.realtime, 2))[1]).toMatchObject({
-        searchStatus: 'unknown',
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      const firstId = String(accepted[0]!['taskId']);
+      const secondId = String(accepted[1]!['taskId']);
+      pending[0]!.resolve({
+        answer: 'First answer.',
+        searchStatus: 'performed',
       });
-      search.mockRejectedValueOnce(
+      pending[1]!.resolve({
+        answer: 'Second answer.',
+        searchStatus: 'performed',
+      });
+      await vi.waitFor(() => {
+        expect(searchTaskFrom(rig, firstId)?.status).toBe('delivering');
+        expect(searchTaskFrom(rig, secondId)?.status).toBe('delivering');
+      });
+      finishSearchUserTurn(rig, 'parallel-before-stop');
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'search-finished-generating',
+        authority: 'search_result',
+      });
+      rig.callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'search-finished-generating',
+        audio: Buffer.alloc(320),
+      });
+      rig.session.playbackStarted({ epoch: 1 });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'search-finished-generating',
+        authority: 'search_result',
+        status: 'completed',
+      });
+      expect(searchTaskFrom(rig, firstId)?.status).toBe('delivering');
+      beginSearchUserTurn(rig, 'unrelated-direct-response');
+      rig.host.clearOutput.mockClear();
+      rig.realtime.cancelResponse.mockClear();
+      await rig.session.handleSubagentsRequest({
+        action: 'stop',
+        taskId: firstId,
+      });
+      expect(searchTaskFrom(rig, firstId)?.status).toBe('cancelled');
+      expect(rig.host.clearOutput).toHaveBeenCalledExactlyOnceWith(1);
+      expect(rig.realtime.cancelResponse).not.toHaveBeenCalled();
+      expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce();
+      finishSearchUserTurn(rig, 'unrelated-direct-response');
+      await vi.waitFor(
+        () =>
+          expect(rig.realtime.respondToSearchResult).toHaveBeenCalledTimes(2),
+        { timeout: 2500 },
+      );
+      expect(
+        JSON.parse(rig.realtime.respondToSearchResult.mock.calls[1]![0]),
+      ).toMatchObject({
+        query: 'second search stays queued',
+        answer: 'Second answer.',
+      });
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'second-search-answer',
+        authority: 'search_result',
+      });
+      rig.callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'second-search-answer',
+        audio: Buffer.alloc(320),
+      });
+      rig.session.playbackStarted({ epoch: 1 });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'second-search-answer',
+        authority: 'search_result',
+        status: 'completed',
+      });
+      rig.session.playbackCompleted({ epoch: 1 });
+      expect(searchTaskFrom(rig, secondId)).toMatchObject({
+        status: 'completed',
+        notification: 'delivered',
+      });
+      expect(searchTaskFrom(rig, firstId)?.status).toBe('cancelled');
+      expect(rig.realtime.cancelResponse).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('defers cancelling a stopped pending search response until its matching result ACK arrives', async () => {
+    const search = vi.fn<typeof searchQwenRealtime>().mockResolvedValue({
+      answer: 'Do not speak this stopped answer.',
+      searchStatus: 'performed',
+    });
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'web_search', {
+        query: 'stop before result ACK',
+      });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      const taskId = String(receipt['taskId']);
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      rig.host.clearOutput.mockClear();
+      rig.realtime.cancelResponse.mockClear();
+      await rig.session.handleSubagentsRequest({ action: 'stop', taskId });
+      expect(searchTaskFrom(rig, taskId)?.status).toBe('cancelled');
+      expect(rig.realtime.cancelResponse).not.toHaveBeenCalled();
+      expect(rig.host.clearOutput).not.toHaveBeenCalled();
+      beginSearchUserTurn(rig, 'unrelated-before-ack');
+      expect(rig.realtime.cancelResponse).not.toHaveBeenCalled();
+      finishSearchUserTurn(rig, 'unrelated-before-ack');
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'late-stopped-search-ack',
+        authority: 'search_result',
+      });
+      expect(rig.realtime.cancelResponse).toHaveBeenCalledOnce();
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'late-stopped-search-ack',
+        authority: 'search_result',
+        status: 'cancelled',
+      });
+      expect(searchTaskFrom(rig, taskId)?.status).toBe('cancelled');
+      expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('reports a failed native lookup safely without a backend or a failed voice call', async () => {
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockRejectedValue(
         new QwenRealtimeError(
           'PRIVATE-PROVIDER-ERROR',
           'web_search_timeout',
           false,
         ),
       );
-      callTool(rig.callbacks, 'web_search', { query: 'third' });
-      expect((await awaitReceipts(rig.realtime, 3))[2]).toMatchObject({
-        code: 'web_search_timeout',
-      });
-      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
-        'PRIVATE-PROVIDER-ERROR',
-      );
-      expect(rig.host.failCall).not.toHaveBeenCalled();
-      expect(rig.realtime.close).not.toHaveBeenCalled();
-    } finally {
-      rig.session.dispose();
-    }
-  });
-
-  it('cancels a search on Stop and ignores a late result', async () => {
-    let resolveSearch!: (
-      result: Awaited<ReturnType<typeof searchQwenRealtime>>,
-    ) => void;
-    const search = vi.fn<typeof searchQwenRealtime>().mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveSearch = resolve;
-        }),
-    );
     const rig = await startSession(undefined, {
       withoutBackends: true,
       realtimeModel: 'qwen3.5-omni-plus-realtime',
       searchRealtime: search,
     });
     try {
-      callTool(rig.callbacks, 'web_search', { query: 'cancel this' });
-      await vi.waitFor(() => expect(search).toHaveBeenCalledOnce());
-      const signal = search.mock.calls[0]![0].signal!;
+      callTool(rig.callbacks, 'web_search', { query: 'This lookup fails' });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      expect(receipt).toMatchObject({
+        status: 'accepted',
+        taskId: expect.stringMatching(/^search:\d+$/u),
+      });
+      const taskId = String(receipt['taskId']);
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, taskId)?.status).toBe('delivering'),
+      );
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      expect(
+        JSON.parse(rig.realtime.respondToSearchResult.mock.calls[0]![0]),
+      ).toMatchObject({ query: 'This lookup fails' });
+      expect(
+        JSON.stringify(rig.realtime.respondToSearchResult.mock.calls),
+      ).not.toContain('PRIVATE-PROVIDER-ERROR');
+      expect(JSON.stringify(rig.log.write.mock.calls)).not.toContain(
+        'PRIVATE-PROVIDER-ERROR',
+      );
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+      expect(rig.realtime.close).not.toHaveBeenCalled();
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'search-failure-notice',
+        authority: 'search_result',
+      });
+      rig.callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'search-failure-notice',
+        audio: Buffer.alloc(320),
+      });
+      rig.session.playbackStarted({ epoch: 1 });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'search-failure-notice',
+        authority: 'search_result',
+        status: 'completed',
+      });
+      rig.session.playbackCompleted({ epoch: 1 });
+      expect(searchTaskFrom(rig, taskId)?.status).toBe('failed');
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('falls back through a separate real handoff with only the original public query', async () => {
+    const memoryDir = await mkdtemp(join(tempDir, 'search-private-memory-'));
+    const rawMemory = {
+      enabled: true,
+      retrieve: { useVector: false },
+      updater: { enabled: false },
+      observer: { enabled: false },
+    };
+    const memory = new MemoryService({
+      config: resolveMemoryConfig(
+        rawMemory,
+        memoryDir,
+        join(memoryDir, 'config.json'),
+      ),
+      dataDir: memoryDir,
+      connection: { baseUrl: 'https://memory.test/v1' },
+    });
+    const pending = deferredWebSearch();
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValue(pending.promise);
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+      memory,
+    });
+    try {
+      callTool(rig.callbacks, 'omnibio', {
+        operations: { add: ['PRIVATE-MEMORY-CONTENT'] },
+      });
+      await vi.waitFor(() =>
+        expect(rig.realtime.submitFunctionOutput).toHaveBeenCalledOnce(),
+      );
+      expect(JSON.stringify(rig.realtime.configure.mock.calls)).toContain(
+        'PRIVATE-MEMORY-CONTENT',
+      );
+      rig.realtime.submitFunctionOutput.mockClear();
+      callTool(rig.callbacks, 'handoff', { task: 'PRIVATE-EXISTING-TASK' }, [
+        { role: 'user', text: 'PRIVATE-PAST-CONVERSATION' },
+      ]);
+      await awaitReceipts(rig.realtime, 1);
+      const existingHandle = rig.adaptor.prompt.mock.calls[0]![0];
+      rig.adaptor.promptReceipt = { status: 'accepted', jobRef: 'fallback-p2' };
+      const query = 'Find the current public release date.';
+      callTool(rig.callbacks, 'web_search', { query }, [
+        { role: 'user', text: 'PRIVATE-SEARCH-TRANSCRIPT' },
+      ]);
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      const searchId = String(accepted[1]!['taskId']);
+      expect(accepted[1]).toMatchObject({
+        status: 'accepted',
+        taskId: expect.stringMatching(/^search:\d+$/u),
+      });
+      pending.reject(
+        new QwenRealtimeError(
+          'UNTRUSTED-PAGE-OR-ERROR-CONTENT',
+          'web_search_failed',
+          false,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(rig.adaptor.prompt).toHaveBeenCalledTimes(2),
+      );
+      expect(rig.adaptor.createSession).toHaveBeenCalledTimes(2);
+      const [fallbackHandle, blocks] = rig.adaptor.prompt.mock.calls[1]!;
+      expect(fallbackHandle.id).not.toBe(existingHandle.id);
+      expect(blocks.every((block) => block.type === 'text')).toBe(true);
+      const sent = JSON.stringify(blocks);
+      expect(sent).toContain(query);
+      expect(sent).toMatch(/read.only|public information/iu);
+      for (const privateText of [
+        'PRIVATE-MEMORY-CONTENT',
+        'PRIVATE-EXISTING-TASK',
+        'PRIVATE-PAST-CONVERSATION',
+        'PRIVATE-SEARCH-TRANSCRIPT',
+        'UNTRUSTED-PAGE-OR-ERROR-CONTENT',
+      ])
+        expect(sent).not.toContain(privateText);
+      expect(search).toHaveBeenCalledOnce();
+      expect(rig.adaptor.respondPermission).not.toHaveBeenCalled();
+      rig.adaptor.queue(fallbackHandle.id).push({
+        type: 'turn_complete',
+        jobRef: 'fallback-p2',
+        summary: 'Public fallback answer.',
+      });
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, searchId)).toMatchObject({
+          status: 'failed',
+          activity: liveMessage('search.fallbackStarted', {
+            backend: rig.adaptor.name,
+          }),
+        }),
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            rig.realtime.sendBackendContext.mock.calls.some(
+              ([text]) =>
+                text.includes('[COMPLETE ') &&
+                text.includes('Public fallback answer.'),
+            ),
+          ).toBe(true),
+        { timeout: 2500 },
+      );
+      await vi.waitFor(
+        () => expect(rig.realtime.speakToUser).toHaveBeenCalled(),
+        { timeout: 2500 },
+      );
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(
+        rig.session
+          .getSubagentsSnapshot()
+          .tasks.filter((task) => task.kind === 'harness'),
+      ).toHaveLength(2);
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+      await memory.close();
+    }
+  });
+
+  it('never dispatches a fallback query if End call wins the session-creation race', async () => {
+    let resolveSession!: (handle: BackendHandle) => void;
+    const pendingSession = new Promise<BackendHandle>((resolve) => {
+      resolveSession = resolve;
+    });
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockRejectedValue(new Error('native search unavailable'));
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    rig.adaptor.createSession.mockReturnValueOnce(pendingSession);
+    try {
+      callTool(rig.callbacks, 'web_search', {
+        query: 'abandoned public query',
+      });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      const searchId = String(receipt['taskId']);
+      await vi.waitFor(() =>
+        expect(rig.adaptor.createSession).toHaveBeenCalledOnce(),
+      );
       await rig.session.stop({ epoch: 1, callId: 'call-1' });
-      expect(signal.aborted).toBe(true);
-      resolveSearch({ answer: 'too late', searchStatus: 'performed' });
+      expect(searchTaskFrom(rig, searchId)?.status).toBe('cancelled');
+      await rig.session.start({
+        epoch: 2,
+        callId: 'call-2',
+        mode: 'new',
+        visualInput: DEFAULT_VISUAL_INPUT,
+      });
+      resolveSession({
+        id: 'late-isolated-session',
+        adaptor: rig.adaptor.name,
+      });
       await delay(0);
-      expect(rig.realtime.submitFunctionOutput).not.toHaveBeenCalled();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(rig.realtime.sendBackendContext).not.toHaveBeenCalled();
+      expect(searchTaskFrom(rig, searchId)?.status).toBe('cancelled');
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      resolveSession({
+        id: 'late-isolated-session',
+        adaptor: rig.adaptor.name,
+      });
+      rig.session.dispose();
+    }
+  });
+
+  it('cancels an admitted fallback on End call while preserving unrelated Harness work', async () => {
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockRejectedValue(new Error('native search unavailable'));
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'handoff', { task: 'Keep this unrelated work' });
+      const [existingReceipt] = await awaitReceipts(rig.realtime, 1);
+      const existingHandle = rig.adaptor.prompt.mock.calls[0]![0];
+      const existingTaskId = `harness:${String(existingReceipt['job'])}`;
+      rig.adaptor.promptReceipt = { status: 'accepted', jobRef: 'fallback-p2' };
+      callTool(rig.callbacks, 'web_search', {
+        query: 'public lookup fallback',
+      });
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      const searchId = String(accepted[1]!['taskId']);
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, searchId)).toMatchObject({
+          status: 'failed',
+          activity: liveMessage('search.fallbackStarted', {
+            backend: rig.adaptor.name,
+          }),
+        }),
+      );
+      const fallbackHandle = rig.adaptor.prompt.mock.calls[1]![0];
+      const fallbackTask = rig.session
+        .getSubagentsSnapshot()
+        .tasks.find(
+          (task) => task.kind === 'harness' && task.id !== existingTaskId,
+        );
+      expect(fallbackTask).toBeDefined();
+      await rig.session.stop({ epoch: 1, callId: 'call-1' });
+      await vi.waitFor(() =>
+        expect(rig.adaptor.cancelJob).toHaveBeenCalledExactlyOnceWith(
+          fallbackHandle,
+          'fallback-p2',
+        ),
+      );
+      expect(rig.adaptor.cancel).not.toHaveBeenCalled();
+      expect(searchTaskFrom(rig, existingTaskId)?.status).not.toBe('cancelled');
+      rig.adaptor.queue(fallbackHandle.id).push({
+        type: 'turn_error',
+        jobRef: 'fallback-p2',
+        error: 'cancelled',
+      });
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, fallbackTask!.id)?.status).toBe('cancelled'),
+      );
+      rig.adaptor.queue(existingHandle.id).push({
+        type: 'turn_complete',
+        jobRef: 'p1',
+        summary: 'Unrelated work finished after the call.',
+      });
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, existingTaskId)?.status).toBe('completed'),
+      );
+      expect(searchTaskFrom(rig, searchId)?.status).toBe('failed');
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
       expect(rig.host.failCall).not.toHaveBeenCalled();
     } finally {
       rig.session.dispose();
     }
   });
 
-  it('rejects empty, oversized, or augmented search requests before contacting a provider', async () => {
+  it('cancels the isolated session and its late job if End call wins fallback prompt admission', async () => {
+    let resolvePrompt!: (receipt: PromptReceipt) => void;
+    const pendingPrompt = new Promise<PromptReceipt>((resolve) => {
+      resolvePrompt = resolve;
+    });
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockRejectedValue(new Error('native search unavailable'));
+    const rig = await startSession(undefined, {
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: search,
+    });
+    try {
+      callTool(rig.callbacks, 'handoff', {
+        task: 'Keep unrelated work running',
+      });
+      const [existingReceipt] = await awaitReceipts(rig.realtime, 1);
+      const existingHandle = rig.adaptor.prompt.mock.calls[0]![0];
+      const existingTaskId = `harness:${String(existingReceipt['job'])}`;
+      rig.adaptor.prompt.mockReturnValueOnce(pendingPrompt);
+      callTool(rig.callbacks, 'web_search', {
+        query: 'lookup pending admission',
+      });
+      const accepted = await awaitReceipts(rig.realtime, 2);
+      const searchId = String(accepted[1]!['taskId']);
+      await vi.waitFor(() =>
+        expect(rig.adaptor.prompt).toHaveBeenCalledTimes(2),
+      );
+      const fallbackHandle = rig.adaptor.prompt.mock.calls[1]![0];
+      expect(fallbackHandle.id).not.toBe(existingHandle.id);
+      await rig.session.stop({ epoch: 1, callId: 'call-1' });
+      expect(rig.adaptor.cancel).toHaveBeenCalledExactlyOnceWith(
+        fallbackHandle,
+      );
+      expect(rig.adaptor.cancelJob).not.toHaveBeenCalled();
+      expect(searchTaskFrom(rig, searchId)?.status).toBe('cancelled');
+      resolvePrompt({ status: 'accepted', jobRef: 'late-fallback' });
+      await vi.waitFor(() =>
+        expect(rig.adaptor.cancelJob).toHaveBeenCalledExactlyOnceWith(
+          fallbackHandle,
+          'late-fallback',
+        ),
+      );
+      expect(searchTaskFrom(rig, existingTaskId)?.status).not.toBe('cancelled');
+      expect(searchTaskFrom(rig, searchId)?.status).toBe('cancelled');
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(rig.realtime.speakToUser).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      resolvePrompt({ status: 'accepted', jobRef: 'late-fallback' });
+      rig.session.dispose();
+    }
+  });
+
+  it.each([
+    'proactive',
+    'proactive_repair',
+    'backend_speech',
+    'peer_report',
+    'search_result',
+  ] as const)(
+    'never starts native search or fallback from %s authority',
+    async (authority) => {
+      const search = vi.fn<typeof searchQwenRealtime>();
+      const rig = await startSession(undefined, {
+        realtimeModel: 'qwen3.5-omni-plus-realtime',
+        searchRealtime: search,
+      });
+      try {
+        const responseId = 'forbidden-search-' + authority;
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId,
+          authority,
+        });
+        callToolForResponse(rig.callbacks, responseId, 'web_search', {
+          query: 'untrusted notification request',
+        });
+        if (authority === 'peer_report' || authority === 'search_result') {
+          // Quotation-only authorities are rejected before orchestrator dispatch.
+          // Their real wire receipts are covered by realtime-session tests.
+          await delay(0);
+          expect(rig.realtime.submitFunctionOutput).not.toHaveBeenCalled();
+        } else {
+          expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
+            status: 'error',
+            code: 'web_search_unavailable',
+          });
+        }
+        expect(search).not.toHaveBeenCalled();
+        expect(rig.adaptor.createSession).not.toHaveBeenCalled();
+        expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+        expect(
+          rig.session
+            .getSubagentsSnapshot()
+            .tasks.filter((task) => task.kind === 'search'),
+        ).toEqual([]);
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'does not expose or execute native search for an unsupported model (withoutBackends=%s)',
+    async (withoutBackends) => {
+      const search = vi.fn<typeof searchQwenRealtime>();
+      const rig = await startSession(undefined, {
+        withoutBackends,
+        realtimeModel: 'qwen-omni-turbo-realtime',
+        searchRealtime: search,
+      });
+      try {
+        expect(
+          rig.config.tools.some((tool) => tool.function.name === 'web_search'),
+        ).toBe(false);
+        callTool(rig.callbacks, 'web_search', { query: 'not supported' });
+        expect((await awaitReceipts(rig.realtime, 1))[0]).toMatchObject({
+          status: 'error',
+          code: 'web_search_unavailable',
+        });
+        expect(search).not.toHaveBeenCalled();
+        expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('rejects empty, oversized or augmented queries and queues safe feedback without running a search', async () => {
     const search = vi.fn<typeof searchQwenRealtime>();
     const rig = await startSession(undefined, {
       withoutBackends: true,
@@ -813,13 +1751,33 @@ describe('LiveSession without a background Harness', () => {
       ])
         callTool(rig.callbacks, 'web_search', args);
       for (const receipt of await awaitReceipts(rig.realtime, 3))
-        expect(receipt).toMatchObject({ code: 'web_search_invalid_query' });
+        expect(receipt).toMatchObject({
+          status: 'error',
+          code: 'web_search_invalid_query',
+        });
       expect(search).not.toHaveBeenCalled();
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.session.getSubagentsSnapshot().tasks).toHaveLength(3);
+      expect(
+        rig.session
+          .getSubagentsSnapshot()
+          .tasks.every(
+            (task) => task.kind === 'search' && task.status === 'delivering',
+          ),
+      ).toBe(true);
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      expect(
+        JSON.parse(rig.realtime.respondToSearchResult.mock.calls[0]![0]),
+      ).toMatchObject({ failed: true, searchStatus: 'not_performed' });
     } finally {
       rig.session.dispose();
     }
   });
+});
 
+describe('LiveSession without a background Harness', () => {
   it('keeps direct audio and Live Feed functional with no background sessions', async () => {
     const { session, realtime, host, adaptor, config, callbacks } =
       await startSession(undefined, {
