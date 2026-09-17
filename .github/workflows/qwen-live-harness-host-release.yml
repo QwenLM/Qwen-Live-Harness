@@ -290,7 +290,11 @@ jobs:
           done < <(find release -type f -name '*.dmg' -print0)
           if [ "$dmg_count" -eq 0 ]; then echo '::error::No Qwen Live Harness Host disk image was found.'; exit 1; fi
 
-      - uses: 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' # v7.0.1
+      # Only the dispatch path consumes this artifact (publish and sync-oss are both
+      # dispatch-only), so a PR dry run would store ~433 MiB per push for nothing.
+      - name: 'Upload packaged Host'
+        uses: 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' # v7.0.1
+        if: "${{ github.event_name == 'workflow_dispatch' }}"
         with:
           name: 'qwen-live-harness-host-macos'
           path: |
