@@ -103,6 +103,16 @@ describe('standalone release ownership', () => {
     );
   });
 
+  it('keeps pull request runs from archiving the packaged Host', () => {
+    const upload = getWorkflowStep(
+      getWorkflowJob(workflow, 'build'),
+      'Upload packaged Host',
+    );
+    expect(upload).toContain(
+      'if: "${{ github.event_name == \'workflow_dispatch\' }}"',
+    );
+  });
+
   it('verifies the renamed application and protocol identity before publishing', () => {
     const builder = readFileSync(
       'packages/qwen-live-harness-host/electron-builder.yml',
