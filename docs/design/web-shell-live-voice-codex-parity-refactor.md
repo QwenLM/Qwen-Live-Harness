@@ -190,7 +190,7 @@ infrastructure:
 | Codex responsibility             | Required Qwen mapping                                                                                                         |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Persistent ordinary task         | One normal projectless Qwen Code session surfaced in the dedicated Live group                                                 |
-| GPT-Live conversational frontend | `qwen3.5-omni-plus-realtime` owning ordinary dialogue, VAD, barge-in, and spoken output                                       |
+| GPT-Live conversational frontend | `qwen3.8-omni-flash-realtime` owning ordinary dialogue, VAD, barge-in, and spoken output                                      |
 | Selective backend handoff        | One narrow Realtime handoff operation routed into a normal turn on that same Live session                                     |
 | Normal backend tool surface      | The existing Qwen Code tools, configured MCP tools, sandbox, and approval mode remain available                               |
 | Voice/App tools                  | Built-in Appshot and call-control capabilities attached to the backend Live session, never exposed as Realtime-provider tools |
@@ -271,7 +271,7 @@ The complete first-use path is:
 
 1. Open **Settings > Experimental > Live Voice** in a macOS WebShell.
 2. Enter the dedicated DashScope API key for
-   `qwen3.5-omni-plus-realtime` and optionally change the global shortcut.
+   `qwen3.8-omni-flash-realtime` and optionally change the global shortcut.
 3. Turn on Live Voice and confirm that the signed native Host will be
    installed.
 4. The daemon downloads the architecture-matching release from the Aliyun OSS
@@ -344,7 +344,7 @@ The bounded real-provider experiment verified:
 
 ### Qualification result: 2026-07-30
 
-The approved probe used qwen3.5-omni-plus-realtime over the configured
+This historical probe used qwen3.5-omni-plus-realtime over the configured
 DashScope WebSocket endpoint in text-only mode. It changed no product code,
 did not record credentials, and did not exercise microphone input, output
 audio, VAD, or audio barge-in.
@@ -396,7 +396,7 @@ compliance is not assumed from schema acceptance.
 
 ### Speakable-context qualification result: 2026-08-04
 
-The bounded text-input/audio-output probe kept one `background_agent` function
+This historical text-input/audio-output probe kept one `background_agent` function
 call unresolved, appended silent context, and requested two sequential spoken
 responses before submitting the function output. Both requests succeeded on
 `qwen3.5-omni-plus-realtime` over the configured DashScope WebSocket:

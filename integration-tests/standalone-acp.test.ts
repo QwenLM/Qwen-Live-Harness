@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import {
   startFakeDashScopeServer,
   contextTextOf,
+  taskResultPayloadOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   type FakeDashScopeServer,
   type FakeDashScopeConnection,
@@ -105,14 +107,16 @@ describe('standalone daemon with an external ACP process', () => {
       { fromIndex },
     );
     expect(contextTextOf(complete)).toContain('standalone portability check');
-    const spoken = await fakeDash.waitForMessage(
-      (m) => contextTextOf(m)?.startsWith('[SPEAK_TO_USER] ') ?? false,
-      { fromIndex },
-    );
+    expect(taskResultPayloadOf(complete)).toMatchObject({
+      status: 'completed',
+      job: receipt['job'],
+      summary: expect.stringContaining('standalone portability check'),
+    });
+    expect(contextTextOf(complete)).not.toContain('[SPEAK_TO_USER]');
     await waitForLiveResponseAfter(
       { fakeDash, dataDir },
-      spoken,
-      'backend_speech',
+      complete,
+      'task_result',
     );
   });
 
@@ -143,19 +147,38 @@ describe('standalone daemon with an external ACP process', () => {
     );
     expect(receipt['status']).toBe('accepted');
     const permission = await fakeDash.waitForMessage(
-      (m) => contextTextOf(m)?.includes('[PERMISSION req_1]') ?? false,
+      (m) => permissionPayloadOf(m)?.request_id === 'req_1',
       { fromIndex },
     );
-    expect(contextTextOf(permission)).toContain('respond_permission');
-    const ask = await fakeDash.waitForMessage(
-      (m) => contextTextOf(m)?.startsWith('[SPEAK_TO_USER] ') ?? false,
-      { fromIndex },
-    );
+    expect(permissionPayloadOf(permission)).toMatchObject({
+      request_id: 'req_1',
+      session: 'session_1',
+      action: expect.stringContaining('standalone write check'),
+      fallback_language: 'en',
+    });
+    expect(contextTextOf(permission)).not.toContain('[SPEAK_TO_USER]');
     await waitForLiveResponseAfter(
       { fakeDash, dataDir },
-      ask,
-      'backend_speech',
+      permission,
+      'permission',
     );
+    const request = await fakeDash.waitForMessage(
+      (message) => message['type'] === 'response.create',
+      { fromIndex: fakeDash.inbox.indexOf(permission) + 1 },
+    );
+    const instructions = (request['response'] as Record<string, unknown>)[
+      'instructions'
+    ];
+    expect(instructions).toContain(
+      'OUTPUT LANGUAGE REQUIREMENT: The entire user-facing response MUST be in English (en).',
+    );
+    expect(instructions).toContain(
+      "selected by the runtime from the real user's conversation",
+    );
+    expect(instructions).toContain(
+      'not a real user request or permission vote',
+    );
+    expect(instructions).not.toContain('The task wants to');
     expect(
       fakeDash.inbox
         .slice(fromIndex)

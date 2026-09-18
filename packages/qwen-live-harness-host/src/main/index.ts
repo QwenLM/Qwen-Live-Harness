@@ -40,7 +40,11 @@ import { StartupInteraction } from './startup-interaction.ts';
 import { HostDaemonBootstrap } from './daemon-bootstrap.ts';
 import { HostDaemonLifecycle, parseDaemonOwner } from './daemon-lifecycle.ts';
 import { CaptureReadinessDeadline } from './capture-readiness.ts';
-import { createHostDiagnosticsLogger } from './host-diagnostics.ts';
+import {
+  createHostDiagnosticsLogger,
+  daemonConnectionDiagnostic,
+  hostDiagnosticErrorName,
+} from './host-diagnostics.ts';
 import { resolveDiscoveryPath, type LiveDiscoveryRecord } from './discovery.ts';
 import { SubagentsWindows } from './subagents-windows.ts';
 import {
@@ -1565,6 +1569,15 @@ function beginMediaPermissionMonitor(): void {
     const cameraChanged = nextCamera !== permissions.camera;
     if (!microphoneChanged && !cameraChanged) return;
     if (microphoneChanged) {
+      if (
+        permissions.microphone === 'granted' &&
+        nextMicrophone !== 'granted'
+      ) {
+        writeLiveDiagnostic('permission_revoked', {
+          permission: 'microphone',
+          code: 'microphone_permission_revoked',
+        });
+      }
       permissions.microphone = nextMicrophone;
       selfChecks.audioInput = false;
       if (nextMicrophone !== 'granted') {
@@ -1575,6 +1588,12 @@ function beginMediaPermissionMonitor(): void {
       scheduleReadinessReconnect();
     }
     if (cameraChanged) {
+      if (permissions.camera === 'granted' && nextCamera !== 'granted') {
+        writeLiveDiagnostic('permission_revoked', {
+          permission: 'camera',
+          code: 'camera_permission_revoked',
+        });
+      }
       permissions.camera = nextCamera;
       if (visualInput?.source === 'camera') {
         if (nextCamera !== 'granted') {
@@ -1667,7 +1686,8 @@ async function requestCameraPermission(
     granted = await systemPreferences.askForMediaAccess('camera');
   } catch (error) {
     writeLiveDiagnostic('camera_permission_error', {
-      message: error instanceof Error ? error.message.slice(0, 256) : 'unknown',
+      code: 'camera_permission_request_failed',
+      errorName: hostDiagnosticErrorName(error),
     });
   }
   if (
@@ -1681,6 +1701,10 @@ async function requestCameraPermission(
     permission: permissions.camera,
   });
   if (!granted) {
+    writeLiveDiagnostic('permission_denied', {
+      permission: 'camera',
+      code: 'camera_permission_denied',
+    });
     if (visualInput?.source === 'camera') failClosedForReadinessLoss();
     void shell.openExternal(
       'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera',
@@ -2223,7 +2247,17 @@ function registerIpc(): void {
       }
       if (permission === 'microphone') {
         const generation = nativeServiceGeneration;
-        const granted = await systemPreferences.askForMediaAccess('microphone');
+        let granted: boolean;
+        try {
+          granted = await systemPreferences.askForMediaAccess('microphone');
+        } catch (error) {
+          writeLiveDiagnostic('permission_request_failed', {
+            permission: 'microphone',
+            code: 'microphone_permission_request_failed',
+            errorName: hostDiagnosticErrorName(error),
+          });
+          throw error;
+        }
         if (
           generation !== nativeServiceGeneration ||
           !nativeServicesActive ||
@@ -2236,6 +2270,10 @@ function registerIpc(): void {
         failClosedForReadinessLoss();
         sendRendererCommand('live:audio:initialize', granted);
         if (!granted) {
+          writeLiveDiagnostic('permission_denied', {
+            permission: 'microphone',
+            code: 'microphone_permission_denied',
+          });
           void shell.openExternal(
             'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
           );
@@ -2998,6 +3036,20 @@ void app.whenReady().then(() => {
       permissions.accessibility !== state.accessibility ||
       permissions.screenRecording !== state.screenRecording ||
       selfChecks.appshot !== state.appshot;
+    for (const permission of ['accessibility', 'screenRecording'] as const) {
+      if (
+        permissions[permission] === 'granted' &&
+        state[permission] !== 'granted'
+      ) {
+        writeLiveDiagnostic('permission_revoked', {
+          permission,
+          code:
+            permission === 'accessibility'
+              ? 'accessibility_permission_revoked'
+              : 'screen_recording_permission_revoked',
+        });
+      }
+    }
     permissions.accessibility = state.accessibility;
     permissions.screenRecording = state.screenRecording;
     selfChecks.appshot = state.appshot;
@@ -3048,8 +3100,10 @@ void app.whenReady().then(() => {
       }),
       onSnapshot: (snapshot) => {
         writeLiveDiagnostic('daemon_connection', {
-          phase: snapshot.phase,
-          ...(snapshot.error ? { error: snapshot.error } : {}),
+          ...daemonConnectionDiagnostic(
+            snapshot,
+            quitting || quitState !== undefined,
+          ),
           ...(snapshot.visualInput
             ? {
                 visualSource: snapshot.visualInput.source,

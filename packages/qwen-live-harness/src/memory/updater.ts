@@ -106,7 +106,12 @@ export function isEmptyPatch(patch: Record<string, unknown>): boolean {
     }
   }
   const stm = patch['stm_patch'];
-  return !(isRecord(stm) && Object.values(stm).some(nonempty));
+  return !(
+    isRecord(stm) &&
+    ['add', 'update', 'remove'].some(
+      (key) => Array.isArray(stm[key]) && stm[key].length > 0,
+    )
+  );
 }
 
 export function normalizeDate(value: unknown): string | null {
@@ -133,7 +138,6 @@ export interface ApplyReport {
     unknownIds: number;
     staleText: number;
   };
-  envDropped: number;
   unknownFields: string[];
   rejected: string[];
 }
@@ -148,7 +152,6 @@ export function applyPatch(
   const report: ApplyReport = {
     ltm: { set: 0, added: 0, removed: 0, removeMissed: 0 },
     stm: { added: 0, updated: 0, removed: 0, unknownIds: 0, staleText: 0 },
-    envDropped: 0,
     unknownFields: [],
     rejected: [],
   };
@@ -324,12 +327,7 @@ export function applyPatch(
         report.stm.added++;
       }
     }
-    report.envDropped =
-      (Array.isArray(stm['env_add']) ? stm['env_add'].length : 0) +
-      (Array.isArray(stm['env_remove']) ? stm['env_remove'].length : 0);
   } else if (stm) report.rejected.push('stm_patch is not an object');
-  if (report.envDropped)
-    log('memory.updater.env_dropped', { count: report.envDropped });
   if (report.unknownFields.length)
     log('memory.updater.unknown_field', { count: report.unknownFields.length });
   if (report.rejected.length)

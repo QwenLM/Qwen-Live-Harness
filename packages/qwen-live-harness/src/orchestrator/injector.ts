@@ -11,8 +11,9 @@
  * Spoken/detail split: every item lands as silent context (the model can
  * answer follow-ups from it), and speech-worthy items additionally trigger a
  * short verbatim spoken line.
- * External peer reports and asynchronous search results instead use dedicated
- * response lanes, without silent context injection or verbatim speech clamps.
+ * Permission questions, task outcomes, external peer reports and asynchronous
+ * search results use dedicated model-authored response lanes rather than
+ * verbatim speech clamps.
  *
  * The injection window is closed while any of these hold:
  *  1. the user is speaking (VAD),
@@ -29,11 +30,13 @@ const MAX_CONTEXT_CHARS = 6_000;
 const MAX_PENDING_PEER_REPORTS = 32;
 const MAX_SEEN_PEER_REPORTS = 256;
 const MAX_SEEN_SEARCH_RESULTS = 256;
+const RECOVERED_AUDIO_SIGNAL_WAIT_MS = 8_000;
 
 export type InjectorItemKind =
   | 'complete'
   | 'progress'
   | 'permission'
+  | 'task_result'
   | 'error'
   | 'speak'
   | 'control'
@@ -50,6 +53,7 @@ export interface InjectorItem {
   jobHandle?: string;
   /** For permission items: lets a remote resolution retract the ask. */
   requestId?: string;
+  announce?: boolean;
   /** Stable scheduler delivery id for a queued Proactive announcement. */
   deliveryId?: string;
   /** Daemon-owned text receipt, acknowledged only after full context delivery. */
@@ -65,6 +69,10 @@ export interface InjectorSink {
   injectContext(text: string): boolean;
   /** Verbatim speech request; false when the transport refused. */
   injectSpeech(text: string): boolean;
+  /** Model-authored permission question; never fall back to verbatim speech. */
+  injectPermission?(text: string): boolean;
+  /** Model-authored task outcome; must never inherit a tool capability. */
+  injectTaskResult?(text: string): boolean;
   /** A model-authored Proactive response request; false when refused. */
   injectProactive?(text: string): boolean;
   /** Isolated external quotation; must never fall back to ordinary speech. */
@@ -101,6 +109,10 @@ export class Injector {
   private responseInFlight = false;
   private directResponsePending = false;
   private responseRequestPending = false;
+  private notificationRequestPending = false;
+  private transportRecovering = false;
+  private recoveredInputPending = false;
+  private recoveredInputTimer: ReturnType<typeof setTimeout> | undefined;
   private playbackInProgress = false;
   private playbackCompletedAt = 0;
   private proactiveCycle:
@@ -146,23 +158,13 @@ export class Injector {
 
   // -- window state signals (fed by the orchestrator) ----------------------
 
-  resetConnection(): void {
-    this.speechInProgress = false;
-    this.responseInFlight = false;
-    this.directResponsePending = false;
-    this.responseRequestPending = false;
-    this.playbackInProgress = false;
-    this.playbackCompletedAt = 0;
-    this.proactiveCycle = undefined;
-    this.peerReportCycle = undefined;
-    this.searchResultCycle = undefined;
-  }
-
   noteSpeechStarted(): boolean {
+    this.clearRecoveredInputTimer();
     const outputWasPlaying = this.playbackInProgress;
     this.playbackInProgress = false;
     this.playbackCompletedAt = 0;
     this.speechInProgress = true;
+    this.notificationRequestPending = false;
     // An accepted external quotation is never replayed after a barge-in.
     this.peerReportCycle = undefined;
     this.searchResultCycle = undefined;
@@ -183,14 +185,18 @@ export class Injector {
   }
 
   noteInputCommitted(responsePending = false): void {
+    this.clearRecoveredInputTimer();
     this.speechInProgress = false;
     this.directResponsePending = responsePending;
     this.poke();
   }
 
   noteResponseCreated(authority?: string): void {
+    this.clearRecoveredInputTimer();
+    this.recoveredInputPending = false;
     this.directResponsePending = false;
     this.responseRequestPending = false;
+    this.notificationRequestPending = false;
     this.responseInFlight = true;
     if (authority === 'proactive' && this.proactiveCycle) {
       this.proactiveCycle.responseStarted = true;
@@ -205,6 +211,8 @@ export class Injector {
 
   noteResponseDone(authority?: string): void {
     this.responseInFlight = false;
+    if (authority === 'permission' || authority === 'task_result')
+      this.notificationRequestPending = false;
     if (authority === 'proactive' && this.proactiveCycle) {
       this.proactiveCycle.responseDone = true;
       this.finishProactiveCycleIfComplete();
@@ -225,6 +233,74 @@ export class Injector {
       }
     }
     this.poke();
+  }
+
+  /** Fence stale transport state without treating it as a completed response. */
+  beginTransportRecovery(): void {
+    this.transportRecovering = true;
+    this.clearRecoveredInputTimer();
+    this.recoveredInputPending = false;
+    this.speechInProgress = false;
+    this.responseInFlight = false;
+    this.directResponsePending = false;
+    this.responseRequestPending = false;
+    this.notificationRequestPending = false;
+    this.playbackInProgress = false;
+    this.playbackCompletedAt = 0;
+    this.proactiveCycle = undefined;
+    this.peerReportCycle = undefined;
+    this.searchResultCycle = undefined;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+
+  /** Preserve the order of undelivered Proactive items ahead of newer events. */
+  restoreProactiveAfterRecovery(items: readonly InjectorItem[]): void {
+    if (this.disposed || !this.transportRecovering) return;
+    const restored = items.filter(
+      (item) => item.kind === 'proactive' && item.deliveryId,
+    );
+    const ids = new Set(restored.map((item) => item.deliveryId));
+    this.queue = [
+      ...restored,
+      ...this.queue.filter(
+        (item) => item.kind !== 'proactive' || !ids.has(item.deliveryId),
+      ),
+    ];
+  }
+
+  completeTransportRecovery(inputKind: 'text' | 'audio' | 'none'): void {
+    if (this.disposed || !this.transportRecovering) return;
+    this.transportRecovering = false;
+    this.recoveredInputPending = inputKind !== 'none' && !this.responseInFlight;
+    if (
+      inputKind === 'none' &&
+      !this.speechInProgress &&
+      !this.responseInFlight
+    )
+      this.directResponsePending = false;
+    if (
+      inputKind === 'audio' &&
+      this.recoveredInputPending &&
+      !this.speechInProgress &&
+      !this.directResponsePending
+    ) {
+      // Restored PCM may not produce VAD (for example a very short noise).
+      // Release only this recovery guard if no real input signal arrives.
+      this.recoveredInputTimer = setTimeout(() => {
+        this.recoveredInputTimer = undefined;
+        this.recoveredInputPending = false;
+        this.poke();
+      }, RECOVERED_AUDIO_SIGNAL_WAIT_MS);
+      this.recoveredInputTimer.unref?.();
+    }
+    this.poke();
+  }
+
+  private clearRecoveredInputTimer(): void {
+    if (this.recoveredInputTimer !== undefined)
+      clearTimeout(this.recoveredInputTimer);
+    this.recoveredInputTimer = undefined;
   }
 
   notePlaybackStarted(): void {
@@ -456,6 +532,7 @@ export class Injector {
 
   dispose(): void {
     this.disposed = true;
+    this.clearRecoveredInputTimer();
     this.queue = [];
     this.peerReportCycle = undefined;
     this.seenPeerReports.clear();
@@ -470,7 +547,10 @@ export class Injector {
   private windowClosedForMs(): number {
     if (
       this.speechInProgress ||
+      this.transportRecovering ||
+      this.recoveredInputPending ||
       this.responseInFlight ||
+      this.notificationRequestPending ||
       this.proactiveCycle ||
       this.peerReportCycle ||
       this.searchResultCycle
@@ -534,11 +614,18 @@ export class Injector {
       (item) =>
         item.kind === 'proactive' ||
         item.kind === 'control' ||
+        item.kind === 'permission' ||
+        item.kind === 'task_result' ||
         item.kind === 'peer_report' ||
         item.kind === 'search_result',
     );
     if (firstIndependent === 0) {
       if (this.queue[0]?.kind === 'control') this.flushControl();
+      else if (
+        this.queue[0]?.kind === 'permission' ||
+        this.queue[0]?.kind === 'task_result'
+      )
+        this.flushNotification();
       else if (this.queue[0]?.kind === 'peer_report') this.flushPeerReport();
       else if (this.queue[0]?.kind === 'search_result')
         this.flushSearchResult();
@@ -547,14 +634,7 @@ export class Injector {
     }
     const batchEnd =
       firstIndependent < 0 ? this.queue.length : firstIndependent;
-    const pending = this.queue.slice(0, batchEnd);
-    // Permission asks first: the context join is size-capped, and a
-    // truncated [PERMISSION] entry would lose the handle the model needs
-    // for respond_permission.
-    const batch = [
-      ...pending.filter((item) => item.kind === 'permission'),
-      ...pending.filter((item) => item.kind !== 'permission'),
-    ];
+    const batch = this.queue.slice(0, batchEnd);
     this.queue = this.queue.slice(batchEnd);
 
     // One combined silent context injection, budgeted per ITEM. Slicing the
@@ -655,6 +735,42 @@ export class Injector {
     }
     this.queue.shift();
     this.sink.onInjected?.(item, true);
+  }
+
+  private flushNotification(): void {
+    const item = this.queue[0];
+    if (!item || (item.kind !== 'permission' && item.kind !== 'task_result'))
+      return;
+    // A committed user turn absorbs this as notification context. At idle,
+    // reserve one response so later notifications cannot overtake it.
+    const silent = item.kind === 'permission' && item.announce === false;
+    this.notificationRequestPending = !silent && !this.directResponsePending;
+    let accepted = false;
+    try {
+      accepted =
+        (silent
+          ? this.sink.injectContext(item.context)
+          : item.kind === 'permission'
+            ? this.sink.injectPermission?.(item.context)
+            : this.sink.injectTaskResult?.(item.context)) === true;
+    } catch {
+      // Keep all facts and correlation handles queued on refusal.
+    }
+    if (!accepted) {
+      this.notificationRequestPending = false;
+      if (this.timer !== undefined) clearTimeout(this.timer);
+      this.timer = setTimeout(
+        () => {
+          this.timer = undefined;
+          this.poke();
+        },
+        Math.max(this.quietGapMs, RECHECK_MIN_MS),
+      );
+      this.timer.unref?.();
+      return;
+    }
+    this.queue.shift();
+    this.sink.onInjected?.(item, !silent && !this.directResponsePending);
   }
 
   private flushControl(): void {

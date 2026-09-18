@@ -44,6 +44,7 @@ afterEach(() => {
 
 async function harness(sessionRecycleEvals = 60) {
   const sockets: ReviewSocket[] = [];
+  let now = 100_000;
   const callbacks = {
     onReady: vi.fn(),
     onResult: vi.fn(),
@@ -54,7 +55,7 @@ async function harness(sessionRecycleEvals = 60) {
     {
       endpoint: 'https://review.example.test',
       apiKey: 'synthetic-test-key',
-      model: 'qwen3.5-omni-plus-realtime',
+      model: 'qwen3.8-omni-flash-realtime',
       taskId: 'review-task',
       taskGeneration: 1,
       instruction: 'Report a visible change.',
@@ -62,9 +63,13 @@ async function harness(sessionRecycleEvals = 60) {
       modalities: ['audio', 'vision'],
       contextWindowSec: { audio: 60, vision: 60 },
       sessionRecycleEvals,
+      representationCompact: 'normal',
+      chunkDurationSec: 1,
+      visionFps: 2,
     },
     callbacks,
     {
+      now: () => now,
       createWebSocket: () => {
         const socket = new ReviewSocket();
         sockets.push(socket);
@@ -77,7 +82,14 @@ async function harness(sessionRecycleEvals = 60) {
   const socket = sockets[0]!;
   ready(socket);
   await pending;
-  return { monitor, sockets, callbacks };
+  const capture = (): void => {
+    for (let frame = 0; frame < 2; frame += 1) {
+      now += 500;
+      monitor.feedAudio(Buffer.alloc(16_000));
+      monitor.feedImage('/9j/2Q==');
+    }
+  };
+  return { monitor, sockets, callbacks, capture };
 }
 
 function ready(socket: ReviewSocket): void {
@@ -98,7 +110,8 @@ async function nextTurn(): Promise<void> {
 
 describe('PR #11369 monitor review reproduction', () => {
   it('R1-11: recovers when the recycled transport errors after its ready microtasks', async () => {
-    const { monitor, sockets, callbacks } = await harness(1);
+    const { monitor, sockets, callbacks, capture } = await harness(1);
+    capture();
     expect(monitor.requestEvaluation()).toBe(true);
     complete(sockets[0]!, 'first');
     expect(monitor.requestEvaluation()).toBe(false);
@@ -110,11 +123,13 @@ describe('PR #11369 monitor review reproduction', () => {
     expect(sockets).toHaveLength(3);
     ready(sockets[2]!);
     await nextTurn();
+    capture();
     expect(monitor.requestEvaluation()).toBe(true);
   });
 
   it('R1-11: recovers when ready and error arrive synchronously during recycling', async () => {
-    const { monitor, sockets, callbacks } = await harness(1);
+    const { monitor, sockets, callbacks, capture } = await harness(1);
+    capture();
     expect(monitor.requestEvaluation()).toBe(true);
     complete(sockets[0]!, 'first');
     expect(monitor.requestEvaluation()).toBe(false);
@@ -132,18 +147,19 @@ describe('PR #11369 monitor review reproduction', () => {
     expect(sockets).toHaveLength(3);
     ready(sockets[2]!);
     await nextTurn();
+    capture();
     expect(monitor.requestEvaluation()).toBe(true);
   });
 
   it('R1-26: preserves the prototype Func_call action without granting tool authority', async () => {
-    const { monitor, sockets, callbacks } = await harness();
+    const { monitor, sockets, callbacks, capture } = await harness();
     const socket = sockets[0]!;
-    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toHaveLength(3496);
+    expect(PROACTIVE_MONITOR_SYSTEM_PROMPT).toHaveLength(4038);
     expect(
       createHash('sha256')
         .update(PROACTIVE_MONITOR_SYSTEM_PROMPT)
         .digest('hex'),
-    ).toBe('f54e454d494047f8b43651e58a9d36edb62267f5ba6f7bcfed7cc292c2f9e6f4');
+    ).toBe('6c948e88a9a4e170013d3328936c508e51e7f103956a4fcc1df19d2eacbf4029');
     expect(
       socket.sent.find((entry) => entry['type'] === 'session.update'),
     ).toMatchObject({
@@ -159,6 +175,7 @@ describe('PR #11369 monitor review reproduction', () => {
       'wait',
       'Func_call:已记下\n{"name":"mind-map-generate_mindmap","intent":"private-intent-marker"}',
     ].entries()) {
+      capture();
       expect(monitor.requestEvaluation()).toBe(true);
       complete(socket, `action-${index}`, action);
       results.push(callbacks.onResult.mock.lastCall?.[0]);
@@ -183,6 +200,7 @@ describe('PR #11369 monitor review reproduction', () => {
         taskGeneration: 1,
         transportGeneration: 1,
         evaluation: 1,
+        responseId: 'action-0',
         triggered: false,
       },
       {
@@ -190,6 +208,7 @@ describe('PR #11369 monitor review reproduction', () => {
         taskGeneration: 1,
         transportGeneration: 1,
         evaluation: 2,
+        responseId: 'action-1',
         triggered: false,
         ignoredAction: 'function_call',
       },

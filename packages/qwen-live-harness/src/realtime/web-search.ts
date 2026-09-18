@@ -13,10 +13,6 @@ import {
 } from './realtime-session.js';
 import type { SocketLike } from './socket.js';
 
-const SEARCH_MODELS = new Set([
-  'qwen3.5-omni-plus-realtime',
-  'qwen3.5-omni-flash-realtime',
-]);
 const MAX_QUERY_CHARS = 4_096;
 const MAX_ANSWER_CHARS = 16_000;
 const MAX_TEXT_PARTS = 64;
@@ -47,10 +43,6 @@ export interface QwenRealtimeSearchDeps {
 export interface QwenRealtimeSearchResult {
   answer: string;
   searchStatus: 'performed' | 'not_performed' | 'unknown';
-}
-
-export function supportsQwenRealtimeSearch(model: string): boolean {
-  return SEARCH_MODELS.has(model);
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -129,7 +121,8 @@ export function searchQwenRealtime(
     }
     const query = typeof options.query === 'string' ? options.query.trim() : '';
     if (
-      !supportsQwenRealtimeSearch(options.model) ||
+      typeof options.model !== 'string' ||
+      !options.model.trim() ||
       query.length < 1 ||
       query.length > MAX_QUERY_CHARS ||
       FORBIDDEN_QUERY_CONTROLS.test(query)
@@ -139,6 +132,8 @@ export function searchQwenRealtime(
     }
     let url: string;
     try {
+      // Reuse the foreground model verbatim, including private deployment aliases.
+      // Native search support is determined by the provider, not a local list.
       url = deriveQwenOmniRealtimeUrl(options.endpoint, options.model);
     } catch {
       reject(searchError('web_search_failed'));
@@ -275,6 +270,9 @@ export function searchQwenRealtime(
               type: 'session.update',
               session: {
                 modalities: ['text'],
+                // Provider session validation still requires a voice for text-only output.
+                voice: 'Tina',
+                smooth_output: false,
                 instructions: SEARCH_INSTRUCTIONS,
                 tools: [],
                 enable_search: true,

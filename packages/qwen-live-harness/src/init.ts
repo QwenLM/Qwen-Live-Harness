@@ -23,7 +23,11 @@ import {
 } from 'node:fs';
 import prompts from 'prompts';
 import { detectAgents, type DetectedAgent } from './agent-detector.js';
-import { DEFAULT_PROACTIVE_CONFIG, type ProactiveConfig } from './config.js';
+import {
+  DEFAULT_PROACTIVE_CONFIG,
+  DEFAULT_REALTIME_MODEL,
+  type ProactiveConfig,
+} from './config.js';
 import { LiveHostInstaller } from './host/qwen-live-harness-host-installer.js';
 import { initialMemoryConfig } from './memory/config.js';
 import {
@@ -398,7 +402,7 @@ export async function runInit(
     type: 'text',
     name: 'value',
     message: t('init.apiName'),
-    initial: 'qwen3.5-omni-plus-realtime',
+    initial: DEFAULT_REALTIME_MODEL,
     validate: (value: string) =>
       value.trim().length > 0 || t('init.apiNameRequired'),
   });

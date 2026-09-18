@@ -5,7 +5,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildLiveInstructions } from './instructions.js';
+import {
+  buildLiveInstructions,
+  PERSONAL_ASSISTANT_INSTRUCTIONS,
+} from './instructions.js';
 
 describe('live instructions visual routing', () => {
   it('offers supported web lookup independently of backend execution', () => {
@@ -51,7 +54,7 @@ describe('live instructions visual routing', () => {
     );
   });
 
-  it('shares Qwen Omni identity and one pre-tool preamble across all capability branches', () => {
+  it('starts every capability branch with the personal-assistant guidance and identity', () => {
     const prefixes = new Set<string>();
     for (const backend of [false, true]) {
       for (const search of [false, true]) {
@@ -63,22 +66,88 @@ describe('live instructions visual routing', () => {
           search,
         );
         prefixes.add(instructions.split('## Operating model')[0]!);
+        expect(
+          instructions.startsWith(`${PERSONAL_ASSISTANT_INSTRUCTIONS}\n\n`),
+        ).toBe(true);
         expect(instructions.match(/You are Qwen Omni/g)).toHaveLength(1);
         expect(instructions).not.toMatch(
           /You are Qwen Code|You are Qwen Live Harness/,
         );
-        expect(instructions).toContain('voice assistant in Qwen Live Harness');
+        expect(instructions).toContain(
+          "the user's personal assistant in Qwen Live Harness",
+        );
+        expect(instructions).not.toContain('realtime voice assistant');
         expect(instructions).toContain(
           'Qwen Code and other coding agents are execution backends',
         );
         expect(instructions).toContain(
           'Before your first non-Memory tool call for a real user turn',
         );
-        expect(instructions).toContain('Never promise an outcome');
-        expect(instructions).toContain('Do not repeat this preamble');
+        expect(instructions).toContain(
+          'Do not repeat this preamble for follow-up calls in the same turn',
+        );
       }
     }
     expect(prefixes.size).toBe(1);
+  });
+
+  it('keeps the updated preamble rules before the supplied role and verbosity guidance', () => {
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS.match(/^# .+$/gmu)).toEqual([
+      '# Tool Preambles',
+      '# Role and Objective',
+      '# Verbosity',
+    ]);
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).toContain(
+      'Then call the tool immediately.',
+    );
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).toContain(
+      'Use exactly one short sentence.',
+    );
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).not.toContain(
+      'Speak up first only when',
+    );
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).not.toContain(
+      'Use at most two sentences',
+    );
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).toContain(
+      'always keeping a clear distinction between the roleplay setting and the facts of the real conversation.',
+    );
+    expect(PERSONAL_ASSISTANT_INSTRUCTIONS).toContain(
+      'By default, state the core point in 1-3 concise, conversational sentences',
+    );
+  });
+
+  it('restricts only the spoken preamble to one plain-text line and preserves silent Memory calls', () => {
+    const preambles = PERSONAL_ASSISTANT_INSTRUCTIONS.split(
+      '# Role and Objective',
+    )[0]!;
+    expect(preambles).toContain('a single line of plain spoken language');
+    expect(preambles).toContain(
+      'ordinary words, spaces, and standard sentence punctuation',
+    );
+    expect(preambles).toContain('Do not output special symbols');
+    for (const format of [
+      'carriage returns (CR)',
+      'line feeds (LF)',
+      'blank lines',
+      'tabs',
+      'Markdown',
+      'emoji',
+      'literal escape sequences',
+    ])
+      expect(preambles).toContain(format);
+    expect(preambles).toContain(
+      'Do not append a newline or any separator after it; proceed directly to the tool call.',
+    );
+    expect(preambles).toContain(
+      'Silent omnibio and omniretrieve calls keep their own timing rules and do not consume this preamble.',
+    );
+    expect(preambles).toContain(
+      'Never add a preamble to remain_silent; that tool means say nothing.',
+    );
+    expect(preambles).toContain(
+      'only to the spoken preamble, not to function-call names or argument JSON',
+    );
   });
 
   it('routes simple lookup to asynchronous search and keeps executable or explicitly delegated work on the Harness', () => {

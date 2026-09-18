@@ -6,6 +6,8 @@ package-lock.json
 packages/qwen-live-harness-host/package-lock.json
 *.tsbuildinfo
 LICENSE
+# Preserve the reviewed Chinese landing page verbatim.
+/README_ZH.md
 packages/qwen-live-harness-host/resources
 .qwen
 packages/qwen-live-harness/src/vendor/qwen-code-peer/*.ts

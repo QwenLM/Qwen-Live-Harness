@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fakeToolCall } from './fake-openai-server.js';
 import {
   contextTextOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
@@ -99,34 +100,21 @@ describeE2E('qwen-live-harness M4 — ACP permission relay', () => {
     expect(receipt['status']).toBe('accepted');
     const job = String(receipt['job']);
 
-    // The ask reaches the voice model as a [PERMISSION] context item…
+    // Structured permission facts drive a dedicated model-authored question.
     const permissionMessage = await stack.fakeDash.waitForMessage(
-      (message) =>
-        contextTextOf(message)?.includes('[PERMISSION req_1]') ?? false,
+      (message) => permissionPayloadOf(message)?.request_id === 'req_1',
       {
         timeoutMs: 30_000,
         fromIndex: inboxIndex,
-        description: 'the [PERMISSION req_1] context injection',
+        description: 'the [PERMISSION] JSON context injection for req_1',
       },
     );
-    expect(contextTextOf(permissionMessage)).toContain('respond_permission');
-    // …plus the spoken ask.
-    const spokenAsk = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text !== undefined &&
-          text.startsWith('[SPEAK_TO_USER] ') &&
-          text.includes('Should I allow it?')
-        );
-      },
-      {
-        timeoutMs: 15_000,
-        fromIndex: inboxIndex,
-        description: 'the spoken permission ask',
-      },
-    );
-    await waitForLiveResponseAfter(stack, spokenAsk, 'backend_speech');
+    expect(permissionPayloadOf(permissionMessage)).toMatchObject({
+      request_id: 'req_1',
+      action: expect.any(String),
+    });
+    expect(contextTextOf(permissionMessage)).not.toContain('[SPEAK_TO_USER]');
+    await waitForLiveResponseAfter(stack, permissionMessage, 'permission');
 
     // The user says yes: the vote must resolve the parked RPC.
     conn.queueFunctionCall({

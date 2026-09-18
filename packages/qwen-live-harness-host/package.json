@@ -1,6 +1,6 @@
 {
   "name": "qwen-live-harness-host",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Native macOS audio, visual context and global-shortcut host for Qwen Live Harness",
   "main": "dist/main.cjs",
   "private": true,

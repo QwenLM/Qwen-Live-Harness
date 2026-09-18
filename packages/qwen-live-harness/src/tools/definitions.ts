@@ -82,7 +82,6 @@ const WEB_SEARCH_TOOL: RealtimeToolDefinition = {
       'Prefer this for simple lookups even when a background Harness is configured; ' +
       'use Harness for file/command work, webpage interaction, artifacts, long or complex work, ' +
       'or a user explicitly requesting a new task or a particular coding agent. ' +
-      'Before the first tool call in the user turn, say one brief natural preamble without promising a result. ' +
       'Returns an accepted task receipt immediately, not an answer or proof of search. ' +
       'Do not read the receipt aloud or repeat the preamble; results arrive later as [SEARCH_RESULT]. ' +
       'Do not poll or duplicate an accepted query. Independent searches can run in parallel while conversation continues. ' +
@@ -180,9 +179,7 @@ const HANDOFF_TOOL: RealtimeToolDefinition = {
       'For managed sessions, returns a receipt immediately — the result arrives later as a ' +
       '[COMPLETE] context message. Targeting a busy session appends the ' +
       'instruction to its running task or queues it within that session ' +
-      '(the receipt says how it landed). Use separate sessions for independent parallel work. ' +
-      'Before your first tool call in a user turn, say one short neutral ' +
-      'sentence about what you are doing; never promise the outcome.',
+      '(the receipt says how it landed). Use separate sessions for independent parallel work.',
     parameters: {
       type: 'object',
       properties: {

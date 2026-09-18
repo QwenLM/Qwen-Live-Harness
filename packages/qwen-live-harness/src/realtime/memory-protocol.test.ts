@@ -38,13 +38,13 @@ class MemorySocket {
   }
 }
 
-async function connect(callbacks: QwenRealtimeCallbacks = {}) {
+async function connect(callbacks: QwenRealtimeCallbacks = {}, model = 'test') {
   const socket = new MemorySocket();
   const pending = openQwenRealtimeSession(
     {
       endpoint: 'https://example.test',
       apiKey: 'test-key',
-      model: 'test',
+      model,
       callEpoch: 1,
       instructions: 'base instructions',
       tools: MEMORY_TOOLS,
@@ -102,6 +102,105 @@ function call(
 }
 
 describe('Memory Realtime publication and dialogue boundaries', () => {
+  it.each([
+    'qwen3.8-omni-flash-realtime',
+    'example-omni-realtime-deployment',
+    'custom-realtime',
+  ])(
+    'preserves complete Memory schemas on initial and dynamic %s publication',
+    async (model) => {
+      const { socket, session } = await connect({}, model);
+      try {
+        expect(
+          session.configure({
+            instructions: 'updated memory',
+            tools: MEMORY_TOOLS,
+          }),
+        ).toBe(true);
+        const publications = socket.messages('session.update');
+        expect(publications).toHaveLength(2);
+        for (const [index, publication] of publications.entries()) {
+          const published = publication['session'] as {
+            instructions: string;
+            tools: Array<{
+              type: string;
+              function: { name: string; parameters: Record<string, unknown> };
+            }>;
+          };
+          expect(published.instructions).toBe(
+            index === 0 ? 'base instructions' : 'updated memory',
+          );
+          // The transport strips only local behavior flags, never schema fields.
+          expect(published.tools).toEqual(
+            MEMORY_TOOLS.map(({ type, function: definition }) => ({
+              type,
+              function: definition,
+            })),
+          );
+          // Explicit literals also catch accidental removal from MEMORY_TOOLS:
+          // comparing the wire to that same definition alone would miss it.
+          expect(
+            published.tools.find((tool) => tool.function.name === 'omnibio')
+              ?.function.parameters,
+          ).toMatchObject({
+            type: 'object',
+            properties: {
+              operations: {
+                type: 'object',
+                properties: {
+                  add: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1 },
+                  },
+                  update: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        index: { type: 'integer', minimum: 0 },
+                        content: { type: 'string', minLength: 1 },
+                      },
+                      required: ['index', 'content'],
+                      additionalProperties: false,
+                    },
+                  },
+                  delete: {
+                    type: 'array',
+                    items: { type: 'integer', minimum: 0 },
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+            required: ['operations'],
+            additionalProperties: false,
+          });
+          expect(
+            published.tools.find(
+              (tool) => tool.function.name === 'omniretrieve',
+            )?.function.parameters,
+          ).toMatchObject({
+            type: 'object',
+            properties: {
+              query: { type: 'string', minLength: 1 },
+              source: { type: 'string', enum: ['dialogue', 'env'] },
+              time_range: {
+                type: 'array',
+                items: { type: 'number' },
+                minItems: 2,
+                maxItems: 2,
+              },
+            },
+            required: ['query', 'source'],
+            additionalProperties: false,
+          });
+        }
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
+
   it('stages active configuration and puts updated memory on the receipt continuation', async () => {
     const onFunctionCall = vi.fn();
     const { socket, session } = await connect({ onFunctionCall });
@@ -149,6 +248,7 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
     done(socket, 'direct');
     await Promise.resolve();
     expect(socket.messages('session.update').at(-1)?.['session']).toEqual({
+      smooth_output: false,
       instructions: 'memory disabled',
       tools: [],
     });

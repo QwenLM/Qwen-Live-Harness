@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { DEFAULT_PROACTIVE_CONFIG, type ProactiveConfig } from '../config.js';
 import { Injector } from '../orchestrator/injector.js';
 import { QWEN_REALTIME_LIMITS } from '../realtime/realtime-session.js';
@@ -13,10 +14,11 @@ import {
   formatProactiveEvent,
   parseMonitorAction,
 } from './monitor-protocol.js';
-import type {
-  DashScopeRealtimeMonitorCallbacks,
-  DashScopeRealtimeMonitorOptions,
-  ProactiveRealtimeMonitor,
+import {
+  DashScopeRealtimeMonitor,
+  type DashScopeRealtimeMonitorCallbacks,
+  type DashScopeRealtimeMonitorOptions,
+  type ProactiveRealtimeMonitor,
 } from './realtime-monitor.js';
 import { ProactiveScheduler, type ProactiveDelivery } from './scheduler.js';
 import type { ProactiveTask } from './task-manager.js';
@@ -124,7 +126,14 @@ interface SchedulerHarness {
 const activeSchedulers: ProactiveScheduler[] = [];
 
 function config(): ProactiveConfig {
-  return structuredClone(DEFAULT_PROACTIVE_CONFIG);
+  // These scheduler timing fixtures intentionally exercise configurable 2s
+  // polling / 1fps capture. The product's 1s / 2fps defaults have their own
+  // propagation test below; fixed media chunk behavior is tested on the real
+  // DashScopeRealtimeMonitor rather than this permissive fake.
+  const fixture = structuredClone(DEFAULT_PROACTIVE_CONFIG);
+  fixture.scheduler.evalIntervalSec = 2;
+  fixture.vision.fps = 1;
+  return fixture;
 }
 
 function createHarness(
@@ -154,7 +163,7 @@ function createHarness(
     config: proactive,
     realtime: {
       endpoint: 'https://dashscope.example.test',
-      model: 'qwen3.5-omni-plus-realtime',
+      model: 'qwen3.8-omni-flash-realtime',
     },
     onEvent: (delivery) => {
       deliveries.push(delivery);
@@ -203,6 +212,37 @@ function remainingSec(scheduler: ProactiveScheduler): number | undefined {
 }
 
 describe('Proactive event admission size', () => {
+  it.each([undefined, 'none', 'normal'] as const)(
+    'passes monitor video compression %s from configuration without changing the shared model',
+    (representationCompact) => {
+      const settings = config();
+      if (representationCompact !== undefined) {
+        settings.monitor.representationCompact = representationCompact;
+      }
+      const { scheduler, monitors } = createHarness(settings);
+      for (const modalities of [
+        ['vision'],
+        ['audio'],
+        ['audio', 'vision'],
+      ] as const) {
+        scheduler.createPerceptionMonitor({
+          title: `${modalities.join(' and ')} monitor`,
+          modalities: [...modalities],
+          condition: 'change',
+          triggerResponse: 'notify',
+          repeat: true,
+        });
+      }
+      expect(monitors).toHaveLength(3);
+      for (const monitor of monitors) {
+        expect(monitor.options).toMatchObject({
+          representationCompact: representationCompact ?? 'normal',
+          model: 'qwen3.8-omni-flash-realtime',
+        });
+      }
+    },
+  );
+
   it('passes the debug archive store to each monitor without enabling it by default', () => {
     const monitorDebug = new MonitorDebugStore(vi.fn(), 'inert-monitor-debug');
     const debugHarness = createHarness(config(), { monitorDebug });
@@ -389,6 +429,128 @@ afterEach(() => {
 });
 
 describe('ProactiveScheduler', () => {
+  it('retains two-fps capture under completion jitter and aligns it with real one-second audio clips', async () => {
+    class Socket extends EventEmitter {
+      readonly OPEN = 1;
+      readyState = 1;
+      bufferedAmount = 0;
+      readonly sent: Array<Record<string, unknown>> = [];
+      send(data: string | Uint8Array): void {
+        this.sent.push(JSON.parse(String(data)) as Record<string, unknown>);
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+      message(body: Record<string, unknown>): void {
+        this.emit('message', JSON.stringify(body), false);
+      }
+    }
+    const socket = new Socket();
+    const debug = vi.fn();
+    const delays = [100, 90, 100, 90, 100, 90];
+    const captureVision = vi.fn(async () => {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, delays.shift() ?? 100),
+      );
+      return '/9j/2Q==';
+    });
+    const scheduler = new ProactiveScheduler({
+      config: structuredClone(DEFAULT_PROACTIVE_CONFIG),
+      realtime: {
+        endpoint: 'https://test.example',
+        model: 'qwen3.8-omni-flash-realtime',
+      },
+      onEvent: () => true,
+      debug,
+      captureVision,
+      createMonitor: (options, callbacks) =>
+        new DashScopeRealtimeMonitor(options, callbacks, {
+          createWebSocket: () => socket,
+        }),
+    });
+    activeSchedulers.push(scheduler);
+    scheduler.createPerceptionMonitor({
+      title: 'Aligned clips',
+      modalities: ['audio', 'vision'],
+      condition: 'A change appears',
+      triggerResponse: 'Tell me',
+      repeat: false,
+    });
+    socket.message({ type: 'session.created' });
+    socket.message({ type: 'session.updated' });
+    const microphone = setInterval(
+      () => scheduler.feedAudio(Buffer.alloc(640, 7)),
+      20,
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(
+        socket.sent.filter(
+          (event) => event['type'] === 'input_audio_buffer.commit',
+        ),
+      ).toHaveLength(1);
+      expect(
+        socket.sent.filter(
+          (event) => event['type'] === 'input_image_buffer.append',
+        ),
+      ).toHaveLength(2);
+      expect(
+        Buffer.concat(
+          socket.sent
+            .filter((event) => event['type'] === 'input_audio_buffer.append')
+            .map((event) => Buffer.from(String(event['audio']), 'base64')),
+        ),
+      ).toEqual(Buffer.alloc(32_000, 7));
+      socket.message({ type: 'input_audio_buffer.committed' });
+      socket.message({
+        type: 'response.text.done',
+        response_id: 'first',
+        text: 'wait',
+      });
+      socket.message({
+        type: 'response.done',
+        response: { id: 'first', status: 'completed' },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(
+        socket.sent.filter(
+          (event) => event['type'] === 'input_audio_buffer.commit',
+        ),
+      ).toHaveLength(2);
+      expect(
+        socket.sent.filter(
+          (event) => event['type'] === 'input_image_buffer.append',
+        ),
+      ).toHaveLength(4);
+      expect(debug).not.toHaveBeenCalledWith(
+        'proactive.monitor_chunk_dropped',
+        expect.anything(),
+      );
+    } finally {
+      clearInterval(microphone);
+    }
+  });
+
+  it('passes the default one-second clip and two-fps capture contract to monitors', async () => {
+    const captureVision = vi.fn(async () => 'test-frame');
+    const { scheduler, monitors } = createHarness(
+      structuredClone(DEFAULT_PROACTIVE_CONFIG),
+      { captureVision },
+    );
+    scheduler.createPerceptionMonitor({
+      title: 'Screen watch',
+      modalities: ['vision'],
+      condition: 'A change appears',
+      triggerResponse: 'Tell me',
+      repeat: false,
+    });
+    expect(monitors[0]!.options).toMatchObject({
+      chunkDurationSec: 1,
+      visionFps: 2,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(captureVision).toHaveBeenCalledTimes(2);
+  });
   it('diagnoses ignored function calls without triggering or failing a task', () => {
     const debug = vi.fn();
     const { scheduler, monitors, deliveries, failures } = createHarness(
@@ -410,6 +572,11 @@ describe('ProactiveScheduler', () => {
     expect(debug).toHaveBeenCalledWith('proactive.evaluation_result', {
       taskId: task.taskId,
       generation: 1,
+      status: 'running',
+      monitorMode: 'event',
+      repeat: false,
+      cooldownUntil: 0,
+      awaitingFalse: false,
       triggered: false,
       failed: false,
       summaryChars: 0,
@@ -504,6 +671,11 @@ describe('ProactiveScheduler', () => {
     expect(debug).toHaveBeenCalledWith('proactive.evaluation_result', {
       taskId: task.taskId,
       generation: 1,
+      status: 'running',
+      monitorMode: 'event',
+      repeat: true,
+      cooldownUntil: 0,
+      awaitingFalse: false,
       triggered: true,
       failed: false,
       summaryChars: 'Private observed summary'.length,
@@ -558,6 +730,213 @@ describe('ProactiveScheduler', () => {
     }
   });
 
+  it('explains each repeat decision without changing false-edge rearming or queued notifications', () => {
+    const debug = vi.fn();
+    const { scheduler, monitors, deliveries } = createHarness(config(), {
+      debug,
+    });
+    const task = scheduler.createPerceptionMonitor({
+      title: 'Private cough monitor',
+      modalities: ['audio'],
+      condition: 'Private cough condition',
+      triggerResponse: 'Private care guidance',
+      repeat: true,
+    });
+    const monitor = monitors[0]!;
+    monitor.result(false);
+    monitor.result(true, 'Private first observation');
+    const cooldownUntil = Date.now() + 3_000;
+    monitor.result(false);
+    expect(deliveries).toHaveLength(1);
+    vi.advanceTimersByTime(3_000);
+    scheduler.feedAudio(new Uint8Array(640));
+    monitor.result(true, 'Private later observation');
+    expect(debug).toHaveBeenLastCalledWith(
+      'proactive.evaluation_decision',
+      expect.objectContaining({
+        decision: 'suppressed_awaiting_false',
+        awaitingFalse: true,
+        cooldownUntil: 0,
+      }),
+    );
+    monitor.result(false);
+    monitor.resultError('Private provider exception');
+    monitor.result(true, 'Private distinct observation');
+    expect(deliveries).toHaveLength(2);
+    expect(scheduler.listTasks()[0]).toMatchObject({
+      status: 'running',
+      triggerCount: 2,
+      pendingDeliveryCount: 2,
+    });
+    expect(
+      debug.mock.calls
+        .filter(([event]) => event === 'proactive.evaluation_decision')
+        .map(([, details]) => details.decision),
+    ).toEqual([
+      'no_trigger',
+      'notification_accepted',
+      'ignored_cooldown',
+      'suppressed_awaiting_false',
+      'rearmed_false',
+      'error',
+      'notification_accepted',
+    ]);
+    expect(debug).toHaveBeenCalledWith(
+      'proactive.evaluation_result',
+      expect.objectContaining({
+        taskId: task.taskId,
+        status: 'running',
+        monitorMode: 'event',
+        repeat: true,
+        cooldownUntil,
+        awaitingFalse: true,
+        triggered: false,
+      }),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain('Private');
+  });
+
+  it.each([true, false])(
+    'aggregates cooldown audio drops once and preserves clearBufferOnResume=%s',
+    (clearBufferOnResume) => {
+      const debug = vi.fn();
+      const settings = config();
+      settings.scheduler.repeat.clearBufferOnResume = clearBufferOnResume;
+      const { scheduler, monitors } = createHarness(settings, { debug });
+      const task = scheduler.createPerceptionMonitor({
+        title: 'Cough monitor',
+        modalities: ['audio'],
+        condition: 'A cough is heard',
+        triggerResponse: 'Offer care',
+        repeat: true,
+      });
+      const monitor = monitors[0]!;
+      monitor.result(true);
+      const cooldownUntil = Date.now() + 3_000;
+      for (let frame = 0; frame < 100; frame += 1) {
+        scheduler.feedAudio(new Uint8Array(640));
+        vi.advanceTimersByTime(20);
+      }
+      expect(monitor.audioFrames).toBe(0);
+      expect(
+        debug.mock.calls.filter(
+          ([event]) => event === 'proactive.cooldown_audio_dropped',
+        ),
+      ).toHaveLength(0);
+      vi.advanceTimersByTime(1_000);
+      scheduler.feedAudio(new Uint8Array(640));
+      scheduler.feedAudio(new Uint8Array(640));
+      expect(monitor.audioFrames).toBe(2);
+      expect(monitor.resets).toBe(clearBufferOnResume ? 2 : 1);
+      expect(
+        debug.mock.calls.filter(
+          ([event]) => event === 'proactive.cooldown_audio_dropped',
+        ),
+      ).toEqual([
+        [
+          'proactive.cooldown_audio_dropped',
+          {
+            taskId: task.taskId,
+            generation: 1,
+            reason: 'cooldown_resumed',
+            cooldownUntil,
+            audioFrames: 100,
+            audioBytes: 64_000,
+            audioMs: 2_000,
+          },
+        ],
+      ]);
+      expect(debug).toHaveBeenCalledWith('proactive.cooldown_resumed', {
+        taskId: task.taskId,
+        generation: 1,
+        cooldownUntil,
+        resumedAt: cooldownUntil,
+        awaitingFalse: true,
+        clearBufferOnResume,
+      });
+      expect(
+        debug.mock.calls
+          .filter(([event]) => event === 'proactive.buffer_reset')
+          .map(([, details]) => details.reason),
+      ).toEqual(
+        clearBufferOnResume
+          ? ['repeat_trigger', 'cooldown_resume']
+          : ['repeat_trigger'],
+      );
+      expect(
+        (Reflect.get(scheduler, 'cooldownAudioDrops') as Map<string, unknown>)
+          .size,
+      ).toBe(0);
+    },
+  );
+
+  it.each(['updated', 'cancelled', 'disposed'] as const)(
+    'flushes bounded cooldown counters when a task is %s',
+    (transition) => {
+      const debug = vi.fn();
+      const { scheduler, monitors } = createHarness(config(), { debug });
+      const task = scheduler.createPerceptionMonitor({
+        title: 'Monitor',
+        modalities: ['audio'],
+        condition: 'A sound occurs',
+        triggerResponse: 'Notify',
+        repeat: true,
+      });
+      monitors[0]!.result(true);
+      scheduler.feedAudio(new Uint8Array(640));
+      const counters = Reflect.get(scheduler, 'cooldownAudioDrops') as Map<
+        string,
+        unknown
+      >;
+      expect(counters.size).toBe(1);
+      if (transition === 'updated')
+        scheduler.updateTask({
+          targetTitle: 'Monitor',
+          condition: 'A different sound occurs',
+        });
+      else if (transition === 'cancelled')
+        scheduler.cancelTaskById(task.taskId);
+      else scheduler.dispose();
+      expect(counters.size).toBe(0);
+      expect(debug).toHaveBeenCalledWith(
+        'proactive.cooldown_audio_dropped',
+        expect.objectContaining({
+          taskId: task.taskId,
+          generation: 1,
+          reason: transition === 'updated' ? 'task_updated' : 'task_ended',
+          audioFrames: 1,
+          audioBytes: 640,
+          audioMs: 20,
+        }),
+      );
+    },
+  );
+
+  it('distinguishes rejected notifications from accepted ones without leaking the result', () => {
+    const debug = vi.fn();
+    const { scheduler, monitors, failures } = createHarness(config(), {
+      debug,
+      acceptDelivery: false,
+    });
+    scheduler.createPerceptionMonitor({
+      title: 'Monitor',
+      modalities: ['audio'],
+      condition: 'A sound occurs',
+      triggerResponse: 'Notify',
+      repeat: true,
+    });
+    monitors[0]!.result(true, 'PRIVATE_RESULT');
+    expect(failures).toHaveLength(1);
+    expect(debug).toHaveBeenLastCalledWith(
+      'proactive.evaluation_decision',
+      expect.objectContaining({
+        decision: 'notification_rejected',
+        status: 'failed',
+      }),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain('PRIVATE_RESULT');
+  });
+
   it('records evaluation failure and rejected admission as safe metadata and clears diagnostics for terminal tasks', () => {
     const debug = vi.fn();
     const proactive = config();
@@ -580,6 +959,11 @@ describe('ProactiveScheduler', () => {
     expect(debug).toHaveBeenCalledWith('proactive.evaluation_result', {
       taskId: monitor.taskId,
       generation: 1,
+      status: 'running',
+      monitorMode: 'event',
+      repeat: true,
+      cooldownUntil: 0,
+      awaitingFalse: false,
       triggered: false,
       failed: true,
       summaryChars: 0,
@@ -707,6 +1091,20 @@ describe('ProactiveScheduler', () => {
     vi.advanceTimersByTime(1_000);
     scheduler.acknowledgeDelivery(deliveries[1]!);
     expect(deliveries).toHaveLength(2);
+    for (let frame = 0; frame < 100; frame += 1) {
+      scheduler.feedAudio(new Uint8Array(640));
+    }
+    vi.advanceTimersByTime(2_000);
+    scheduler.feedAudio(new Uint8Array(640));
+    monitors[0]!.result(true);
+    expect(deliveries).toHaveLength(2);
+    monitors[0]!.result(false);
+    monitors[0]!.result(true);
+    expect(deliveries).toHaveLength(3);
+    expect(
+      (Reflect.get(scheduler, 'cooldownAudioDrops') as Map<string, unknown>)
+        .size,
+    ).toBe(0);
     expect(failures).toEqual([]);
     expect(scheduler.listTasks()[0]?.status).toBe('running');
   });
@@ -792,7 +1190,7 @@ describe('ProactiveScheduler', () => {
   });
 
   it('keeps diagnostic state empty when no debug observer is configured', () => {
-    const { scheduler } = createHarness();
+    const { scheduler, monitors } = createHarness();
     scheduler.createPerceptionMonitor({
       title: 'No debug',
       modalities: ['audio'],
@@ -800,6 +1198,14 @@ describe('ProactiveScheduler', () => {
       triggerResponse: 'Notify',
       repeat: true,
     });
+    monitors[0]!.result(true);
+    for (let frame = 0; frame < 100; frame += 1) {
+      scheduler.feedAudio(new Uint8Array(640));
+    }
+    expect(
+      (Reflect.get(scheduler, 'cooldownAudioDrops') as Map<string, unknown>)
+        .size,
+    ).toBe(0);
     vi.advanceTimersByTime(4_000);
     const diagnosticStates = Reflect.get(scheduler, 'diagnosticStates') as Map<
       string,

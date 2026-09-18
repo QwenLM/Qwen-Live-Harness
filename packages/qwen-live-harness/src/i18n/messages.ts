@@ -528,9 +528,9 @@ export const LIVE_MESSAGES = {
   },
   // INIT_MESSAGES
   'cli.debugNotice': {
-    en: 'Debug enabled. Foreground diagnostics omit media and credentials, but visual Monitor archives contain real screen/camera frames, audio and prompt/response text. The archive directory is logged when ready; review recordings before sharing.',
+    en: 'Debug enabled. Foreground diagnostics omit media and credentials, but audio and visual Monitor archives contain real microphone audio, screen/camera frames, and prompt/response text. The archive directory is logged when ready; review recordings before sharing.',
     'zh-CN':
-      '已开启 debug。前台诊断日志省略媒体和连接凭据，但视觉 Monitor 归档包含真实屏幕／摄像头画面、音频和提示词／回复文本。归档就绪后会打印目录；分享前请检查敏感内容。',
+      '已开启 debug。前台诊断日志省略媒体和连接凭据，但音频与视觉 Monitor 归档包含真实麦克风音频、屏幕／摄像头画面和提示词／回复文本。归档就绪后会打印目录；分享前请检查敏感内容。',
   },
   'peerSetup.optIn': {
     en: 'Enable local Qwen terminal discovery?',
@@ -859,9 +859,9 @@ export const LIVE_MESSAGES = {
       '诊断有上限：16 个后端、8 个本机目录、每目录 128 条记录、32 个 socket，以及每个 HTTP 响应 2 秒/64 KiB。未检查或超时项目保持未验证。',
   },
   'cli.usage': {
-    en: 'Usage: qwen-live-harness [init] [--debug]\n\nStart or reuse the daemon and open the desktop Host.\n\nCommands:\n  init --peers    Configure local Qwen terminal sessions without replacing other settings\n  doctor --peers  Inspect terminal setup without sending messages or starting a call\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive visual Monitor archives\n  --daemon-only  Run the daemon without opening Host (development)\n  --help, -h   Show this help',
+    en: 'Usage: qwen-live-harness [init] [--debug]\n\nStart or reuse the daemon and open the desktop Host.\n\nCommands:\n  init --peers    Configure local Qwen terminal sessions without replacing other settings\n  doctor --peers  Inspect terminal setup without sending messages or starting a call\n\nOptions:\n  --debug, -d  Print diagnostics; save sensitive audio/visual Monitor archives\n  --daemon-only  Run the daemon without opening Host (development)\n  --help, -h   Show this help',
     'zh-CN':
-      '用法：qwen-live-harness [init] [--debug]\n\n启动或复用服务，并打开桌面 Host。\n\n命令：\n  init --peers    配置本机 Qwen 终端会话，保留其他设置\n  doctor --peers  检查终端配置，不发送消息或开启通话\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的视觉 Monitor 归档\n  --daemon-only  仅运行服务，不打开 Host（开发调试）\n  --help, -h   显示帮助',
+      '用法：qwen-live-harness [init] [--debug]\n\n启动或复用服务，并打开桌面 Host。\n\n命令：\n  init --peers    配置本机 Qwen 终端会话，保留其他设置\n  doctor --peers  检查终端配置，不发送消息或开启通话\n\n选项：\n  --debug, -d  输出诊断日志，并保存含敏感内容的音频／视觉 Monitor 归档\n  --daemon-only  仅运行服务，不打开 Host（开发调试）\n  --help, -h   显示帮助',
   },
   'cli.reused': {
     en: 'Connected to the running Qwen Live Harness daemon.',
@@ -1144,12 +1144,16 @@ export const LIVE_MESSAGES = {
     'zh-CN': 'Qwen Live Harness 语音运行失败。{detail}',
   },
   'runtime.realtimeRecovering': {
-    en: 'Restoring the voice connection…',
-    'zh-CN': '正在恢复语音连接…',
+    en: 'Restoring the connection… Background tasks are still running.',
+    'zh-CN': '正在恢复连接…后台任务仍在运行。',
   },
-  'runtime.realtimeRecovered': {
-    en: 'The voice connection is restored. Please repeat your last request; I have not repeated any earlier actions.',
-    'zh-CN': '语音连接已恢复，请再说一遍刚才的请求；之前的操作没有重复执行。',
+  'runtime.realtimeRecoveryRepeat': {
+    en: 'Connection restored. Please repeat your last request.',
+    'zh-CN': '连接已恢复，请再说一遍刚才的请求。',
+  },
+  'runtime.realtimeRecoveryFailed': {
+    en: 'The connection could not be restored safely. Please start the interaction again.',
+    'zh-CN': '连接未能安全恢复，请重新开始交互。',
   },
   'runtime.realtimeDisconnected': {
     en: 'Qwen Live Harness voice disconnected.{detail}',

@@ -658,7 +658,7 @@ export async function waitForLiveLogEvents(
 }
 
 /**
- * For a single-tool continuation or a SPEAK_TO_USER item, wait for its next
+ * For a tool continuation, SPEAK_TO_USER item or permission context, wait for its next
  * response request to complete in Live, not just be sent by the fake provider.
  * The anchor must be from the current connection's inbox with no intervening
  * user turn. Handoff receipts do not themselves request a continuation.
@@ -666,7 +666,8 @@ export async function waitForLiveLogEvents(
 export async function waitForLiveResponseAfter(
   stack: Pick<LiveStack, 'fakeDash' | 'dataDir'>,
   anchor: JsonObject,
-  authority: 'tool_continuation' | 'backend_speech',
+  authority:
+    'tool_continuation' | 'backend_speech' | 'permission' | 'task_result',
 ): Promise<void> {
   const anchorIndex = stack.fakeDash.inbox.indexOf(anchor);
   if (anchorIndex < 0) throw new Error('Response anchor is not in the inbox');

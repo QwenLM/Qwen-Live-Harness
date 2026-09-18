@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolDispatcher } from './dispatcher.js';
 import type { ToolContext, ToolHandler } from './dispatcher.js';
+import type { RuntimeFailureSink } from '../log/runtime-failure.js';
 
 function makeContext(
   transcript: ToolContext['activeTranscript'] = [],
@@ -17,10 +18,12 @@ function makeContext(
 function makeDispatcher(
   handlers: Record<string, ToolHandler>,
   timeoutMs?: number,
+  onFailure?: RuntimeFailureSink,
 ): ToolDispatcher {
   return new ToolDispatcher({
     handlers: new Map(Object.entries(handlers)),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(onFailure ? { onFailure } : {}),
   });
 }
 
@@ -221,5 +224,302 @@ describe('ToolDispatcher', () => {
     await dispatcher.dispatch('capture', '{}', makeContext(transcript));
 
     expect(received?.activeTranscript).toBe(transcript);
+  });
+
+  it('reports an unknown tool without retaining arguments or conversation', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    const dispatcher = makeDispatcher({}, undefined, onFailure);
+    const result = await dispatcher.dispatch(
+      'mystery',
+      '{"secret":"PRIVATE-ARGUMENT"}',
+      makeContext([{ role: 'user', text: 'PRIVATE-CONVERSATION' }]),
+    );
+    expect(result).toEqual({
+      ok: false,
+      receipt: JSON.stringify({
+        status: 'error',
+        note: 'No handler for tool mystery.',
+      }),
+    });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+      source: 'tool',
+      code: 'tool_unknown',
+      stage: 'lookup',
+      impact: 'operation',
+      toolName: 'mystery',
+      message: 'The requested tool has no registered handler.',
+    });
+    expect(JSON.stringify(onFailure.mock.calls)).not.toMatch(
+      /PRIVATE-ARGUMENT|PRIVATE-CONVERSATION/,
+    );
+  });
+
+  it.each([
+    ['{"secret":"PRIVATE-ARGUMENT"', 'tool_arguments_invalid'],
+    ['["PRIVATE-ARGUMENT"]', 'tool_arguments_shape'],
+    ['"PRIVATE-ARGUMENT"', 'tool_arguments_shape'],
+    ['null', 'tool_arguments_shape'],
+    ['false', 'tool_arguments_shape'],
+    ['123', 'tool_arguments_shape'],
+  ])(
+    'reports %s as %s while still executing the existing empty-object fallback',
+    async (raw, code) => {
+      const onFailure = vi.fn<RuntimeFailureSink>();
+      const handler = vi.fn<ToolHandler>(() => ({ status: 'accepted' }));
+      const dispatcher = makeDispatcher(
+        { echo: handler },
+        undefined,
+        onFailure,
+      );
+      const ctx = makeContext();
+      expect(await dispatcher.dispatch('echo', raw, ctx)).toEqual({
+        ok: true,
+        receipt: '{"status":"accepted"}',
+      });
+      expect(handler).toHaveBeenCalledExactlyOnceWith({}, ctx);
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          source: 'tool',
+          code,
+          stage: 'arguments',
+          impact: 'operation',
+          toolName: 'echo',
+        }),
+      );
+      expect(JSON.stringify(onFailure.mock.calls)).not.toContain(
+        'PRIVATE-ARGUMENT',
+      );
+    },
+  );
+
+  it.each(['', '   ', '{"private":"PRIVATE-ARGUMENT"}'])(
+    'does not report a failure for valid or deliberately empty arguments: %s',
+    async (raw) => {
+      const onFailure = vi.fn<RuntimeFailureSink>();
+      const dispatcher = makeDispatcher(
+        { echo: () => ({ status: 'ok' }) },
+        undefined,
+        onFailure,
+      );
+      expect((await dispatcher.dispatch('echo', raw, makeContext())).ok).toBe(
+        true,
+      );
+      expect(onFailure).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reports handler failures with controlled diagnostics while preserving the existing error receipt', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    const message = 'PRIVATE-ERROR-BODY token=sk-test-secret\n\u001b[31m';
+    const handler = vi.fn<ToolHandler>(() => {
+      throw new TypeError(message);
+    });
+    const dispatcher = makeDispatcher(
+      { broken: handler },
+      undefined,
+      onFailure,
+    );
+    expect(await dispatcher.dispatch('broken', '{}', makeContext())).toEqual({
+      ok: false,
+      receipt: JSON.stringify({ status: 'error', note: message }),
+    });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'tool_handler_failed',
+        stage: 'handler',
+        toolName: 'broken',
+        errorName: 'TypeError',
+        executionUncertain: true,
+      }),
+    );
+    expect(JSON.stringify(onFailure.mock.calls)).not.toMatch(
+      /PRIVATE-ERROR-BODY|sk-test-secret|31m/,
+    );
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('distinguishes serialization failures after handler execution without retrying the handler', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    const circular: Record<string, unknown> = { body: 'PRIVATE-RESULT' };
+    circular['self'] = circular;
+    const handler = vi.fn<ToolHandler>(() => circular);
+    const dispatcher = makeDispatcher(
+      { cyclic: handler },
+      undefined,
+      onFailure,
+    );
+    const result = await dispatcher.dispatch('cyclic', '{}', makeContext());
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(result.receipt)).toMatchObject({
+      status: 'error',
+      note: expect.stringContaining('circular'),
+    });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'tool_result_serialization_failed',
+        stage: 'serialization',
+        errorName: 'TypeError',
+        executionUncertain: true,
+      }),
+    );
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain(
+      'PRIVATE-RESULT',
+    );
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('reports a business error receipt without changing the existing ok:true contract or retaining its note', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    const outcome = {
+      status: 'error',
+      note: 'PRIVATE-BUSINESS-NOTE',
+      headers: { Authorization: 'PRIVATE-HEADER' },
+    };
+    const dispatcher = makeDispatcher(
+      { reject: () => outcome },
+      undefined,
+      onFailure,
+    );
+    expect(await dispatcher.dispatch('reject', '{}', makeContext())).toEqual({
+      ok: true,
+      receipt: JSON.stringify(outcome),
+    });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'tool_business_rejected',
+        stage: 'result',
+        toolName: 'reject',
+        impact: 'operation',
+      }),
+    );
+    expect(JSON.stringify(onFailure.mock.calls)).not.toMatch(
+      /PRIVATE-BUSINESS-NOTE|PRIVATE-HEADER|Authorization/,
+    );
+  });
+
+  it('observes only the serialized receipt without reevaluating getters or toJSON', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    const toJSON = vi.fn(() => ({ status: 'error', note: 'fixture note' }));
+    const dispatcher = makeDispatcher(
+      { custom: () => ({ toJSON }) },
+      undefined,
+      onFailure,
+    );
+    expect(await dispatcher.dispatch('custom', '{}', makeContext())).toEqual({
+      ok: true,
+      receipt: '{"status":"error","note":"fixture note"}',
+    });
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledOnce();
+    onFailure.mockClear();
+    const outcome: Record<string, unknown> = { result: 'ok' };
+    const status = vi.fn(() => {
+      throw new Error('non-enumerable getter must not run');
+    });
+    Object.defineProperty(outcome, 'status', {
+      enumerable: false,
+      get: status,
+    });
+    expect(
+      await makeDispatcher(
+        { custom: () => outcome },
+        undefined,
+        onFailure,
+      ).dispatch('custom', '{}', makeContext()),
+    ).toEqual({ ok: true, receipt: '{"result":"ok"}' });
+    expect(status).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('reports timeout uncertainty but leaves late handler execution running', async () => {
+    vi.useFakeTimers();
+    const onFailure = vi.fn<RuntimeFailureSink>();
+    let finish!: (value: Record<string, unknown>) => void;
+    const completed = vi.fn();
+    const handler = vi.fn<ToolHandler>(() =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        finish = resolve;
+      }).then((value) => {
+        completed();
+        return value;
+      }),
+    );
+    const dispatcher = makeDispatcher({ slow: handler }, 50, onFailure);
+    const pending = dispatcher.dispatch('slow', '{}', makeContext());
+    await vi.advanceTimersByTimeAsync(50);
+    expect(JSON.parse((await pending).receipt).status).toBe('pending');
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        code: 'tool_timeout_pending',
+        stage: 'handler',
+        errorName: 'ToolTimeoutError',
+        executionUncertain: true,
+      }),
+    );
+    expect(completed).not.toHaveBeenCalled();
+    finish({ status: 'accepted' });
+    await Promise.resolve();
+    expect(completed).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledOnce();
+  });
+
+  it('contains observer exceptions across parser, handler, serialization, lookup and business failures', async () => {
+    const onFailure = vi.fn<RuntimeFailureSink>(() => {
+      throw new Error('diagnostic sink failed');
+    });
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    const echo = vi.fn<ToolHandler>(() => ({ status: 'accepted' }));
+    const dispatcher = makeDispatcher(
+      {
+        echo,
+        broken: () => {
+          throw new Error('handler failure');
+        },
+        cyclic: () => circular,
+        business: () => ({ status: 'error' }),
+      },
+      undefined,
+      onFailure,
+    );
+    expect(await dispatcher.dispatch('echo', '{broken', makeContext())).toEqual(
+      { ok: true, receipt: '{"status":"accepted"}' },
+    );
+    expect(await dispatcher.dispatch('echo', '[]', makeContext())).toEqual({
+      ok: true,
+      receipt: '{"status":"accepted"}',
+    });
+    expect((await dispatcher.dispatch('broken', '{}', makeContext())).ok).toBe(
+      false,
+    );
+    expect((await dispatcher.dispatch('cyclic', '{}', makeContext())).ok).toBe(
+      false,
+    );
+    expect((await dispatcher.dispatch('missing', '{}', makeContext())).ok).toBe(
+      false,
+    );
+    expect(await dispatcher.dispatch('business', '{}', makeContext())).toEqual({
+      ok: true,
+      receipt: '{"status":"error"}',
+    });
+    expect(echo).toHaveBeenCalledTimes(2);
+    expect(onFailure).toHaveBeenCalledTimes(6);
+  });
+
+  it('keeps the pending timeout receipt when the diagnostic sink throws', async () => {
+    vi.useFakeTimers();
+    const dispatcher = makeDispatcher(
+      { hang: () => new Promise<Record<string, unknown>>(() => {}) },
+      50,
+      () => {
+        throw new Error('diagnostic sink failed');
+      },
+    );
+    const pending = dispatcher.dispatch('hang', '{}', makeContext());
+    await vi.advanceTimersByTimeAsync(50);
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(result.receipt).status).toBe('pending');
   });
 });

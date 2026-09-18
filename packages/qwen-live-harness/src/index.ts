@@ -30,6 +30,12 @@ import {
 } from './i18n/messages.js';
 import { startCliApplication, type ManagedDaemon } from './cli-startup.js';
 import { StartupError } from './startup.js';
+import {
+  RuntimeFailureLog,
+  runtimeFailureSecrets,
+  sanitizeFailureMessage,
+} from './log/runtime-failure.js';
+import { resolveLiveDataDirectory } from './paths.js';
 
 export { loadConfig, type BackendConfig, type LiveConfig } from './config.js';
 export { LiveDaemon } from './daemon.js';
@@ -43,6 +49,10 @@ export type {
 
 async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
   const logger = new LiveLogger(debug ? 'debug' : undefined);
+  let config: ReturnType<typeof loadConfig> | undefined;
+  const failures = new RuntimeFailureLog(resolveLiveDataDirectory(), () =>
+    runtimeFailureSecrets(config),
+  );
   logger.info(liveText(preferredLanguage(), 'cli.starting'));
   if (logger.debugEnabled) {
     logger.debug(liveText(preferredLanguage(), 'cli.debugNotice'));
@@ -50,21 +60,39 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
   // A stray rejection in a background chain (event pump, auto-approval)
   // must be diagnosable, not process-fatal.
   process.on('unhandledRejection', (reason) => {
-    logger.error(
-      `unhandled rejection: ${
+    failures.write({
+      source: 'daemon',
+      code: 'unhandled_rejection',
+      stage: 'background_promise',
+      impact: 'operation',
+      message:
         reason instanceof Error
-          ? (reason.stack ?? reason.message)
-          : String(reason)
-      }`,
+          ? reason.message
+          : 'A background promise rejected.',
+      errorName: reason instanceof Error ? reason.name : undefined,
+      executionUncertain: true,
+    });
+    logger.error(
+      `unhandled rejection: ${sanitizeFailureMessage(reason instanceof Error ? reason.message : String(reason), runtimeFailureSecrets(config))}`,
     );
   });
-  let config: ReturnType<typeof loadConfig>;
   let daemon: ManagedDaemon | undefined;
   const startup = new AbortController();
   let startOperation: Promise<unknown> = Promise.resolve();
   try {
     config = loadConfig();
   } catch (error) {
+    failures.write({
+      source: 'daemon',
+      code: 'configuration_load_failed',
+      stage: 'configuration',
+      impact: 'daemon',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Configuration loading failed.',
+      errorName: error instanceof Error ? error.name : undefined,
+    });
     logger.error(
       displayLiveMessage(
         preferredLanguage(),
@@ -88,6 +116,14 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
       .then(() => daemon?.stopForProcessExit())
       .catch((error: unknown) => {
         exitCode = 1;
+        failures.write({
+          source: 'daemon',
+          code: 'process_shutdown_failed',
+          stage: 'shutdown',
+          impact: 'daemon',
+          message: error instanceof Error ? error.message : 'Shutdown failed.',
+          errorName: error instanceof Error ? error.name : undefined,
+        });
         logger.error(
           `shutdown failed: ${
             error instanceof Error ? error.message : String(error)
@@ -111,6 +147,7 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
       daemonOnly,
       signal: startup.signal,
       logger,
+      failureLog: failures,
       onDaemonCreated: (created) => {
         daemon = created;
       },
@@ -118,6 +155,16 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
     await startOperation;
   } catch (error) {
     if (shuttingDown) return;
+    failures.write({
+      source: 'daemon',
+      code:
+        error instanceof StartupError ? error.code : 'application_start_failed',
+      stage: 'application_start',
+      impact: 'daemon',
+      message:
+        error instanceof Error ? error.message : 'Application startup failed.',
+      errorName: error instanceof Error ? error.name : undefined,
+    });
     logger.error(
       displayLiveMessage(
         preferredLanguage(),

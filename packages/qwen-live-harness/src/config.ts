@@ -77,7 +77,10 @@ export interface VisualInputConfig {
 export interface ProactiveConfig {
   enabled: boolean;
   monitor: {
+    /** Media duration of one interleaved user turn, independent of polling. */
+    chunkDurationSec: number;
     sessionRecycleEvals: number;
+    representationCompact: 'none' | 'normal';
   };
   scheduler: {
     evalIntervalSec: number;
@@ -129,7 +132,7 @@ export interface LiveConfig {
 }
 
 const DEFAULT_REALTIME_ENDPOINT = 'https://dashscope.aliyuncs.com';
-const DEFAULT_REALTIME_MODEL = 'qwen3.5-omni-plus-realtime';
+export const DEFAULT_REALTIME_MODEL = 'qwen3.8-omni-flash-realtime';
 const DEFAULT_VISUAL_FPS = 1;
 const MIN_VISUAL_FPS = 0.1;
 const MAX_VISUAL_FPS = 10;
@@ -148,10 +151,12 @@ const SESSION_MODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   enabled: true,
   monitor: {
+    chunkDurationSec: 1,
     sessionRecycleEvals: 60,
+    representationCompact: 'normal',
   },
   scheduler: {
-    evalIntervalSec: 2,
+    evalIntervalSec: 1,
     maxFailuresPerTask: 3,
     repeat: {
       cooldownSec: 3,
@@ -160,7 +165,7 @@ export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
     },
   },
   vision: {
-    fps: 1,
+    fps: 2,
     windowSizeSec: 10,
     minEvalDurationSec: 0,
   },
@@ -435,7 +440,11 @@ const PROACTIVE_KEYS = [
   'vision',
   'audio',
 ] as const;
-const PROACTIVE_MONITOR_KEYS = ['sessionRecycleEvals'] as const;
+const PROACTIVE_MONITOR_KEYS = [
+  'chunkDurationSec',
+  'sessionRecycleEvals',
+  'representationCompact',
+] as const;
 const PROACTIVE_SCHEDULER_KEYS = [
   'evalIntervalSec',
   'maxConcurrentTasks',
@@ -634,9 +643,57 @@ function resolveProactive(
     );
   }
 
+  const representationCompact =
+    monitor['representationCompact'] === undefined
+      ? DEFAULT_PROACTIVE_CONFIG.monitor.representationCompact
+      : monitor['representationCompact'];
+  if (representationCompact !== 'none' && representationCompact !== 'normal') {
+    throw new Error(
+      `Invalid "proactive.monitor.representationCompact" in ${configPath}: ` +
+        `${JSON.stringify(representationCompact)} (expected "none" or "normal")`,
+    );
+  }
+
+  const chunkDurationSec = proactiveNumber(
+    monitor['chunkDurationSec'],
+    DEFAULT_PROACTIVE_CONFIG.monitor.chunkDurationSec,
+    'proactive.monitor.chunkDurationSec',
+    configPath,
+    0.1,
+    60,
+  );
+  const visionFps = proactiveNumber(
+    vision['fps'],
+    DEFAULT_PROACTIVE_CONFIG.vision.fps,
+    'proactive.vision.fps',
+    configPath,
+    0.1,
+    60,
+  );
+  if (chunkDurationSec * visionFps < 2) {
+    throw new Error(
+      `Invalid "proactive.vision.fps" in ${configPath}: ` +
+        'fps * proactive.monitor.chunkDurationSec must be at least 2 ' +
+        '(use fps: 2 with chunkDurationSec: 1, or a longer chunk).',
+    );
+  }
+  for (const [modality, windowSizeSec] of [
+    ['vision', visionWindowSizeSec],
+    ['audio', audioWindowSizeSec],
+  ] as const) {
+    if (windowSizeSec < chunkDurationSec) {
+      throw new Error(
+        `Invalid "proactive.${modality}.windowSizeSec" in ${configPath}: ` +
+          'must be at least proactive.monitor.chunkDurationSec.',
+      );
+    }
+  }
+
   return {
     enabled: resolveProactiveEnabled(env, proactive, configPath),
     monitor: {
+      chunkDurationSec,
+      representationCompact,
       sessionRecycleEvals: proactiveNumber(
         monitor['sessionRecycleEvals'],
         DEFAULT_PROACTIVE_CONFIG.monitor.sessionRecycleEvals,
@@ -704,14 +761,7 @@ function resolveProactive(
       },
     },
     vision: {
-      fps: proactiveNumber(
-        vision['fps'],
-        DEFAULT_PROACTIVE_CONFIG.vision.fps,
-        'proactive.vision.fps',
-        configPath,
-        0.1,
-        60,
-      ),
+      fps: visionFps,
       windowSizeSec: visionWindowSizeSec,
       minEvalDurationSec: visionMinEvalDurationSec,
     },

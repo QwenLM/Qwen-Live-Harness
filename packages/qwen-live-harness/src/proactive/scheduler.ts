@@ -48,6 +48,22 @@ interface RepeatState {
   awaitingFalse: boolean;
 }
 
+interface CooldownAudioDrops {
+  generation: number;
+  cooldownUntil: number;
+  frames: number;
+  bytes: number;
+}
+
+type EvaluationDecision =
+  | 'notification_accepted'
+  | 'notification_rejected'
+  | 'suppressed_awaiting_false'
+  | 'rearmed_false'
+  | 'ignored_cooldown'
+  | 'error'
+  | 'no_trigger';
+
 interface TimerRecord {
   generation: number;
   deadline: number;
@@ -118,6 +134,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
   private readonly evidence = new Map<string, MediaEvidence>();
   private readonly visualCaptureFailures = new Map<string, number>();
   private readonly repeats = new Map<string, RepeatState>();
+  private readonly cooldownAudioDrops = new Map<string, CooldownAudioDrops>();
   private readonly timers = new Map<string, TimerRecord>();
   private readonly deliveries = new Map<string, DeliveryRecord>();
   private readonly deliveryTimers = new Map<
@@ -203,6 +220,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     }
     this.closeMonitor(updated.taskId);
     this.visualCaptureFailures.delete(updated.taskId);
+    this.flushCooldownAudioDrops(updated.taskId, 'task_updated');
     this.repeats.delete(updated.taskId);
     const current = this.manager.mutate(
       updated.taskId,
@@ -271,10 +289,9 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     if (this.disposed || pcm16.byteLength === 0) return;
     const capturedAt = this.now();
     for (const task of this.manager.activePerceptionTasks()) {
-      if (
-        !task.modalities.includes('audio') ||
-        !this.resumeRepeatForMedia(task, capturedAt)
-      ) {
+      if (!task.modalities.includes('audio')) continue;
+      if (!this.resumeRepeatForMedia(task, capturedAt)) {
+        this.recordCooldownAudioDrop(task, capturedAt, pcm16.byteLength);
         continue;
       }
       const monitor = this.monitors.get(task.taskId);
@@ -286,22 +303,30 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
   }
 
   feedImage(jpegBase64: string): void {
+    this.forwardImage(jpegBase64, this.now(), true);
+  }
+
+  private forwardImage(
+    jpegBase64: string,
+    capturedAt: number,
+    rateLimit: boolean,
+  ): void {
     if (this.disposed || !jpegBase64) return;
-    const capturedAt = this.now();
     const minimumGap = 1_000 / this.options.config.vision.fps;
-    if (capturedAt - this.lastVisionAt < minimumGap) return;
+    if (rateLimit && capturedAt - this.lastVisionAt < minimumGap) return;
     const tasks = this.manager
       .activePerceptionTasks()
       .filter(
         (task) =>
           task.modalities.includes('vision') &&
+          task.createdAt <= capturedAt &&
           this.resumeRepeatForMedia(task, capturedAt),
       );
     if (tasks.length === 0) return;
-    this.lastVisionAt = capturedAt;
+    this.lastVisionAt = Math.max(this.lastVisionAt, capturedAt);
     for (const task of tasks) {
       const monitor = this.monitors.get(task.taskId);
-      if (!monitor?.feedImage(jpegBase64)) continue;
+      if (!monitor?.feedImage(jpegBase64, capturedAt)) continue;
       const state = this.evidenceFor(task.taskId);
       this.pruneEvidence(state, capturedAt);
       const lastFrame = state.vision.at(-1);
@@ -432,7 +457,10 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     try {
       const image = await this.options.captureVision?.();
       if (!image || image.trim().length === 0) return;
-      this.feedImage(image);
+      // The timer already samples at the configured rate. Throttling again
+      // using completion times drops valid frames under small capture jitter
+      // (e.g. 600ms then 1090ms), breaking a two-frame visual grid.
+      this.forwardImage(image, now, false);
       this.clearVisualCaptureFailures(tasks);
     } catch {
       this.recordVisualCaptureFailure(tasks);
@@ -512,6 +540,10 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
             audio: this.options.config.audio.windowSizeSec,
           },
           sessionRecycleEvals: this.options.config.monitor.sessionRecycleEvals,
+          representationCompact:
+            this.options.config.monitor.representationCompact,
+          chunkDurationSec: this.options.config.monitor.chunkDurationSec,
+          visionFps: this.options.config.vision.fps,
           monitorDebug: this.options.monitorDebug,
         },
         {
@@ -691,9 +723,15 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     ) {
       return;
     }
+    const observedRepeat = this.repeats.get(taskId);
     this.debug('proactive.evaluation_result', {
       taskId,
       generation,
+      status: task.status,
+      monitorMode: task.monitorMode,
+      repeat: task.repeat,
+      cooldownUntil: observedRepeat?.cooldownUntil ?? 0,
+      awaitingFalse: observedRepeat?.awaitingFalse ?? false,
       triggered: result.triggered,
       failed: Boolean(result.error),
       summaryChars: result.summary.length,
@@ -702,6 +740,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     const repeat = this.repeats.get(taskId);
     if (repeat && repeat.cooldownUntil > 0) {
       this.resumeRepeatForMedia(task, this.now());
+      this.debugEvaluationDecision(task, 'ignored_cooldown');
       return;
     }
     if (result.error) {
@@ -716,6 +755,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
       ) {
         this.failTask(taskId, generation, 'Maximum monitor failures exceeded.');
       }
+      this.debugEvaluationDecision(task, 'error');
       return;
     }
     this.manager.mutate(taskId, generation, (current) => {
@@ -725,10 +765,21 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     });
     if (task.repeat && task.monitorMode === 'event' && repeat?.awaitingFalse) {
       if (!result.triggered) repeat.awaitingFalse = false;
+      this.debugEvaluationDecision(
+        task,
+        result.triggered ? 'suppressed_awaiting_false' : 'rearmed_false',
+      );
       return;
     }
-    if (!result.triggered) return;
-    this.trigger(task, result.summary, task.modalities);
+    if (!result.triggered) {
+      this.debugEvaluationDecision(task, 'no_trigger');
+      return;
+    }
+    const accepted = this.trigger(task, result.summary, task.modalities);
+    this.debugEvaluationDecision(
+      task,
+      accepted ? 'notification_accepted' : 'notification_rejected',
+    );
   }
 
   private onMonitorLifecycleError(
@@ -760,13 +811,13 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     task: ProactiveTask,
     summary: string,
     sourceModalities: readonly string[],
-  ): void {
+  ): boolean {
     const delivering = this.manager.beginDelivery(
       task.taskId,
       task.generation,
       summary,
     );
-    if (!delivering) return;
+    if (!delivering) return false;
     const interventionText =
       delivering.taskType === 'perception_monitor'
         ? delivering.interventionText
@@ -793,7 +844,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
         delivering.generation,
         'Proactive event exceeds the foreground response limit.',
       );
-      return;
+      return false;
     }
     this.deliveries.set(deliveryId, { delivery, status: 'queued' });
     this.notifyTaskId(delivering.taskId);
@@ -803,8 +854,21 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
           this.now() + this.options.config.scheduler.repeat.cooldownSec * 1_000,
         awaitingFalse: delivering.monitorMode === 'event',
       });
+      this.debug('proactive.cooldown_started', {
+        taskId: delivering.taskId,
+        generation: delivering.generation,
+        monitorMode: delivering.monitorMode,
+        cooldownUntil: this.repeats.get(delivering.taskId)!.cooldownUntil,
+        awaitingFalse: delivering.monitorMode === 'event',
+      });
       this.clearTaskEvidence(delivering.taskId);
       this.monitors.get(delivering.taskId)?.resetPendingCapture();
+      this.debug('proactive.buffer_reset', {
+        taskId: delivering.taskId,
+        generation: delivering.generation,
+        reason: 'repeat_trigger',
+        residentHistoryRetained: true,
+      });
     } else if (delivering.taskType === 'perception_monitor') {
       this.closeMonitor(delivering.taskId);
       this.evidence.delete(delivering.taskId);
@@ -821,13 +885,14 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     }
     if (!accepted) {
       this.failDelivery(delivery, 'Proactive event delivery was rejected.');
-      return;
+      return false;
     }
     this.debug('proactive.event_queued', {
       taskId: delivery.taskId,
       deliveryId: delivery.deliveryId,
       generation: delivery.taskGeneration,
     });
+    return true;
   }
 
   private resumeRepeatForMedia(task: PerceptionTask, now: number): boolean {
@@ -836,10 +901,27 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     const repeat = this.repeats.get(task.taskId);
     if (!repeat || repeat.cooldownUntil === 0) return true;
     if (repeat.cooldownUntil > now) return false;
+    const previousCooldownUntil = repeat.cooldownUntil;
     repeat.cooldownUntil = 0;
+    this.flushCooldownAudioDrops(task.taskId, 'cooldown_resumed');
+    this.debug('proactive.cooldown_resumed', {
+      taskId: task.taskId,
+      generation: task.generation,
+      cooldownUntil: previousCooldownUntil,
+      resumedAt: now,
+      awaitingFalse: repeat.awaitingFalse,
+      clearBufferOnResume:
+        this.options.config.scheduler.repeat.clearBufferOnResume,
+    });
     if (this.options.config.scheduler.repeat.clearBufferOnResume) {
       this.clearTaskEvidence(task.taskId);
       this.monitors.get(task.taskId)?.resetPendingCapture();
+      this.debug('proactive.buffer_reset', {
+        taskId: task.taskId,
+        generation: task.generation,
+        reason: 'cooldown_resume',
+        residentHistoryRetained: true,
+      });
     }
     return true;
   }
@@ -964,6 +1046,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     this.clearTimer(taskId);
     this.evidence.delete(taskId);
     this.visualCaptureFailures.delete(taskId);
+    this.flushCooldownAudioDrops(taskId, 'task_ended');
     this.repeats.delete(taskId);
     this.diagnosticStates.delete(`state:${taskId}`);
     this.diagnosticStates.delete(`gate:${taskId}`);
@@ -1023,6 +1106,59 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     } catch {
       // Diagnostics must not change task admission or delivery.
     }
+  }
+
+  private debugEvaluationDecision(
+    task: PerceptionTask,
+    decision: EvaluationDecision,
+  ): void {
+    if (!this.options.debug) return;
+    const current = this.manager.get(task.taskId);
+    const repeat = this.repeats.get(task.taskId);
+    this.debug('proactive.evaluation_decision', {
+      taskId: task.taskId,
+      generation: task.generation,
+      decision,
+      status: current?.status ?? task.status,
+      monitorMode: task.monitorMode,
+      repeat: task.repeat,
+      cooldownUntil: repeat?.cooldownUntil ?? 0,
+      awaitingFalse: repeat?.awaitingFalse ?? false,
+    });
+  }
+
+  private recordCooldownAudioDrop(
+    task: PerceptionTask,
+    capturedAt: number,
+    bytes: number,
+  ): void {
+    if (!this.options.debug || task.status !== 'running') return;
+    const repeat = this.repeats.get(task.taskId);
+    if (!repeat || repeat.cooldownUntil <= capturedAt) return;
+    const dropped = this.cooldownAudioDrops.get(task.taskId) ?? {
+      generation: task.generation,
+      cooldownUntil: repeat.cooldownUntil,
+      frames: 0,
+      bytes: 0,
+    };
+    dropped.frames += 1;
+    dropped.bytes += bytes;
+    this.cooldownAudioDrops.set(task.taskId, dropped);
+  }
+
+  private flushCooldownAudioDrops(taskId: string, reason: string): void {
+    const dropped = this.cooldownAudioDrops.get(taskId);
+    if (!dropped) return;
+    this.cooldownAudioDrops.delete(taskId);
+    this.debug('proactive.cooldown_audio_dropped', {
+      taskId,
+      generation: dropped.generation,
+      reason,
+      cooldownUntil: dropped.cooldownUntil,
+      audioFrames: dropped.frames,
+      audioBytes: dropped.bytes,
+      audioMs: (dropped.bytes / (QWEN_REALTIME_INPUT_SAMPLE_RATE * 2)) * 1_000,
+    });
   }
 
   private debugGate(

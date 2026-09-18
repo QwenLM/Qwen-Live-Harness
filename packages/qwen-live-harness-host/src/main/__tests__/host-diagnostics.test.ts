@@ -16,7 +16,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { createHostDiagnosticsLogger } from '../host-diagnostics.ts';
+import {
+  createHostDiagnosticsLogger,
+  daemonConnectionDiagnostic,
+  hostDiagnosticErrorName,
+} from '../host-diagnostics.ts';
 
 let temporaryDirectory: string;
 let logDirectory: string;
@@ -65,6 +69,144 @@ describe('persistent Host failure diagnostics', () => {
     logger.write('capture_start_stage', { stage: 'microphone' });
     logger.write('unknown_failure_with_private_data');
     assert.equal(existsSync(logDirectory), false);
+  });
+
+  it('ignores healthy connection snapshots and intentional Quit disconnections', () => {
+    const logger = createHostDiagnosticsLogger(logDirectory);
+    for (const phase of ['disconnected', 'connecting', 'ready']) {
+      logger.write(
+        'daemon_connection',
+        daemonConnectionDiagnostic({ phase }, false),
+      );
+    }
+    for (const phase of [
+      'disconnected',
+      'connecting',
+      'ready',
+      'error',
+      'incompatible',
+    ]) {
+      logger.write(
+        'daemon_connection',
+        daemonConnectionDiagnostic(
+          { phase, error: 'daemon_disconnected' },
+          true,
+        ),
+      );
+    }
+    assert.equal(existsSync(logDirectory), false);
+  });
+
+  it('retains safe daemon connection failures without copying provider messages', () => {
+    const logger = createHostDiagnosticsLogger(logDirectory);
+    for (const snapshot of [
+      { phase: 'error', error: 'daemon_connection' },
+      { phase: 'incompatible', error: 'host_version' },
+      { phase: 'disconnected', error: 'daemon_disconnected' },
+      { phase: 'error', error: 'daemon_reconnect_exhausted' },
+      { phase: 'error', error: 'discovery_permissions' },
+      { phase: 'ready', error: 'sk-test-secret /private/user/path' },
+      { phase: 'error' },
+    ]) {
+      logger.write(
+        'daemon_connection',
+        daemonConnectionDiagnostic(snapshot, false),
+      );
+    }
+    const text = readFileSync(activePath, 'utf8');
+    const entries = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(entries.length, 7);
+    assert.deepEqual(
+      entries.map(({ phase, code }) => ({ phase, code })),
+      [
+        { phase: 'error', code: 'daemon_connection' },
+        { phase: 'incompatible', code: 'host_version' },
+        { phase: 'disconnected', code: 'daemon_disconnected' },
+        { phase: 'error', code: 'daemon_reconnect_exhausted' },
+        { phase: 'error', code: 'discovery_permissions' },
+        { phase: 'ready', code: 'daemon_error' },
+        { phase: 'error', code: undefined },
+      ],
+    );
+    assert(!text.includes('sk-test-secret'));
+    assert(!text.includes('/private/user/path'));
+  });
+
+  it('retains permission and visual/audio interruption codes without media or error text', () => {
+    const logger = createHostDiagnosticsLogger(logDirectory);
+    const cases = [
+      ['camera_permission_error', 'camera_permission_request_failed', 'camera'],
+      [
+        'permission_request_failed',
+        'microphone_permission_request_failed',
+        'microphone',
+      ],
+      ['permission_denied', 'camera_permission_denied', 'camera'],
+      ['permission_denied', 'microphone_permission_denied', 'microphone'],
+      ['permission_revoked', 'camera_permission_revoked', 'camera'],
+      ['permission_revoked', 'microphone_permission_revoked', 'microphone'],
+      [
+        'permission_revoked',
+        'accessibility_permission_revoked',
+        'accessibility',
+      ],
+      [
+        'permission_revoked',
+        'screen_recording_permission_revoked',
+        'screenRecording',
+      ],
+      ['audio_capture_failed', 'audio_transport_rejected', undefined],
+      ['camera_capture_error', 'camera_track_ended', undefined],
+      ['visual_capture_error', 'screen_frame_too_large', undefined],
+      ['audio_output_finish_failed', 'audio_output_finish_failed', undefined],
+    ] as const;
+    for (const [event, code, permission] of cases) {
+      logger.write(event, {
+        code,
+        permission,
+        errorName: 'NotAllowedError',
+        epoch: 5,
+        outputId: 8,
+        message: 'private media device and path',
+      });
+    }
+    const text = readFileSync(activePath, 'utf8');
+    const entries = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      entries.map(({ event, code, permission }) => [event, code, permission]),
+      cases,
+    );
+    assert.equal(entries[0].errorName, 'NotAllowedError');
+    assert.equal(entries[0].epoch, 5);
+    assert.equal(entries[0].outputId, 8);
+    assert(!text.includes('private media'));
+  });
+
+  it('normalizes unexpected error names before forwarding diagnostics', () => {
+    assert.equal(
+      hostDiagnosticErrorName(new TypeError('private')),
+      'TypeError',
+    );
+    assert.equal(
+      hostDiagnosticErrorName(new DOMException('private', 'NotAllowedError')),
+      'NotAllowedError',
+    );
+    assert.equal(
+      hostDiagnosticErrorName(
+        Object.assign(new Error('private'), { name: 'sk-secret' }),
+      ),
+      'Error',
+    );
+    assert.equal(
+      hostDiagnosticErrorName({ name: 'TypeError', message: 'private' }),
+      'Error',
+    );
   });
 
   it('records the failing capture stage but ignores an ordinary user cancellation', () => {

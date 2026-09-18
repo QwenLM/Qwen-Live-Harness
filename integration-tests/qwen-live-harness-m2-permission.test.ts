@@ -9,8 +9,8 @@
  *
  * A real `qwen serve` session (approval mode `default`) hits a `write_file`
  * tool call, which raises a daemon permission_request. The qwen-live-harness
- * orchestrator must inject a `[PERMISSION req_1]` context item plus a spoken
- * ask into the realtime conversation; the voice model's
+ * orchestrator must inject quoted `[PERMISSION]` facts and request a dedicated
+ * model-authored question in the user's language; the voice model's
  * `respond_permission {decision:"allow"}` call must be delivered back to
  * serve as a vote, after which the tool runs and the turn completes.
  *
@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fakeToolCall } from './fake-openai-server.js';
 import {
   contextTextOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
@@ -118,17 +119,7 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
         description: 'the warmup [COMPLETE] injection',
       },
     );
-    const warmupSpoken = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text?.startsWith('[SPEAK_TO_USER] ') === true &&
-          text.includes('warmup done')
-        );
-      },
-      { fromIndex: stack.fakeDash.inbox.indexOf(warmupComplete) + 1 },
-    );
-    await waitForLiveResponseAfter(stack, warmupSpoken, 'backend_speech');
+    await waitForLiveResponseAfter(stack, warmupComplete, 'task_result');
 
     // Pin the approval mode of the orchestrator-created session so the
     // write below deterministically raises a permission_request.
@@ -166,37 +157,22 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
     expect(receipt['status']).toBe('accepted');
     const job = String(receipt['job']);
 
-    // The ask reaches the voice model: silent [PERMISSION req_1] context…
+    // The ask carries structured facts into a dedicated permission response.
     const permissionMessage = await stack.fakeDash.waitForMessage(
-      (message) =>
-        contextTextOf(message)?.includes('[PERMISSION req_1]') ?? false,
+      (message) => permissionPayloadOf(message)?.request_id === 'req_1',
       {
         timeoutMs: 30_000,
         fromIndex: inboxIndex,
-        description: 'the [PERMISSION req_1] context injection',
+        description: 'the [PERMISSION] JSON context injection for req_1',
       },
     );
     const permissionText = contextTextOf(permissionMessage)!;
-    expect(permissionText).toContain('respond_permission');
-    expect(permissionText).toContain('wants to run');
-    // …plus a spoken ask ([SPEAK_TO_USER] speech request).
-    const speakMessage = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return (
-          text !== undefined &&
-          text.startsWith('[SPEAK_TO_USER] ') &&
-          text.includes('Should I allow it?')
-        );
-      },
-      {
-        timeoutMs: 15_000,
-        fromIndex: inboxIndex,
-        description: 'the spoken permission ask',
-      },
-    );
-    expect(contextTextOf(speakMessage)).toBeDefined();
-    await waitForLiveResponseAfter(stack, speakMessage, 'backend_speech');
+    expect(permissionPayloadOf(permissionMessage)).toMatchObject({
+      request_id: 'req_1',
+      action: expect.any(String),
+    });
+    expect(permissionText).not.toContain('[SPEAK_TO_USER]');
+    await waitForLiveResponseAfter(stack, permissionMessage, 'permission');
 
     // The user says yes: respond_permission must deliver the vote to serve.
     const voteIndex = stack.fakeDash.inbox.length;

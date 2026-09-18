@@ -20,8 +20,13 @@ const FAILURE_EVENTS = new Set([
   'audio_capture_timeout',
   'capture_start_failed',
   'audio_output_failed',
+  'audio_output_finish_failed',
   'output_start_failed',
   'camera_capture_error',
+  'camera_permission_error',
+  'permission_request_failed',
+  'permission_denied',
+  'permission_revoked',
   'visual_capture_error',
   'renderer_unresponsive',
   'renderer_process_gone',
@@ -34,9 +39,11 @@ const FAILURE_EVENTS = new Set([
   'daemon_identity_check_failed',
   'daemon_stop_marker_invalid',
   'daemon_launch_profile_mismatch',
+  'daemon_connection',
 ]);
 const NUMERIC_FIELDS = [
   'epoch',
+  'outputId',
   'durationMs',
   'exitCode',
   'errorCode',
@@ -52,6 +59,9 @@ const LABEL_FIELDS = [
   'blocker',
   'inputError',
   'outputError',
+  'errorName',
+  'phase',
+  'permission',
 ];
 // Values are machine labels, never Error.message, device names, paths, or media.
 // An unknown value is omitted; the event itself still identifies the failure.
@@ -59,6 +69,7 @@ const SAFE_LABELS = new Set([
   'AbortError',
   'Error',
   'TypeError',
+  'RangeError',
   'SyntaxError',
   'ReferenceError',
   'SecurityError',
@@ -74,6 +85,8 @@ const SAFE_LABELS = new Set([
   'audio_unavailable',
   'audio_input_unavailable',
   'audio_output_unavailable',
+  'audio_output_finish_failed',
+  'audio_transport_rejected',
   'audio_capture_start_timeout',
   'audio_output_start_timeout',
   'audio_readiness_timeout',
@@ -84,11 +97,21 @@ const SAFE_LABELS = new Set([
   'audio_input_probe_timeout',
   'audio_close_timeout',
   'camera_unavailable',
+  'camera_track_ended',
   'camera_ready_timeout',
   'camera_snapshot_frame_timeout',
   'camera_preview_restore_failed',
   'camera_permission_required',
+  'camera_permission_request_failed',
+  'microphone_permission_request_failed',
+  'camera_permission_denied',
+  'microphone_permission_denied',
+  'camera_permission_revoked',
+  'microphone_permission_revoked',
+  'accessibility_permission_revoked',
+  'screen_recording_permission_revoked',
   'screen_failed',
+  'screen_frame_too_large',
   'screen_capture_unavailable',
   'jpeg_read_failed',
   'jpeg_encode_failed',
@@ -96,6 +119,8 @@ const SAFE_LABELS = new Set([
   'first_frame',
   'readiness',
   'microphone',
+  'accessibility',
+  'screenRecording',
   'worklet',
   'resume',
   'output',
@@ -130,11 +155,53 @@ const SAFE_LABELS = new Set([
   'host_disconnected',
   'host_missing',
   'host_version',
+  'daemon_error',
+  'daemon_connection',
+  'daemon_disconnected',
+  'daemon_identity',
+  'daemon_reconnect_exhausted',
+  'discovery_unreadable',
+  'discovery_not_regular_file',
+  'discovery_permissions',
+  'discovery_owner',
+  'discovery_size',
+  'discovery_json',
+  'discovery_shape',
+  'discovery_protocol',
+  'discovery_url',
   'provider_config',
   'provider_unreachable',
   'camera',
   'screen',
 ]);
+
+/** Connection messages can contain provider text; retain only known labels. */
+export function daemonConnectionDiagnostic(
+  snapshot: { phase: string; error?: string },
+  intentional: boolean,
+): Readonly<Record<string, unknown>> {
+  return {
+    phase: snapshot.phase,
+    intentional,
+    failed: Boolean(snapshot.error),
+    ...(snapshot.error
+      ? {
+          code: SAFE_LABELS.has(snapshot.error)
+            ? snapshot.error
+            : 'daemon_error',
+        }
+      : {}),
+  };
+}
+
+/** Error names are optional diagnostics, never an avenue for arbitrary text. */
+export function hostDiagnosticErrorName(error: unknown): string {
+  return error instanceof Error &&
+    SAFE_LABELS.has(error.name) &&
+    error.name.endsWith('Error')
+    ? error.name
+    : 'Error';
+}
 
 export interface HostDiagnosticsLogger {
   write(event: string, details?: Readonly<Record<string, unknown>>): void;
@@ -185,6 +252,14 @@ export function createHostDiagnosticsLogger(
       let descriptor: number | undefined;
       try {
         if (!FAILURE_EVENTS.has(event)) return;
+        if (
+          event === 'daemon_connection' &&
+          (details['intentional'] === true ||
+            (details['phase'] !== 'error' &&
+              details['phase'] !== 'incompatible' &&
+              details['failed'] !== true))
+        )
+          return;
         if (
           event === 'capture_start_failed' &&
           details['code'] === 'AbortError'

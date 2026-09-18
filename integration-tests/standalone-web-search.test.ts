@@ -58,7 +58,10 @@ function searchPayload(message: Json): Json | undefined {
 }
 
 /** Only real daemon/ACP framing is exercised; providers and devices are synthetic. */
-async function fixture(withBackend = false) {
+async function fixture(
+  withBackend = false,
+  model = 'qwen3.8-omni-flash-realtime',
+) {
   const directory = await mkdtemp(
     join(tmpdir(), 'qwen-live-search-integration-'),
   );
@@ -82,7 +85,7 @@ async function fixture(withBackend = false) {
     discoveryDir,
     cwd: directory,
     realtimeEndpoint: fakeDash.url,
-    model: 'qwen3.5-omni-plus-realtime',
+    model,
     env: { PATH: '' },
     initialConfig: {
       backends: withBackend
@@ -293,13 +296,31 @@ async function fixture(withBackend = false) {
 }
 
 describe('asynchronous native search and result delivery', () => {
-  it.each([false, true])(
-    'accepts native search and answers separately with backend configured=%s',
-    async (withBackend) => {
-      const f = await fixture(withBackend);
+  it.each(
+    [
+      'qwen3.8-omni-flash-realtime',
+      'example-omni-realtime-deployment',
+      'custom-realtime-deployment',
+    ].flatMap((model) =>
+      [false, true].map((withBackend) => ({ model, withBackend })),
+    ),
+  )(
+    'accepts native search and answers separately with model=$model and backend configured=$withBackend',
+    async ({ model, withBackend }) => {
+      const f = await fixture(withBackend, model);
       const query = 'Find the current synthetic public information.';
       const accepted = await f.search(query, 'native-query');
       const native = await f.nativeConnection(query);
+      expect(f.conn.model).toBe(model);
+      expect(native.model).toBe(model);
+      expect(native.requestUrl).toBe(f.conn.requestUrl);
+      expect(native.authorization).toBe(f.conn.authorization);
+      expect(native.authorization).toMatch(/^Bearer .+/u);
+      expect(
+        f.conn.inbox.find((message) => message['type'] === 'session.update')?.[
+          'session'
+        ],
+      ).toMatchObject({ smooth_output: false });
       const task = (await f.page()).snapshot.tasks.find(
         (value) => value.id === accepted.taskId,
       );
@@ -322,11 +343,12 @@ describe('asynchronous native search and result delivery', () => {
       expect(updates).toHaveLength(1);
       expect(updates[0]?.['session']).toMatchObject({
         modalities: ['text'],
+        voice: 'Tina',
+        smooth_output: false,
         tools: [],
         enable_search: true,
         search_options: { enable_source: true },
       });
-      expect(updates[0]?.['session']).not.toHaveProperty('voice');
       expect(
         native.inbox.filter(
           (message) => message['type'] === 'conversation.item.create',
@@ -408,7 +430,7 @@ describe('asynchronous native search and result delivery', () => {
   });
 
   it('uses a fresh real Harness job for a failed search without touching an existing work session', async () => {
-    const f = await fixture(true);
+    const f = await fixture(true, 'example-omni-realtime-deployment');
     const created = JSON.parse(
       (
         await f.invoke(
@@ -434,7 +456,7 @@ describe('asynchronous native search and result delivery', () => {
       f.dataDir,
       (event) =>
         event.type === 'response.done' &&
-        event.payload['authority'] === 'backend_speech',
+        event.payload['authority'] === 'task_result',
     );
     const query = 'Find the current public release date.';
     const accepted = await f.search(query, 'fallback-query');
@@ -574,7 +596,7 @@ describe('asynchronous native search and result delivery', () => {
       f.dataDir,
       (event) =>
         event.type === 'response.done' &&
-        event.payload['authority'] === 'backend_speech',
+        event.payload['authority'] === 'permission',
     );
 
     const query = 'permission: a separate read-only public lookup';

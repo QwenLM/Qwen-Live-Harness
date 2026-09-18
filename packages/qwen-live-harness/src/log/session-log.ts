@@ -5,10 +5,9 @@
  */
 
 /**
- * Append-only JSONL log for one live session. This is the only durable
- * record of a call (the harness no longer records live conversations), and
- * doubles as the timing-bug forensics source: event names line up with the
- * orchestrator's state machine.
+ * Append-only JSONL log for one live session. Records conversation/control
+ * metadata; opt-in Monitor debug media lives in separate archives. It also
+ * serves as a timing-bug forensics source for the orchestrator state machine.
  *
  * Redaction rules: never log API keys or raw audio; screenshots are logged
  * as asset ids, not bytes.
@@ -30,14 +29,19 @@ export type SessionLogEventType =
   | 'session.end'
   | 'vad.speech_started'
   | 'vad.speech_stopped'
+  | 'audio.input_mute_changed'
+  | 'audio.input_heartbeat'
   | 'transcript.user'
   | 'transcript.assistant'
   | 'response.created'
   | 'response.done'
   | 'response.cancelled'
+  | 'realtime.protocol'
   | 'tool.call'
   | 'tool.result'
   | 'backend.event'
+  | 'proactive.debug'
+  | 'failure'
   | 'instruction.delivery'
   | 'session.report'
   | 'inject.context'

@@ -16,6 +16,7 @@ import {
 } from '../realtime/realtime-session.js';
 import type { SocketLike } from '../realtime/socket.js';
 import type {
+  MonitorAudioOrigin,
   MonitorDebugRecorder,
   MonitorDebugStore,
 } from './monitor-debug-store.js';
@@ -28,9 +29,10 @@ import {
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const EVALUATION_TIMEOUT_MS = 30_000;
-const SILENCE_PCM = Buffer.alloc(16_000 * 2 * 0.1);
 const MAX_RECENT_INPUTS = 4_096;
 const MAX_PROVIDER_METADATA_CHARS = 256;
+const PCM_BYTES_PER_SECOND = QWEN_REALTIME_INPUT_SAMPLE_RATE * 2;
+const MAX_CAPTURE_GAP_MS = 250;
 
 type MonitorModality = 'audio' | 'vision';
 
@@ -39,6 +41,7 @@ interface RecentAudio {
   capturedAt: number;
   modality: 'audio';
   payload: Uint8Array;
+  origin?: MonitorAudioOrigin;
 }
 
 interface RecentImage {
@@ -49,6 +52,14 @@ interface RecentImage {
 }
 
 type RecentInput = RecentAudio | RecentImage;
+
+interface CaptureChunk {
+  inputs: RecentInput[];
+  consumedAudio: Map<number, number>;
+  consumedImages: Set<number>;
+  startAt: number;
+  endAt: number;
+}
 
 interface ProviderMessage extends Record<string, unknown> {
   type?: unknown;
@@ -65,6 +76,9 @@ export interface DashScopeRealtimeMonitorOptions {
   modalities: readonly MonitorModality[];
   contextWindowSec: Record<MonitorModality, number>;
   sessionRecycleEvals: number;
+  representationCompact: 'none' | 'normal';
+  chunkDurationSec: number;
+  visionFps: number;
   monitorDebug?: MonitorDebugStore;
 }
 
@@ -94,7 +108,7 @@ export interface DashScopeRealtimeMonitorDeps {
 export interface ProactiveRealtimeMonitor {
   start(): Promise<void>;
   feedAudio(pcm16: Uint8Array): boolean;
-  feedImage(jpegBase64: string): boolean;
+  feedImage(jpegBase64: string, capturedAt?: number): boolean;
   requestEvaluation(): boolean;
   resetPendingCapture(): void;
   close(): void;
@@ -214,6 +228,9 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   private readonly evaluationTimeoutMs: number;
   private readonly maxQueuedInputs: number;
   private readonly modalities: ReadonlySet<MonitorModality>;
+  private readonly representationCompact: 'none' | 'normal';
+  private readonly chunkAudioBytes: number;
+  private readonly chunkImageFrames: number;
   private socket: SocketLike | undefined;
   private debugRecorder: MonitorDebugRecorder | undefined;
   private transportGeneration = 0;
@@ -224,12 +241,28 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   private evaluationPhase:
     'idle' | 'commit_pending' | 'response_requested' | 'responding' = 'idle';
   private activeResponseId: string | undefined;
+  private providerSessionId: string | undefined;
+  private responseEventId: string | undefined;
+  private responseUsage: Record<string, unknown> | undefined;
   private deltaText = '';
   private finalText = '';
   private evaluationCount = 0;
   private evaluationTimer: ReturnType<typeof setTimeout> | undefined;
   private recentInputs: RecentInput[] = [];
   private writerQueue: RecentInput[] = [];
+  private pendingChunk: CaptureChunk | undefined;
+  private readonly inputDrops = new Map<
+    string,
+    {
+      count: number;
+      audioBytes: number;
+      imageFrames: number;
+      firstCapturedAt: number;
+      lastCapturedAt: number;
+      firstSequence: number;
+      lastSequence: number;
+    }
+  >();
   private nextSequence = 0;
   private audioInCurrentBuffer = false;
   private inputImageFrames = 0;
@@ -251,6 +284,18 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     deps: DashScopeRealtimeMonitorDeps = {},
   ) {
     this.modalities = new Set(options.modalities);
+    // Provider video settings are fixed for the monitor, including recycles.
+    this.representationCompact = options.representationCompact;
+    this.chunkAudioBytes = Math.max(
+      2,
+      Math.round(options.chunkDurationSec * QWEN_REALTIME_INPUT_SAMPLE_RATE) *
+        2,
+    );
+    // A video grid requires at least two actual frames, never duplicated images.
+    this.chunkImageFrames = Math.max(
+      2,
+      Math.ceil(options.chunkDurationSec * options.visionFps),
+    );
     this.now = deps.now ?? Date.now;
     this.connectTimeoutMs = deps.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.evaluationTimeoutMs =
@@ -289,6 +334,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   }
 
   feedAudio(pcm16: Uint8Array): boolean {
+    if (this.closed) return false;
     if (!this.modalities.has('audio')) return true;
     if (
       pcm16.byteLength === 0 ||
@@ -304,30 +350,27 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       payload: Uint8Array.from(pcm16),
     };
     this.remember(input);
-    if (!this.ready || this.needsRecycle) return true;
-    if (!this.enqueueWriterInput(input)) return false;
-    this.drainWriterQueue();
     return true;
   }
 
-  feedImage(jpegBase64: string): boolean {
+  feedImage(jpegBase64: string, capturedAt = this.now()): boolean {
+    if (this.closed) return false;
     if (!this.modalities.has('vision')) return true;
     if (!isBoundedJpegBase64(jpegBase64)) return false;
     const input: RecentImage = {
       sequence: ++this.nextSequence,
-      capturedAt: this.now(),
+      capturedAt,
       modality: 'vision',
       payload: jpegBase64,
     };
     this.remember(input);
-    if (!this.ready || this.needsRecycle) return true;
-    if (!this.enqueueWriterInput(input)) return false;
-    this.drainWriterQueue();
     return true;
   }
 
   requestEvaluation(): boolean {
     if (this.closed) return false;
+    this.pruneRecentInputs();
+    this.flushInputDrops();
     if (this.needsRecycle) {
       this.beginRecycle();
       return false;
@@ -335,17 +378,46 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     if (!this.ready || this.recycling || this.evaluationPhase !== 'idle') {
       return false;
     }
+    if (this.socketIsBackpressured()) return false;
+    if (!this.pendingChunk) {
+      const chunk = this.prepareChunk();
+      if (!chunk) return false;
+      this.pendingChunk = chunk;
+      this.writerQueue = [...chunk.inputs];
+      this.debug('proactive.monitor_chunk_prepared', {
+        chunkStartAt: chunk.startAt,
+        chunkEndAt: chunk.endAt,
+        chunkDurationSec: this.options.chunkDurationSec,
+        imageFrames: chunk.inputs.filter((input) => input.modality === 'vision')
+          .length,
+        audioBytes: this.chunkAudioBytes,
+        audioOrigin: this.modalities.has('audio')
+          ? 'microphone'
+          : 'protocol_silence',
+      });
+    }
     if (!this.drainWriterQueue() || this.writerQueue.length > 0) return false;
     if (this.socketIsBackpressured()) return false;
     this.evaluationPhase = 'commit_pending';
     this.evaluationSequence += 1;
     this.activeResponseId = undefined;
+    this.responseEventId = undefined;
+    this.responseUsage = undefined;
     this.deltaText = '';
     this.finalText = '';
-    if (
-      !this.appendSilence() ||
-      !this.send({ type: 'input_audio_buffer.commit' })
-    ) {
+    // A send exception cannot prove that the provider did not receive a
+    // commit. Retire the clip before the attempt, never replay uncertain
+    // evidence as a new cough/event when recovering the transport.
+    const committedChunk = this.pendingChunk;
+    this.consumeChunk(committedChunk);
+    this.pendingChunk = undefined;
+    if (!this.send({ type: 'input_audio_buffer.commit' })) {
+      this.debug('proactive.monitor_chunk_dropped', {
+        reason: 'commit_delivery_uncertain',
+        chunkStartAt: committedChunk.startAt,
+        chunkEndAt: committedChunk.endAt,
+        audioBytes: this.chunkAudioBytes,
+      });
       const error = monitorError(
         'Monitor could not commit its input buffer.',
         'monitor_commit_failed',
@@ -379,9 +451,11 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   }
 
   resetPendingCapture(): void {
+    this.flushInputDrops();
     // Preserve the resident conversation and its Reply/wait action history.
     this.recentInputs = [];
     this.writerQueue = [];
+    this.pendingChunk = undefined;
     this.audioInCurrentBuffer = false;
     this.resetInputDiagnostics();
     if (this.ready && !this.send({ type: 'input_audio_buffer.clear' })) {
@@ -397,6 +471,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
 
   close(): void {
     if (this.closed) return;
+    this.flushInputDrops();
     this.debugRecorder?.close();
     const pendingConnect = this.pendingConnect;
     this.closed = true;
@@ -413,6 +488,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     }
     this.recentInputs = [];
     this.writerQueue = [];
+    this.pendingChunk = undefined;
     this.resetInputDiagnostics();
     pendingConnect?.finish(
       monitorError(
@@ -436,8 +512,10 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     this.audioInCurrentBuffer = false;
     this.resetInputDiagnostics();
     this.writerQueue = [];
+    this.pendingChunk = undefined;
     const generation = ++this.transportGeneration;
     this.debugRecorder?.beginTransport(generation);
+    this.providerSessionId = undefined;
     this.socket = undefined;
     try {
       old?.close();
@@ -520,7 +598,12 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       };
 
       socket.on('message', (...args: unknown[]) => {
-        if (!current() || args[1] === true) return;
+        if (
+          !current() ||
+          this.failureSeenTransportGeneration === generation ||
+          args[1] === true
+        )
+          return;
         let parsed: unknown;
         try {
           const raw = String(args[0]);
@@ -560,6 +643,17 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
         }
         const message = parsed as ProviderMessage;
         const type = message.type as string;
+        if (type === 'session.created' || type === 'session.updated') {
+          const session = isRecord(message['session'])
+            ? message['session']
+            : {};
+          this.providerSessionId ??= providerMetadata(
+            session['id'],
+            this.options.apiKey,
+          );
+          if (this.providerSessionId)
+            this.debugRecorder?.setProviderSessionId(this.providerSessionId);
+        }
         if (type === 'session.created' && !sessionUpdateSent) {
           sessionUpdateSent = true;
           if (!this.sendSessionUpdate()) {
@@ -574,6 +668,9 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           return;
         }
         if (type === 'session.updated' && !this.ready) {
+          // An unsolicited update cannot authorize media before our initial
+          // session settings (including video compression) have been sent.
+          if (!sessionUpdateSent) return;
           if (!this.initializeConversation()) {
             failConnection(
               monitorError(
@@ -587,17 +684,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           this.ready = true;
           this.needsRecycle = false;
           this.evaluationCount = 0;
-          this.rebuildWriterQueue();
-          if (!this.drainWriterQueue(false)) {
-            failConnection(
-              monitorError(
-                'Monitor media replay failed.',
-                'monitor_media_replay_failed',
-                'transient',
-              ),
-            );
-            return;
-          }
+          this.pruneRecentInputs();
           this.debug('proactive.monitor_ready', {
             generation,
             model: providerMetadata(this.options.model, this.options.apiKey),
@@ -668,6 +755,12 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           const response = isRecord(message['response'])
             ? message['response']
             : {};
+          this.responseEventId = providerMetadata(
+            message['event_id'],
+            this.options.apiKey,
+          );
+          if (this.debugRecorder && isRecord(response['usage']))
+            this.responseUsage = response['usage'];
           if (
             response['status'] !== undefined &&
             response['status'] !== 'completed'
@@ -743,9 +836,26 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       type: 'session.update',
       session: {
         modalities: ['text'],
-        input_audio_format: 'pcm',
-        output_audio_format: 'pcm',
+        // Text-only inference still validates voice; avoid the unsupported server default.
+        voice: 'Tina',
+        audio: {
+          input: {
+            format: {
+              type: 'pcm',
+              sample_rate: QWEN_REALTIME_INPUT_SAMPLE_RATE,
+            },
+          },
+          output: { format: { type: 'pcm', sample_rate: 24_000 } },
+        },
         input_audio_transcription: null,
+        // This must precede all chunk media, including visual-only carrier audio.
+        ...(this.modalities.has('vision')
+          ? {
+              video: {
+                input: { representation_compact: this.representationCompact },
+              },
+            }
+          : {}),
         turn_detection: null,
         instructions: PROACTIVE_MONITOR_SYSTEM_PROMPT,
         smooth_output: false,
@@ -757,60 +867,265 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
 
   private initializeConversation(): boolean {
     if (!this.options.instruction.trim()) return false;
-    if (
-      !this.send({
-        type: 'conversation.item.create',
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [
-            { type: 'input_text', text: this.options.instruction.trim() },
-          ],
-        },
-      }) ||
-      !this.appendSilence()
-    ) {
-      return false;
+    return this.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: this.options.instruction.trim() },
+        ],
+      },
+    });
+  }
+
+  private prepareChunk(): CaptureChunk | undefined {
+    this.pruneRecentInputs();
+    const consumedAudio = new Map<number, number>();
+    const consumedImages = new Set<number>();
+    const hasAudio = this.modalities.has('audio');
+    let startAt = 0;
+    let endAt = 0;
+    let audio: Buffer;
+    if (hasAudio) {
+      const parts: Uint8Array[] = [];
+      let bytes = 0;
+      for (const input of this.recentInputs) {
+        if (input.modality !== 'audio') continue;
+        const inputStartAt =
+          input.capturedAt -
+          (input.payload.byteLength / PCM_BYTES_PER_SECOND) * 1_000;
+        if (bytes > 0 && inputStartAt > endAt + MAX_CAPTURE_GAP_MS) {
+          for (const image of this.recentInputs) {
+            if (image.modality === 'vision' && image.capturedAt <= endAt)
+              consumedImages.add(image.sequence);
+          }
+          this.consumeChunk({
+            inputs: [],
+            consumedAudio,
+            consumedImages,
+            startAt,
+            endAt,
+          });
+          this.debug('proactive.monitor_chunk_dropped', {
+            reason: 'audio_capture_gap',
+            chunkStartAt: startAt,
+            chunkEndAt: endAt,
+            nextCaptureAt: inputStartAt,
+            audioBytes: bytes,
+          });
+          return undefined;
+        }
+        const take = Math.min(
+          input.payload.byteLength,
+          this.chunkAudioBytes - bytes,
+        );
+        if (bytes === 0) {
+          startAt = inputStartAt;
+        }
+        parts.push(input.payload.subarray(0, take));
+        consumedAudio.set(input.sequence, take);
+        bytes += take;
+        endAt =
+          input.capturedAt -
+          ((input.payload.byteLength - take) / PCM_BYTES_PER_SECOND) * 1_000;
+        if (bytes === this.chunkAudioBytes) break;
+      }
+      // Do not run on historical evidence or fabricate microphone samples.
+      if (bytes !== this.chunkAudioBytes) return undefined;
+      audio = Buffer.concat(parts, bytes);
+    } else {
+      // DashScope's image buffer shares the manual audio commit lifecycle.
+      // Visual-only clips carry exactly one clip of explicitly marked silence.
+      audio = Buffer.alloc(this.chunkAudioBytes);
     }
-    return true;
+
+    let images: RecentImage[] = [];
+    if (this.modalities.has('vision')) {
+      images = this.recentInputs.filter(
+        (input): input is RecentImage => input.modality === 'vision',
+      );
+      if (hasAudio) {
+        images = images.filter(
+          (input) => input.capturedAt > startAt && input.capturedAt <= endAt,
+        );
+        if (images.length < this.chunkImageFrames) {
+          // An image captured in the next second must not be paired with old
+          // audio merely to reach the grid size. Allow one capture period for
+          // arrival ordering, then discard the incomplete multimodal clip.
+          if (this.now() > endAt + 1_000 / this.options.visionFps) {
+            const chunk = {
+              inputs: [],
+              consumedAudio,
+              consumedImages,
+              startAt,
+              endAt,
+            };
+            for (const input of this.recentInputs) {
+              if (input.modality === 'vision' && input.capturedAt <= endAt) {
+                consumedImages.add(input.sequence);
+              }
+            }
+            this.consumeChunk(chunk);
+            this.debug('proactive.monitor_chunk_dropped', {
+              reason: 'incomplete_visual_grid',
+              chunkStartAt: startAt,
+              chunkEndAt: endAt,
+              audioBytes: this.chunkAudioBytes,
+              imageFrames: images.length,
+              requiredImageFrames: this.chunkImageFrames,
+            });
+          }
+          return undefined;
+        }
+        // Retain both edges when a capture burst contains extra frames.
+        const available = images;
+        images = Array.from(
+          { length: this.chunkImageFrames },
+          (_, index) =>
+            available[
+              Math.round(
+                (index * (available.length - 1)) / (this.chunkImageFrames - 1),
+              )
+            ]!,
+        );
+        for (const input of this.recentInputs) {
+          if (input.modality === 'vision' && input.capturedAt <= endAt) {
+            consumedImages.add(input.sequence);
+          }
+        }
+      } else {
+        if (images.length < this.chunkImageFrames) return undefined;
+        images = images.slice(0, this.chunkImageFrames);
+        endAt = images.at(-1)!.capturedAt;
+        startAt = images[0]!.capturedAt - 1_000 / this.options.visionFps;
+        for (const input of images) consumedImages.add(input.sequence);
+      }
+    }
+
+    const inputs: RecentInput[] = [];
+    let offset = 0;
+    const appendAudioThrough = (end: number): void => {
+      while (offset < end) {
+        const limit = Math.min(
+          end,
+          offset + QWEN_REALTIME_LIMITS.maxInputAudioFrameBytes,
+        );
+        inputs.push({
+          sequence: 0,
+          capturedAt: endAt,
+          modality: 'audio',
+          payload: audio.subarray(offset, limit),
+          origin: hasAudio ? 'microphone' : 'protocol_silence',
+        });
+        offset = limit;
+      }
+    };
+    for (const [index, image] of images.entries()) {
+      const fraction =
+        hasAudio && endAt > startAt
+          ? (image.capturedAt - startAt) / (endAt - startAt)
+          : (index + 1) / images.length;
+      const through = Math.max(
+        2,
+        Math.min(
+          audio.byteLength,
+          Math.round((fraction * audio.byteLength) / 2) * 2,
+        ),
+      );
+      appendAudioThrough(through);
+      inputs.push(image);
+    }
+    appendAudioThrough(audio.byteLength);
+    return { inputs, consumedAudio, consumedImages, startAt, endAt };
+  }
+
+  private consumeChunk(chunk: CaptureChunk): void {
+    this.recentInputs = this.recentInputs.flatMap<RecentInput>((input) => {
+      if (input.modality === 'vision') {
+        return chunk.consumedImages.has(input.sequence) ? [] : [input];
+      }
+      const consumed = chunk.consumedAudio.get(input.sequence) ?? 0;
+      if (consumed === 0) return [input];
+      if (consumed === input.payload.byteLength) return [];
+      return [{ ...input, payload: input.payload.slice(consumed) }];
+    });
   }
 
   private remember(input: RecentInput): void {
     this.recentInputs.push(input);
     this.pruneRecentInputs();
     while (this.recentInputs.length > this.maxQueuedInputs) {
-      this.recentInputs.shift();
-    }
-  }
-
-  private enqueueWriterInput(input: RecentInput): boolean {
-    if (this.writerQueue.length >= this.maxQueuedInputs) {
-      const firstVision = this.writerQueue.findIndex(
-        (candidate) => candidate.modality === 'vision',
-      );
-      if (firstVision >= 0) {
-        const [dropped] = this.writerQueue.splice(firstVision, 1);
-        if (dropped) this.dropQueuedInput(dropped);
-      } else if (input.modality === 'vision') {
-        this.dropQueuedInput(input);
-        return false;
-      } else {
-        const dropped = this.writerQueue.shift();
-        if (dropped) this.dropQueuedInput(dropped);
+      if (this.isPendingInput(this.recentInputs[0]!)) {
+        this.discardPendingChunk('capture_queue_full');
+        continue;
       }
+      const dropped = this.recentInputs.shift();
+      if (dropped) this.dropQueuedInput(dropped, 'capture_queue_full');
     }
-    this.writerQueue.push(input);
-    return true;
   }
 
-  private dropQueuedInput(input: RecentInput): void {
-    this.recentInputs = this.recentInputs.filter(
-      (candidate) => candidate.sequence !== input.sequence,
-    );
-    this.debug('proactive.monitor_input_dropped', {
-      modality: input.modality,
-      reason: 'writer_queue_full',
+  private isPendingInput(input: RecentInput): boolean {
+    return input.modality === 'audio'
+      ? (this.pendingChunk?.consumedAudio.has(input.sequence) ?? false)
+      : (this.pendingChunk?.consumedImages.has(input.sequence) ?? false);
+  }
+
+  private discardPendingChunk(reason: string): void {
+    const chunk = this.pendingChunk;
+    if (!chunk) return;
+    this.consumeChunk(chunk);
+    this.pendingChunk = undefined;
+    this.writerQueue = [];
+    this.audioInCurrentBuffer = false;
+    this.resetInputDiagnostics();
+    this.debug('proactive.monitor_chunk_dropped', {
+      reason,
+      chunkStartAt: chunk.startAt,
+      chunkEndAt: chunk.endAt,
+      audioBytes: this.chunkAudioBytes,
     });
+    // Some of the frozen clip may already be on the wire. Clear that partial
+    // provider buffer before admitting any newer clip, never commit both.
+    if (
+      this.ready &&
+      !this.needsRecycle &&
+      !this.send({ type: 'input_audio_buffer.clear' })
+    ) {
+      this.failCurrentTransport(
+        monitorError(
+          'Monitor could not discard an expired partial clip.',
+          'monitor_clear_failed',
+          'transient',
+        ),
+      );
+    }
+  }
+
+  private dropQueuedInput(input: RecentInput, reason: string): void {
+    const summary = this.inputDrops.get(reason) ?? {
+      count: 0,
+      audioBytes: 0,
+      imageFrames: 0,
+      firstCapturedAt: input.capturedAt,
+      lastCapturedAt: input.capturedAt,
+      firstSequence: input.sequence,
+      lastSequence: input.sequence,
+    };
+    summary.count += 1;
+    if (input.modality === 'audio')
+      summary.audioBytes += input.payload.byteLength;
+    else summary.imageFrames += 1;
+    summary.lastCapturedAt = input.capturedAt;
+    summary.lastSequence = input.sequence;
+    this.inputDrops.set(reason, summary);
+  }
+
+  private flushInputDrops(): void {
+    for (const [reason, summary] of this.inputDrops) {
+      this.debug('proactive.monitor_input_dropped', { reason, ...summary });
+    }
+    this.inputDrops.clear();
   }
 
   private pruneRecentInputs(): void {
@@ -818,24 +1133,26 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     const inWindow = (input: RecentInput): boolean =>
       input.capturedAt >=
       now - this.options.contextWindowSec[input.modality] * 1_000;
-    this.recentInputs = this.recentInputs.filter(inWindow);
-    this.writerQueue = this.writerQueue.filter(inWindow);
-  }
-
-  private rebuildWriterQueue(): void {
-    this.pruneRecentInputs();
-    this.writerQueue = [...this.recentInputs];
+    if (
+      this.recentInputs.some(
+        (input) => this.isPendingInput(input) && !inWindow(input),
+      )
+    ) {
+      this.discardPendingChunk('capture_window_expired');
+    }
+    this.recentInputs = this.recentInputs.filter((input) => {
+      if (inWindow(input)) return true;
+      this.dropQueuedInput(input, 'capture_window_expired');
+      return false;
+    });
   }
 
   /**
-   * Drain capture writes in FIFO order without ever blocking the producer.
-   * A backpressured socket keeps the head queued; the next media arrival or
-   * scheduler evaluation retries it. A commit is admitted only after this
-   * queue is empty, so it can never overtake accepted media.
+   * Only a frozen, complete clip may enter the provider buffer. New capture is
+   * queued locally while the preceding assistant turn is being generated.
    */
   private drainWriterQueue(reportFailure = true): boolean {
     if (!this.ready || this.needsRecycle) return true;
-    this.pruneRecentInputs();
     while (this.writerQueue.length > 0) {
       if (this.socketIsBackpressured()) return true;
       const input = this.writerQueue[0]!;
@@ -865,6 +1182,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           audio: Buffer.from(input.payload).toString('base64'),
         },
         true,
+        input.origin ?? 'microphone',
       );
       if (sent) {
         this.audioInCurrentBuffer = true;
@@ -872,7 +1190,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       }
       return sent;
     }
-    if (!this.audioInCurrentBuffer && !this.appendSilence()) return false;
+    if (!this.audioInCurrentBuffer) return false;
     const sent = this.send(
       { type: 'input_image_buffer.append', image: input.payload },
       true,
@@ -889,21 +1207,6 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
         bytes: image.byteLength,
         frameHash: this.lastInputFrameHash,
       });
-    }
-    return sent;
-  }
-
-  private appendSilence(): boolean {
-    const sent = this.send(
-      {
-        type: 'input_audio_buffer.append',
-        audio: SILENCE_PCM.toString('base64'),
-      },
-      true,
-    );
-    if (sent) {
-      this.audioInCurrentBuffer = true;
-      this.inputAudioBytes += SILENCE_PCM.byteLength;
     }
     return sent;
   }
@@ -988,6 +1291,8 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       evaluation: this.evaluationSequence,
       transportGeneration: this.transportGeneration,
       responseId: this.activeResponseId,
+      ...(this.responseEventId ? { eventId: this.responseEventId } : {}),
+      ...(this.responseUsage ? { usage: this.responseUsage } : {}),
       status: failure || result.error ? 'failed' : 'completed',
       text: this.finalText || this.deltaText,
       result,
@@ -995,7 +1300,14 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     });
     this.clearEvaluationTimer();
     this.evaluationPhase = 'idle';
+    const responseId = providerMetadata(
+      this.activeResponseId,
+      this.options.apiKey,
+    );
+    const eventId = this.responseEventId;
     this.activeResponseId = undefined;
+    this.responseEventId = undefined;
+    this.responseUsage = undefined;
     this.deltaText = '';
     this.finalText = '';
     const safeResult = failure
@@ -1018,6 +1330,8 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     }
     this.debug('proactive.monitor_result', {
       evaluation: this.evaluationSequence,
+      ...(responseId ? { responseId } : {}),
+      ...(eventId ? { eventId } : {}),
       triggered: safeResult.triggered,
       ...(safeResult.ignoredAction
         ? { ignoredAction: safeResult.ignoredAction }
@@ -1136,6 +1450,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   private send(
     body: Record<string, unknown>,
     enforceBackpressure = false,
+    audioOrigin?: MonitorAudioOrigin,
   ): boolean {
     const socket = this.socket;
     if (
@@ -1154,7 +1469,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     } catch {
       return false;
     }
-    this.debugRecorder?.sent(payload);
+    this.debugRecorder?.sent(payload, { origin: audioOrigin });
     return true;
   }
 
@@ -1164,6 +1479,9 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
         taskId: this.options.taskId,
         taskGeneration: this.options.taskGeneration,
         transportGeneration: this.transportGeneration,
+        ...(this.providerSessionId
+          ? { providerSessionId: this.providerSessionId }
+          : {}),
         ...details,
       });
     } catch {

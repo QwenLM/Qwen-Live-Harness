@@ -20,7 +20,7 @@
  *      bare PCM frames;
  *   e. handoff path: a handoff function call lands on the real serve daemon
  *      as a prompt; the receipt (function_call_output), the [COMPLETE]
- *      context injection, and the [SPEAK_TO_USER] + response.create speech
+ *      structured outcome, and its task_result response.create speech
  *      request all arrive on the provider socket in order;
  *   f. SIGTERM removes the discovery file.
  */
@@ -39,6 +39,7 @@ import {
   QWEN_LIVE_HARNESS_API_KEY,
   QWEN_LIVE_HARNESS_REALTIME_MODEL,
   waitForLiveLogEvents,
+  waitForLiveResponseAfter,
   type LiveStack,
 } from './qwen-live-harness.js';
 import { sleep } from './qwen-backend-harness.js';
@@ -291,32 +292,10 @@ describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
       stack.fakeDash.inbox.indexOf(completeMessage),
     );
 
-    // …and as a spoken line: a [SPEAK_TO_USER] item followed by
-    // response.create (speakToUser wire shape in realtime-session.ts).
-    const speakMessage = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return text !== undefined && text.startsWith('[SPEAK_TO_USER] ');
-      },
-      {
-        timeoutMs: 15_000,
-        fromIndex: inboxIndex,
-        description: 'the [SPEAK_TO_USER] speech request item',
-      },
-    );
-    expect(contextTextOf(speakMessage)).toContain(
-      'task to fix the failing test finished',
-    );
-    expect(contextTextOf(speakMessage)).not.toContain('job_1');
-    const speakIndex = stack.fakeDash.inbox.indexOf(speakMessage);
-    await stack.fakeDash.waitForMessage(
-      (message) => message['type'] === 'response.create',
-      {
-        timeoutMs: 15_000,
-        fromIndex: speakIndex,
-        description: 'the response.create following [SPEAK_TO_USER]',
-      },
-    );
+    // The model summarizes the outcome; no fixed English text is read aloud.
+    expect(completeText).not.toContain('[SPEAK_TO_USER]');
+    expect(completeText).toContain('"status":"completed"');
+    await waitForLiveResponseAfter(stack, completeMessage, 'task_result');
   });
 
   it('removes the discovery file on SIGTERM', async () => {

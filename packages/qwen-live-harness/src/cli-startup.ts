@@ -16,6 +16,7 @@ import { withDaemonStartupLock } from './startup-lock.js';
 import { registerCurrentRuntime } from './startup-registration.js';
 import { PACKAGE_VERSION } from './version.js';
 import type { DaemonIdentity } from './lifecycle.js';
+import type { RuntimeFailureLog } from './log/runtime-failure.js';
 
 export type ManagedDaemon = Pick<
   LiveDaemon,
@@ -28,6 +29,7 @@ export interface CliStartupOptions {
   signal?: AbortSignal;
   onDaemonCreated?: (daemon: ManagedDaemon) => void;
   logger?: LiveLogger;
+  failureLog?: RuntimeFailureLog;
 }
 
 export interface CliStartupDependencies {
@@ -53,7 +55,8 @@ export async function startCliApplication(
     probe: probeDaemon,
     register: registerCurrentRuntime,
     lock: withDaemonStartupLock,
-    createDaemon: (settings, logger) => new LiveDaemon(settings, { logger }),
+    createDaemon: (settings, logger) =>
+      new LiveDaemon(settings, { logger, failureLog: options.failureLog }),
     openHost: (settings) => installer.launch(settings),
     ...overrides,
   };

@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MEMORY_CONFIG } from './config.js';
+import { recordObservation } from './observer.js';
 import { SCHEMA_SQL } from './schema.js';
 import {
   applyPatch,
@@ -60,10 +61,11 @@ afterEach(() => {
 });
 
 describe('memory updater', () => {
-  it('preserves the complete measured prototype prompt', () => {
-    expect(createHash('sha256').update(UPDATER_PROMPT).digest('hex')).toBe(
-      '2e2d37e496c017061e4c7e6465d35c991b43820d0d66ed0eb89b7e4ed3fb7fba',
-    );
+  it('preserves the complete reviewed updater prompt without environment responsibilities', () => {
+    expect(
+      createHash('sha256').update(UPDATER_PROMPT.trimEnd()).digest('hex'),
+    ).toBe('b723870f9586599e927bce95dfbfbf2cc57e5a2346c034f6f7d88c06ed542c06');
+    expect(UPDATER_PROMPT).not.toMatch(/env_add|env_remove|STM\.env/u);
   });
 
   it.each([
@@ -82,7 +84,11 @@ describe('memory updater', () => {
         stm_patch: { add: [] },
       }),
     ).toBe(true);
-    expect(isEmptyPatch({ stm_patch: { env_add: ['厨房'] } })).toBe(false);
+    expect(isEmptyPatch({ stm_patch: { env_add: ['厨房'] } })).toBe(true);
+    expect(isEmptyPatch({ stm_patch: { unsupported: ['ignore'] } })).toBe(true);
+    expect(
+      isEmptyPatch({ stm_patch: { add: [{ content: '正在出差' }] } }),
+    ).toBe(false);
   });
 
   it('renders fixed LTM fields, addressable STM and two distinct dates', () => {
@@ -156,6 +162,9 @@ describe('memory updater', () => {
 
   it('keeps STM event/expiry dates separate, makes removals soft, and ignores updater env writes', () => {
     const db = database();
+    recordObservation(db, '卧室', 'observer-session', now);
+    const environment = db.prepare('SELECT * FROM stm_env').all();
+    const environmentIndex = db.prepare('SELECT * FROM env_fts').all();
     applyPatch(
       db,
       {
@@ -201,9 +210,8 @@ describe('memory updater', () => {
       event_date: '2026-09-08',
       expires_at: '2026-09-11',
     });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM stm_env').get()?.['n']).toBe(
-      0,
-    );
+    expect(db.prepare('SELECT * FROM stm_env').all()).toEqual(environment);
+    expect(db.prepare('SELECT * FROM env_fts').all()).toEqual(environmentIndex);
     const report = applyPatch(
       db,
       { stm_patch: { remove: [`stm_${before['id']}`, 'stm_999', 1] } },
@@ -214,6 +222,33 @@ describe('memory updater', () => {
     expect(
       db.prepare('SELECT active, expired_at FROM stm_items').get(),
     ).toMatchObject({ active: 0, expired_at: '2026-09-05' });
+  });
+
+  it('records an environment-only model patch as empty without modifying observer memory', async () => {
+    const db = database();
+    recordObservation(db, '卧室', 'observer-session', now);
+    const environment = db.prepare('SELECT * FROM stm_env').all();
+    const log = vi.fn();
+    const patch = {
+      stm_patch: { env_add: ['厨房'], env_remove: ['卧室'] },
+    };
+    expect(
+      await consolidateSnapshot({
+        ...snapshot(db, async () => JSON.stringify(patch)),
+        log,
+      }),
+    ).toBe('empty');
+    expect(db.prepare('SELECT * FROM stm_env').all()).toEqual(environment);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM stm_items').get()?.['n']).toBe(
+      0,
+    );
+    expect(
+      db.prepare('SELECT status, report_json FROM updater_log').get(),
+    ).toMatchObject({
+      status: 'empty',
+      report_json: null,
+    });
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('keeps unknown model field names in local audit without writing them to runtime logs', async () => {

@@ -2,6 +2,8 @@
 
 [English](2026-09-10-live-monitor-request-archive.md) | [简体中文](2026-09-10-live-monitor-request-archive.zh-CN.md)
 
+This is the historical 2026-09-10 design. Since 2026-09-17, debug archives also cover audio-only Monitors. See the current [Monitor archive guide](../../packages/qwen-live-harness/README.md#monitor-diagnostic-archives) for implemented behavior.
+
 ## Scope
 
 The user explicitly requests temporary JSON/image/audio records for every

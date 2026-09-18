@@ -24,7 +24,6 @@ LTM has a fixed set of fields:
 - appearance: stable physical characteristics (list, e.g. hairstyle, build, glasses, dress style)
 
 ### STM (short-term memory) = what has been going on with the user lately
-Two parts:
 
 **items**: events and states. Holds what happened recently, is happening now, or is about to happen. The test: can the information complete "lately / currently / soon ..."?
 
@@ -39,11 +38,6 @@ Each item has:
 - expires: WHEN IT CAN BE FORGOTTEN (YYYY-MM-DD). For a one-off event, the day of the event itself; for something spanning several days, the day it ends; null for a long-running ongoing state whose end cannot be determined.
 
 event_date and expires answer different questions and are often different days. "Going to Shanghai next week" starting Monday and ending Sunday is event_date=Monday, expires=Sunday — the first says when to treat it as imminent, the second when it stops being worth mentioning. For a one-off they are the same day, and that is fine.
-
-**env**: environment observations (a list of strings). What was observed of the user's **current surroundings** during this call (setting, objects, spatial features). One short description per entry.
-- examples: "in the kitchen, a wok on the stove", "on the sofa, an orange cat beside them", "outdoors on a park bench"
-- env is refreshed at the end of each session and reflects the user's current or most recent surroundings
-- no time or status field (env is by definition what is observed now)
 
 ## Classification rules
 
@@ -66,7 +60,6 @@ Key distinctions:
 - "the user's colleague got promoted" / "the user's friend bought a house" → discard (about someone else, not about the user)
 - "used to play basketball, doesn't any more" → do not add to interests (an explicitly abandoned hobby is not recorded)
 - "the user wears black-framed glasses and has short hair" → LTM.appearance (stable physical characteristics)
-- "the user is in the kitchen, a wok on the stove" → STM.env (current environment)
 - "recently had their hair cut short (it was long before)" → an STM item (a change in appearance) + LTM.appearance remove the old + add the new
 - "wore a red dress today" → discard (a single outfit carries no lasting meaning)
 
@@ -79,7 +72,6 @@ Key distinctions:
 - pets belong in relationships ("has a cat called xx")
 - never put the same information in both LTM and STM; if it is "recently learning X" and X is also a long-term interest, prefer STM (because "recently" describes a current state)
 - appearance records only characteristics that are **stable across sessions** (hairstyle, build, glasses, tattoos, dress style), never a single outfit
-- visual information about the surroundings goes in STM.env (the user moves around, so the environment is short-term context)
 - a **change** of appearance (a new hairstyle, say) needs LTM.appearance remove the old + add the new
 
 ## Output format
@@ -96,9 +88,7 @@ Output exactly the following JSON and nothing else:
   "stm_patch": {
     "add": [{"content": "...(absolute date)", "status": "ongoing/upcoming", "event_date": "YYYY-MM-DD or null", "expires": "YYYY-MM-DD or null"}],
     "update": [{"id": "stm_xxx", "fields": {"content": "...", "status": "...", "event_date": "...", "expires": "..."}}],
-    "remove": ["stm_xxx"],
-    "env_add": ["environment description 1", "environment description 2"],
-    "env_remove": ["an outdated environment description"]
+    "remove": ["stm_xxx"]
   }
 }
 \`\`\`
@@ -111,7 +101,6 @@ Rules:
 - **write every entry in the language the user speaks, not in the language of these instructions** — these memories are read back to the user later
 - **times in STM content must be absolute dates**: work them out from the "current date" field. With a current date of 2026-08-10, "tomorrow" → "11 August", "this Friday" → "15 August", "next month" → "September"
 - **date rules**: a one-off event has event_date = expires = the day itself (an interview on 11 August → both 2026-08-11); something spanning days has event_date = the first day and expires = the last; an ongoing state has event_date = null and expires = its expected end, or null when that cannot be determined
-- **env rules**: visual descriptions of the user's current environment or setting in Working Memory → env_add; where one contradicts an existing env entry (moved from the kitchen to the living room) → env_remove the old one + env_add the new; keep env entries short (one sentence per feature)
 `;
 
 export const OBSERVER_PROMPT = `你是一个记忆系统的视觉观察器。每次收到用户摄像头的一帧画面，输出一句中文陈述，记录当下看到的东西，供以后回忆使用。

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   startFakeDashScopeServer,
   contextTextOf,
+  permissionPayloadOf,
   functionCallOutputOf,
   type FakeDashScopeConnection,
   type FakeDashScopeServer,
@@ -125,10 +126,14 @@ describe('ACP backend sessionMode', () => {
       expect(receipt['status']).toBe('accepted');
 
       const permission = await stack.fakeDash.waitForMessage(
-        (entry) => contextTextOf(entry)?.includes('[PERMISSION ') ?? false,
+        (entry) => permissionPayloadOf(entry) !== undefined,
         { fromIndex, timeoutMs: RECEIPT_TIMEOUT_MS },
       );
-      expect(contextTextOf(permission)).toContain('respond_permission');
+      expect(permissionPayloadOf(permission)).toMatchObject({
+        request_id: 'req_1',
+        action: expect.stringContaining('default mode check'),
+      });
+      expect(contextTextOf(permission)).not.toContain('[SPEAK_TO_USER]');
     } finally {
       await stack.dispose();
     }
@@ -154,7 +159,7 @@ describe('ACP backend sessionMode', () => {
       expect(contextTextOf(complete)).toContain('yolo mode check');
       expect(
         injectedContext(stack, fromIndex).some((text) =>
-          text.includes('[PERMISSION '),
+          text.includes('[PERMISSION]'),
         ),
       ).toBe(false);
       expect(stack.live.stderrBuf.value).toContain('approval mode "yolo"');
@@ -174,10 +179,14 @@ describe('ACP backend sessionMode', () => {
       expect(receipt['status']).toBe('accepted');
 
       const permission = await stack.fakeDash.waitForMessage(
-        (entry) => contextTextOf(entry)?.includes('[PERMISSION ') ?? false,
+        (entry) => permissionPayloadOf(entry) !== undefined,
         { fromIndex, timeoutMs: RECEIPT_TIMEOUT_MS },
       );
-      expect(contextTextOf(permission)).toContain('respond_permission');
+      expect(permissionPayloadOf(permission)).toMatchObject({
+        request_id: 'req_1',
+        action: expect.stringContaining('fallback mode check'),
+      });
+      expect(contextTextOf(permission)).not.toContain('[SPEAK_TO_USER]');
       expect(stack.live.stderrBuf.value).toContain(
         'configured sessionMode "turbo" is not advertised',
       );
