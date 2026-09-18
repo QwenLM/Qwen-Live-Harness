@@ -4,20 +4,21 @@
 
 [Home](../README.md) · [Advanced configuration for developers](../packages/qwen-live-harness/README.md#advanced-configuration)
 
-After initialization, most everyday options are available in **Settings** in the UI. Open the configuration file when you need to change a model, API key, image resolution, or other advanced option.
+After initialization, most everyday options are available in **Settings** beside the Pebble voice card. Open the configuration file when you need to change a model, API key, image resolution, or other advanced option.
 
 ## Where to change a setting
 
-| I want to…                                         | Where to go                                |
-| -------------------------------------------------- | ------------------------------------------ |
-| Change the microphone                              | Settings → Audio Source                    |
-| Switch between screen and camera                   | Settings → Video Source                    |
-| Continuously share the current view                | Settings → Capture Mode → Live Feed        |
-| Choose a display                                   | Settings → Video Source → Display          |
-| Enable memory, select a library, or rename it      | Settings → Memory                          |
-| Switch language or light/dark theme                | Language / Theme at the bottom of Settings |
-| Change a model, API key, resolution, or frame rate | Settings → Open config.json ↗              |
-| Start or end an interaction                        | Start / End call in the UI, or `Command+E` |
+| I want to…                                         | Where to go                                                |
+| -------------------------------------------------- | ---------------------------------------------------------- |
+| Change the microphone                              | Settings → Sound → Microphone                              |
+| Switch between screen and camera                   | Settings → Video Source                                    |
+| Continuously share the current view                | Settings → Capture Mode → Live Feed                        |
+| Choose a display                                   | Settings → Video Source → Display                          |
+| Enable memory, select a library, or rename it      | Settings → Memory                                          |
+| Change the palette                                 | Top-level `themeColor` in configuration, then restart Host |
+| Switch language or light/dark theme                | Settings → Personalization → Language / Appearance         |
+| Change a model, API key, resolution, or frame rate | Settings → Open configuration                              |
+| Start or end an interaction                        | Start / End call on the card, or `Command+E`               |
 
 ## Edit your configuration in five steps
 
@@ -90,6 +91,18 @@ The default main model is `qwen3.8-omni-flash-realtime`. For another model or an
 
 Memory and Proactive also use the selected region by default. Separate endpoints are usually unnecessary.
 
+## Theme palette
+
+Iris is the default palette. Add or edit the top-level setting in your existing configuration:
+
+```json
+{
+  "themeColor": "iris"
+}
+```
+
+Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. Restart Host or reconnect the daemon after saving; the voice card and task window apply the same palette. Missing or invalid values use Iris. Light, dark, and system appearance remain independent Settings options.
+
 ## Visual input
 
 Choose **what to see**, then **when to see it**:
@@ -99,7 +112,7 @@ Choose **what to see**, then **when to see it**:
 - **Capture Mode → On Demand**: capture a snapshot when needed; this is the default.
 - **Capture Mode → Live Feed**: continuously send recent frames during a call, so you can ask about what is visible now.
 
-**Without a background Harness, use Live Feed when you want Omni to understand the full image directly.** On Demand can provide some screen text, but analyzing the complete snapshot usually requires a background Harness. A camera snapshot also does not mean that Omni has directly received its pixels.
+**On Demand and Live Feed both let the current Omni model understand images directly, without a background Harness.** On Demand captures one current Screen or Camera image for a visual question and delivers it before answering; Live Feed continuously supplies recent frames. Capture or image-delivery failures return an explicit error. Image attachments are needed only for work explicitly delegated to a background Harness.
 
 Screen Live Feed and visual monitors capture the full selected display. On Demand primarily captures the foreground window. With multiple displays, choose one under **Display**; the default follows the primary display.
 
@@ -199,7 +212,7 @@ Visual memory periodically observes the selected screen or camera and saves a te
 
 The observer uses the updater model unless configured separately. It needs image input support; if your updater is text-only, set `memory.observer.model` to a suitable model.
 
-Visual memory is separate from continuously sharing frames in the current conversation. To ask Omni directly about the current view, select Live Feed.
+Visual memory is separate from the current conversation’s visual input. To ask Omni about the current view, use On Demand for a snapshot or Live Feed for continuous frames.
 
 ### Where memories are stored
 

@@ -53,6 +53,7 @@ export interface InjectorItem {
   jobHandle?: string;
   /** For permission items: lets a remote resolution retract the ask. */
   requestId?: string;
+  announce?: boolean;
   /** Stable scheduler delivery id for a queued Proactive announcement. */
   deliveryId?: string;
   /** Daemon-owned text receipt, acknowledged only after full context delivery. */
@@ -742,13 +743,16 @@ export class Injector {
       return;
     // A committed user turn absorbs this as notification context. At idle,
     // reserve one response so later notifications cannot overtake it.
-    this.notificationRequestPending = !this.directResponsePending;
+    const silent = item.kind === 'permission' && item.announce === false;
+    this.notificationRequestPending = !silent && !this.directResponsePending;
     let accepted = false;
     try {
       accepted =
-        (item.kind === 'permission'
-          ? this.sink.injectPermission?.(item.context)
-          : this.sink.injectTaskResult?.(item.context)) === true;
+        (silent
+          ? this.sink.injectContext(item.context)
+          : item.kind === 'permission'
+            ? this.sink.injectPermission?.(item.context)
+            : this.sink.injectTaskResult?.(item.context)) === true;
     } catch {
       // Keep all facts and correlation handles queued on refusal.
     }
@@ -766,7 +770,7 @@ export class Injector {
       return;
     }
     this.queue.shift();
-    this.sink.onInjected?.(item, !this.directResponsePending);
+    this.sink.onInjected?.(item, !silent && !this.directResponsePending);
   }
 
   private flushControl(): void {

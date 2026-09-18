@@ -65,7 +65,7 @@ export interface RuntimeFailure {
   taskId?: string;
   backend?: string;
   errorName?: string;
-  kind?: 'configuration' | 'transient' | 'protocol';
+  kind?: 'configuration' | 'quota' | 'transient' | 'protocol';
   providerType?: string;
   param?: string;
   status?: number;

@@ -56,6 +56,12 @@ const MAX_ERROR_MESSAGE_CHARS = 300;
 const MAX_ERROR_RESPONSE_BYTES = 16 * 1024;
 const MAX_RECENT_EVENT_IDS = 512;
 const MAX_TRACKED_INPUT_ITEMS = 32;
+const TOOL_IMAGE_TIMEOUT_MS = 10_000;
+const SEMANTIC_VAD = {
+  type: 'semantic_vad',
+  create_response: false,
+  interrupt_response: true,
+} as const;
 const MAX_RETAINED_TRANSCRIPT_ENTRIES = 512;
 const PROTOCOL_DEBUG_EVENT_TYPES = new Set([
   'input_audio_buffer.speech_started',
@@ -420,6 +426,11 @@ export interface QwenRealtimeSession {
   resumeUserText?: (input: { itemId: string; text: string }) => boolean;
   finishRecoveredAudio?: () => boolean;
   pushImage: (jpegBase64: string) => boolean;
+  submitToolImage: (
+    ref: RealtimeFunctionCallRef,
+    jpegBase64: string,
+    isCurrent?: () => boolean,
+  ) => Promise<boolean>;
   commitInputAudio: () => boolean;
   clearInputAudio: () => boolean;
   cancelResponse: () => boolean;
@@ -459,7 +470,8 @@ export interface QwenRealtimeSession {
   close: (options?: RealtimeCloseOptions) => void;
 }
 
-export type QwenRealtimeErrorKind = 'configuration' | 'transient' | 'protocol';
+export type QwenRealtimeErrorKind =
+  'configuration' | 'quota' | 'transient' | 'protocol';
 
 export interface QwenRealtimeErrorOptions {
   kind?: QwenRealtimeErrorKind;
@@ -475,6 +487,9 @@ function classifyRealtimeErrorKind(
   status?: number,
 ): QwenRealtimeErrorKind {
   const normalized = `${code ?? ''} ${message}`.toLowerCase();
+  if (/insufficient[ _.-]?quota|quota[ _.-]?exceeded/.test(normalized)) {
+    return 'quota';
+  }
   if (
     status === 429 ||
     (status !== undefined && status >= 500 && status <= 599) ||
@@ -485,7 +500,7 @@ function classifyRealtimeErrorKind(
       'socket_error',
       'send_failed',
     ].includes(code ?? '') ||
-    /\b429\b|rate[ _.-]?limit|throttl|limit_requests|limitrequests|resourceexhausted|resource_exhausted|limit_burst_rate|insufficient_quota|service_unavailable|internal[ _.-]?error|system[ _.-]?error|modelservicefailed|timeout|temporar/.test(
+    /\b429\b|rate[ _.-]?limit|throttl|limit_requests|limitrequests|resourceexhausted|resource_exhausted|limit_burst_rate|service_unavailable|internal[ _.-]?error|system[ _.-]?error|modelservicefailed|timeout|temporar/.test(
       normalized,
     )
   ) {
@@ -542,6 +557,7 @@ interface PendingFunctionCall {
   dispatched: boolean;
   outputSubmitted: boolean;
   responseCompleted: boolean;
+  responseCancelled?: boolean;
   speechGeneration: number;
   repairDeferred?: boolean;
   repairEventId?: string;
@@ -882,6 +898,17 @@ export function openQwenRealtimeSession(
     >();
     const recentEventIds = new Set<string>();
     const pendingCalls = new Map<string, PendingFunctionCall>();
+    const toolImageInputIds = new Set<string>();
+    let toolImage:
+      | {
+          itemId?: string;
+          audio: Uint8Array[];
+          audioBytes: number;
+          isCurrent: () => boolean;
+          resolve: (accepted: boolean) => void;
+          timer: ReturnType<typeof setTimeout>;
+        }
+      | undefined;
     const toolContinuationStates = new Map<string, ToolContinuationState>();
     const pendingSpeechItemIds = new Set<string>();
     const committedInputItemIds = new Set<string>();
@@ -1088,6 +1115,11 @@ export function openQwenRealtimeSession(
     const settleClosed = (info: RealtimeCloseInfo) => {
       if (closedSettled) return;
       closedSettled = true;
+      if (toolImage) {
+        clearTimeout(toolImage.timer);
+        toolImage.resolve(false);
+        toolImage = undefined;
+      }
       resolveClosed(info);
       try {
         callbacks.onClose?.(info);
@@ -1245,7 +1277,8 @@ export function openQwenRealtimeSession(
     };
 
     const sendMutedInputHeartbeat = (): void => {
-      if (!inputMuted || !ready || terminal || closedByClient) return;
+      if (!inputMuted || !ready || terminal || closedByClient || toolImage)
+        return;
       if (
         (ws.bufferedAmount ?? 0) > QWEN_REALTIME_LIMITS.maxBufferedSocketBytes
       ) {
@@ -1792,6 +1825,7 @@ export function openQwenRealtimeSession(
       for (const [callId, call] of [...pendingCalls]) {
         if (call.responseId !== responseId) continue;
         call.responseCompleted = true;
+        call.responseCancelled = status === 'cancelled';
         if (status === 'failed' || !call.dispatched || call.repairDeferred) {
           pendingCalls.delete(callId);
           continue;
@@ -2407,6 +2441,93 @@ export function openQwenRealtimeSession(
       }
     };
 
+    const finishToolImage = (): void => {
+      const pending = toolImage;
+      if (!pending) return;
+      toolImage = undefined;
+      clearTimeout(pending.timer);
+      let restored = sendJson({
+        type: 'session.update',
+        session: { turn_detection: SEMANTIC_VAD },
+      });
+      if (restored) configurationUpdatesPending += 1;
+      for (const pcm of pending.audio) {
+        if (!restored) break;
+        restored = sendJson({
+          type: 'input_audio_buffer.append',
+          audio: Buffer.from(pcm).toString('base64'),
+        });
+        if (restored) {
+          hasSentInputAudio = true;
+          recoveryInput.audio(pcm);
+        }
+      }
+      pending.resolve(restored && pending.isCurrent());
+    };
+
+    const handleToolImageEvent = (
+      message: ProviderMessage,
+      type: string,
+    ): boolean => {
+      if (toolImage && type === 'input_audio_buffer.speech_started') {
+        protocolError(
+          'Speech overlapped image delivery. Please repeat the last request.',
+          'tool_image_input_conflict',
+        );
+        return true;
+      }
+      const item = isRecord(message['item']) ? message['item'] : undefined;
+      const itemId = optionalString(message['item_id'] ?? item?.['id']);
+      if (
+        toolImage &&
+        type === 'input_audio_buffer.committed' &&
+        (!itemId || !toolImageInputIds.has(itemId))
+      ) {
+        if (
+          !itemId ||
+          toolImage.itemId ||
+          committedInputItemIds.has(itemId) ||
+          consumedInputItemIds.has(itemId)
+        ) {
+          protocolError(
+            'Image input acknowledgement was ambiguous.',
+            'invalid_tool_image_input',
+          );
+          return true;
+        }
+        toolImage.itemId = itemId;
+        toolImageInputIds.add(itemId);
+        if (toolImageInputIds.size > MAX_TRACKED_INPUT_ITEMS) {
+          toolImageInputIds.delete(toolImageInputIds.values().next().value!);
+        }
+        hasSentInputAudio = false;
+        return true;
+      }
+      if (!itemId || !toolImageInputIds.has(itemId)) return false;
+      if (type.startsWith('conversation.item.input_audio_transcription.')) {
+        const hasSpeech = ['transcript', 'text', 'delta', 'stash'].some(
+          (key) => typeof message[key] === 'string' && message[key].trim(),
+        );
+        if (
+          hasSpeech ||
+          type.endsWith('.failed') ||
+          (type.endsWith('.completed') &&
+            typeof message['transcript'] !== 'string')
+        ) {
+          protocolError(
+            'Image delivery could not be separated from speech. Please repeat the last request.',
+            'tool_image_input_conflict',
+          );
+        } else if (
+          type.endsWith('.completed') &&
+          toolImage?.itemId === itemId
+        ) {
+          finishToolImage();
+        }
+      }
+      return true;
+    };
+
     const session: QwenRealtimeSession = {
       callEpoch: config.callEpoch,
       closed,
@@ -2455,6 +2576,21 @@ export function openQwenRealtimeSession(
             callback(() => callbacks.onAudioDropped?.(eventContext()));
           }
           return false;
+        }
+        if (toolImage) {
+          if (
+            toolImage.audioBytes + pcm16.length >
+            QWEN_REALTIME_LIMITS.maxBufferedSocketBytes
+          ) {
+            protocolError(
+              'Microphone buffer exceeded the image delivery limit. Please repeat the last request.',
+              'tool_image_audio_overflow',
+            );
+            return false;
+          }
+          toolImage.audio.push(Uint8Array.from(pcm16));
+          toolImage.audioBytes += pcm16.length;
+          return true;
         }
         backpressureWarned = false;
         const sent = sendJson({
@@ -2527,7 +2663,8 @@ export function openQwenRealtimeSession(
             'Realtime image input must be a bounded JPEG base64 frame.',
           );
         }
-        if (!hasSentInputAudio) return dropImage('audio_not_started');
+        if (toolImage || !hasSentInputAudio)
+          return dropImage('audio_not_started');
         if (terminal || closedByClient || ws.readyState !== ws.OPEN) {
           return dropImage('connection_unavailable');
         }
@@ -2541,8 +2678,81 @@ export function openQwenRealtimeSession(
           image: jpegBase64,
         });
       },
-      commitInputAudio: () => sendJson({ type: 'input_audio_buffer.commit' }),
+      submitToolImage: async (ref, jpegBase64, isCurrent = () => true) => {
+        if (!isBoundedJpegBase64(jpegBase64)) {
+          throw new RangeError(
+            'Realtime image input must be a bounded JPEG base64 frame.',
+          );
+        }
+        const call = pendingCalls.get(ref.callId);
+        const current = () =>
+          !terminal &&
+          !closedByClient &&
+          ref.callEpoch === config.callEpoch &&
+          call !== undefined &&
+          pendingCalls.get(ref.callId) === call &&
+          call.dispatched &&
+          !call.responseCancelled &&
+          !call.outputSubmitted &&
+          !call.pendingOutput &&
+          call.speechGeneration === speechGeneration &&
+          !cancelledResponseIds.has(call.responseId) &&
+          isCurrent();
+        if (
+          toolImage ||
+          !current() ||
+          speechInputInProgress ||
+          speechCommitPending ||
+          ws.readyState !== ws.OPEN ||
+          (ws.bufferedAmount ?? 0) > QWEN_REALTIME_LIMITS.maxBufferedSocketBytes
+        )
+          return false;
+        return new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            protocolError(
+              'Image delivery timed out. Please repeat the last request.',
+              'tool_image_timeout',
+            );
+          }, TOOL_IMAGE_TIMEOUT_MS);
+          timer.unref?.();
+          toolImage = {
+            audio: [],
+            audioBytes: 0,
+            isCurrent: current,
+            resolve,
+            timer,
+          };
+          // Semantic VAD discards silence. Commit a separate media input in
+          // manual mode, holding microphone frames until VAD is restored.
+          if (
+            !sendJson({
+              type: 'session.update',
+              session: { turn_detection: null },
+            })
+          )
+            return;
+          configurationUpdatesPending += 1;
+          if (
+            !sendJson({
+              type: 'input_audio_buffer.append',
+              audio: Buffer.alloc(QWEN_REALTIME_INPUT_SAMPLE_RATE * 2).toString(
+                'base64',
+              ),
+            })
+          )
+            return;
+          if (
+            !sendJson({ type: 'input_image_buffer.append', image: jpegBase64 })
+          )
+            return;
+          recoveryInput.protocolSilence(QWEN_REALTIME_INPUT_SAMPLE_RATE * 2);
+          sendJson({ type: 'input_audio_buffer.commit' });
+        });
+      },
+      commitInputAudio: () =>
+        !toolImage && sendJson({ type: 'input_audio_buffer.commit' }),
       clearInputAudio: () => {
+        if (toolImage) return false;
         const sent = sendJson({ type: 'input_audio_buffer.clear' });
         if (sent) {
           speechInputInProgress = false;
@@ -2827,11 +3037,7 @@ export function openQwenRealtimeSession(
             model: 'qwen3-asr-flash-realtime',
           },
           instructions: effectiveInstructions,
-          turn_detection: {
-            type: 'semantic_vad',
-            create_response: false,
-            interrupt_response: true,
-          },
+          turn_detection: SEMANTIC_VAD,
           // Strip local-only behavior flags from the wire shape.
           tools: effectiveTools.map((tool) => ({
             type: tool.type,
@@ -2910,6 +3116,7 @@ export function openQwenRealtimeSession(
           identifier(providerSession?.['id']) ?? providerSessionId;
       }
       protocolDebug(message, type);
+      if (handleToolImageEvent(message, type)) return;
       switch (type) {
         case 'session.created': {
           sendSessionUpdate();
@@ -3203,10 +3410,10 @@ export function openQwenRealtimeSession(
                 responseInputItemIds.get(supersededResponseId);
               if (
                 responseRequest === undefined &&
-                activeResponseAuthority === 'direct' &&
+                responseToolCapabilities.get(supersededResponseId) ===
+                  'direct' &&
                 !cancelledResponseIds.has(supersededResponseId) &&
-                supersededInputItemId !== undefined &&
-                committedInputItemIds.has(supersededInputItemId)
+                supersededInputItemId !== undefined
               ) {
                 const boundInputItemIds = new Set(
                   responseInputItemIds.values(),
@@ -3217,10 +3424,10 @@ export function openQwenRealtimeSession(
                     !boundInputItemIds.has(itemId),
                 );
                 if (!hasNewUnboundInput) {
-                  // Some providers split one direct answer across consecutive
-                  // responses without issuing another response.create request.
-                  // Preserve the real microphone capability for that same turn
-                  // instead of consuming it with the superseded segment.
+                  // Providers can split a user turn, including its tool
+                  // continuation, without another response.create request.
+                  // Inherit its capability even if the initial tool response
+                  // already consumed the microphone input.
                   splitResponseInputItemId = supersededInputItemId;
                   const priorOutput =
                     responseOutputText.get(supersededResponseId);
@@ -3304,7 +3511,8 @@ export function openQwenRealtimeSession(
             const hasDirectInput =
               responseAuthority === 'direct' &&
               responseInputItemId !== undefined &&
-              committedInputItemIds.has(responseInputItemId);
+              (committedInputItemIds.has(responseInputItemId) ||
+                splitResponseInputItemId !== undefined);
             responseToolCapabilities.set(
               responseId,
               hasDirectInput
@@ -3648,7 +3856,7 @@ export function openQwenRealtimeSession(
             readResponseId(message) ??
             activeResponseId;
           if (!responseId) {
-            if (lastCompletedResponseId) {
+            if (lastCompletedResponseId || !pendingResponseCreate) {
               ignoreEvent(message, type, 'stale_response');
               break;
             }
@@ -3858,24 +4066,26 @@ export function openQwenRealtimeSession(
       clearInputHeartbeat();
       removeAbortListener();
       if (closedByClient || terminal) return;
+      const reason = sanitizeErrorText(args[1], config.apiKey);
+      const reasonKind = classifyRealtimeErrorKind(undefined, reason);
       const inputLossError = pendingInputLossError();
-      if (inputLossError) {
+      if (inputLossError && reasonKind !== 'quota') {
         fail(inputLossError);
         return;
       }
       const code = optionalFiniteNumber(args[0]);
       terminal = true;
       if (activeResponseId) collectDialogueResponse(activeResponseId, true);
-      const reason = sanitizeErrorText(args[1], config.apiKey);
       const suffix = code ? ` (${code}${reason ? `: ${reason}` : ''})` : '';
-      const reasonKind = classifyRealtimeErrorKind(undefined, reason);
       const error = new QwenRealtimeError(
         `Realtime connection closed unexpectedly${suffix}.`,
         'connection_closed',
         true,
         {
           kind:
-            code !== undefined && [1001, 1006, 1011, 1012, 1013].includes(code)
+            reasonKind !== 'quota' &&
+            code !== undefined &&
+            [1001, 1006, 1011, 1012, 1013].includes(code)
               ? 'transient'
               : reasonKind,
           closeCode: code,

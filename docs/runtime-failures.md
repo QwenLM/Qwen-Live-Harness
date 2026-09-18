@@ -61,7 +61,7 @@ Daemon 的规范错误记录使用以下核心字段：
 | 可选关联标识 | `epoch`、`callId`、`providerSessionId`、`responseId`、`toolCallId`、`toolName`、`taskId`、`backend`               |
 | 可选诊断字段 | `errorName`、`kind`、`providerType`、`param`、HTTP `status`、WebSocket `closeCode`、`fatal`、`executionUncertain` |
 
-`kind` 的 `configuration`／`transient`／`protocol` 是错误分类，部分依据供应商代码、状态和文本推断。**`transient` 不等于可以安全重试，`fatal:false` 也不等于这次操作成功。** `fatal` 需要结合来源理解：独立搜索或 Monitor 的连接失败不一定意味着主会话失败。
+`kind` 的 `configuration`／`quota`／`transient`／`protocol` 是错误分类，部分依据供应商代码、状态和文本推断。**`transient` 不等于可以安全重试，`fatal:false` 也不等于这次操作成功。** `fatal` 需要结合来源理解：独立搜索或 Monitor 的连接失败不一定意味着主会话失败。
 
 `executionUncertain:true` 尤其重要：超时、发送确认丢失或回执序列化失败，都不能证明工具没有执行。反过来，这个字段缺失也不是“已确认没有副作用”。
 

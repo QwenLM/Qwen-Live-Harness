@@ -161,7 +161,6 @@ const MAX_SPOKEN_SUMMARY_CHARS = 200;
  * log.
  */
 const MAX_COMPLETE_CONTEXT_CHARS = 4_000;
-const PERMISSION_REMINDER_DELAY_MS = 1_000;
 const PROACTIVE_CANCELLATION_GRACE_MS = 250;
 
 function noBackendReceipt(): Record<string, unknown> {
@@ -432,6 +431,7 @@ interface CallContext {
   responseAuthorities: Map<string, RealtimeResponseAuthority>;
   pendingToolCalls: Set<{ responseId: string; responseFailed: boolean }>;
   realtimeUnavailable: boolean;
+  realtimeGeneration: number;
   transportRecovering: boolean;
   recoveryNeedsRepeat: boolean;
   permissionTargetsByInput: Map<string, Set<string>>;
@@ -452,7 +452,6 @@ interface CallContext {
   proactiveRepairReceiptPending: boolean;
   pendingProactiveDelivery?: ProactiveDelivery;
   activeProactiveDelivery?: ActiveProactiveDelivery;
-  permissionReminderTimer?: ReturnType<typeof setTimeout>;
   defaultSessionHandle?: string;
   activePeerReport?: ActivePeerReport;
   reportContexts: Map<string, { provider: string; target: BackendHandle }>;
@@ -509,6 +508,12 @@ function realtimeFailureMessage(
     };
   }
   const detail = error.message.trim();
+  if (error.kind === 'quota') {
+    return {
+      message: liveMessage('runtime.realtimeQuota', { detail }),
+      configuration: false,
+    };
+  }
   if (error.code?.startsWith('realtime_recovery_')) {
     return {
       message: liveMessage('runtime.realtimeRecoveryFailed'),
@@ -684,6 +689,7 @@ export class LiveSession {
       responseAuthorities: new Map(),
       pendingToolCalls: new Set(),
       realtimeUnavailable: false,
+      realtimeGeneration: 0,
       transportRecovering: false,
       recoveryNeedsRepeat: false,
       permissionTargetsByInput: new Map(),
@@ -1984,7 +1990,7 @@ export class LiveSession {
     else if (!context.memory && !context.stopping) this.attachMemory(context);
     context.memory?.setObserverEnabled(service.settings.observer.enabled);
     if (context.realtime) {
-      this.publishMemoryInstructions(context);
+      this.publishSessionConfiguration(context);
       if (!context.stopping) context.memory?.startObserver();
     }
   }
@@ -2016,7 +2022,7 @@ export class LiveSession {
     return context.memory ? [...tools, ...MEMORY_TOOLS] : tools;
   }
 
-  private publishMemoryInstructions(context: CallContext): void {
+  private publishSessionConfiguration(context: CallContext): void {
     if (this.active !== context || !context.realtime) return;
     context.realtime.configure({
       instructions: this.instructions(context),
@@ -2065,11 +2071,7 @@ export class LiveSession {
   // -- realtime callbacks ---------------------------------------------------
 
   private callbacksFor(context: CallContext) {
-    const current = (session?: QwenRealtimeSession): boolean =>
-      this.active === context &&
-      (context.realtime === undefined || session === undefined
-        ? true
-        : context.realtime === session);
+    const current = (): boolean => this.active === context;
 
     const diagnosticId = (value: unknown): string | undefined =>
       typeof value === 'string' &&
@@ -2134,6 +2136,7 @@ export class LiveSession {
         if (event.phase === 'started') {
           if (context.transportRecovering) return;
           context.transportRecovering = true;
+          context.realtimeGeneration += 1;
           context.recoveryNeedsRepeat = false;
           context.recoveryPermissionTargets = new Set(
             context.latestPermissionTargets ??
@@ -2155,9 +2158,6 @@ export class LiveSession {
             context.epoch,
             liveMessage('runtime.realtimeRecovering'),
           );
-          if (context.permissionReminderTimer !== undefined)
-            clearTimeout(context.permissionReminderTimer);
-          context.permissionReminderTimer = undefined;
           context.pendingProactiveRepair = undefined;
           context.proactiveRepairAwaitingResponse = undefined;
           context.proactiveRepairReceiptPending = false;
@@ -2605,9 +2605,6 @@ export class LiveSession {
         if (event.inputItemId) {
           context.loggedInputTranscripts.delete(event.inputItemId);
         }
-        if (authority === 'direct') {
-          this.schedulePermissionReminder(context);
-        }
       },
       onBargeIn: (event: { responseId: string }) => {
         if (!current()) return;
@@ -2663,13 +2660,6 @@ export class LiveSession {
         if (PROACTIVE_MUTATION_TOOL_NAMES.has(event.name)) {
           context.proactiveMutationResponses.add(event.responseId);
         }
-        if (
-          event.name === RESPOND_PERMISSION_TOOL_NAME &&
-          context.permissionReminderTimer !== undefined
-        ) {
-          clearTimeout(context.permissionReminderTimer);
-          context.permissionReminderTimer = undefined;
-        }
         void this.dispatchTool(context, event);
       },
       onDirectTranscript: (
@@ -2718,7 +2708,7 @@ export class LiveSession {
         // The provider is dropping mic frames (socket buffer over its
         // cap): speech would run on a gappy utterance with no error
         // surfaced — fail the call instead, mirroring the port source.
-        if (this.active !== context) return;
+        if (!current()) return;
         this.recordFailure(context, {
           source: 'realtime',
           code: 'audio_input_backpressure',
@@ -2847,7 +2837,7 @@ export class LiveSession {
         }
       },
       onClose: (info: RealtimeCloseInfo) => {
-        if (this.active !== context) return;
+        if (!current()) return;
         context.realtimeUnavailable = true;
         this.debug('realtime.closed', {
           epoch: context.epoch,
@@ -2899,6 +2889,7 @@ export class LiveSession {
     context: CallContext,
     event: RealtimeFunctionCall,
   ): Promise<void> {
+    const generation = context.realtimeGeneration;
     const call = { responseId: event.responseId, responseFailed: false };
     context.pendingToolCalls.add(call);
     if (!context.stopping) {
@@ -2965,7 +2956,22 @@ export class LiveSession {
       result = this.dispatchProactiveTool(context, event, operation);
     } else {
       const dispatcher = new ToolDispatcher({
-        handlers: this.toolHandlers(context),
+        handlers: this.toolHandlers(context, async (capture, visualInput) => {
+          const isCurrent = () =>
+            this.active === context &&
+            !context.stopping &&
+            context.realtimeGeneration === generation &&
+            context.visualInput === visualInput &&
+            context.pendingToolCalls.has(call) &&
+            !call.responseFailed;
+          if (!isCurrent() || !context.realtime) return false;
+          const delivered = await context.realtime.submitToolImage(
+            { callEpoch: context.epoch, callId: event.callId },
+            capture.image,
+            isCurrent,
+          );
+          return delivered && isCurrent();
+        }),
         onFailure: (failure) =>
           this.recordFailure(context, {
             ...failure,
@@ -3036,7 +3042,12 @@ export class LiveSession {
         : { receipt: receipt.slice(0, 2_000) }),
     });
     context.pendingToolCalls.delete(call);
-    if (this.active !== context || !context.realtime) return;
+    if (
+      this.active !== context ||
+      !context.realtime ||
+      context.realtimeGeneration !== generation
+    )
+      return;
     try {
       const submitted = context.realtime.submitFunctionOutput(
         { callEpoch: context.epoch, callId: event.callId },
@@ -3128,7 +3139,7 @@ export class LiveSession {
         };
       }
       if (context.memory !== memory || memory.closed) return failed;
-      this.publishMemoryInstructions(context);
+      this.publishSessionConfiguration(context);
       return result;
     } catch (error) {
       this.recordFailure(context, {
@@ -3343,7 +3354,13 @@ export class LiveSession {
     };
   }
 
-  private toolHandlers(context: CallContext): ReadonlyMap<string, ToolHandler> {
+  private toolHandlers(
+    context: CallContext,
+    submitImage: (
+      capture: LiveVisualCapture,
+      visualInput: LiveVisualInput,
+    ) => Promise<boolean>,
+  ): ReadonlyMap<string, ToolHandler> {
     const handlers = new Map<string, ToolHandler>();
 
     handlers.set(WEB_SEARCH_TOOL_NAME, (args) => this.webSearch(context, args));
@@ -3354,9 +3371,18 @@ export class LiveSession {
           'Appshot is disabled while visual input uses Live Feed mode.',
         );
       }
+      const visualInput = context.visualInput;
       const capture = await this.captureVisualContext(context, true);
-      if (capture.source !== context.visualInput.source) {
+      if (
+        context.visualInput !== visualInput ||
+        capture.source !== visualInput.source
+      ) {
         throw new Error('The visual source changed while Appshot was running.');
+      }
+      if (!(await submitImage(capture, visualInput))) {
+        throw new Error(
+          'The captured image could not be delivered to Realtime. Do not describe the image or delegate automatically; ask the user to try again.',
+        );
       }
       const asset = capture.screenshotPath
         ? this.handles.registerAsset({
@@ -3376,6 +3402,11 @@ export class LiveSession {
         source: capture.source,
         width: capture.width,
         height: capture.height,
+        image_delivery: 'realtime',
+        note:
+          'The captured image is now in your Realtime context. Answer directly from this newest image. ' +
+          'If you cannot read it, say so; do not guess from metadata or an older frame. ' +
+          'Only use the asset for work the user explicitly delegates to a background Harness.',
         ...(capture.appName ? { app: capture.appName } : {}),
         ...(capture.windowTitle ? { window: capture.windowTitle } : {}),
         ...(capture.accessibilityText
@@ -3492,7 +3523,11 @@ export class LiveSession {
       });
       const handle = this.handles.session(backend);
       this.ensurePump(handle, backend);
-      return { status: 'ok', handle };
+      return {
+        status: 'ok',
+        handle,
+        note: 'Only a session was created; no task has been submitted. If the user requested work, call handoff with this handle in session and any required image assets in input_refs.',
+      };
     });
 
     handlers.set(HANDOFF_TOOL_NAME, (args, ctx) =>
@@ -3846,6 +3881,19 @@ export class LiveSession {
       ctx.activeTranscript,
       args['input_refs'],
     );
+    if (!blocks) {
+      context.injector.enqueue({
+        kind: 'error',
+        context:
+          'A requested image is unavailable or expired. No task was submitted.',
+        spoken: liveText('en', 'runtime.imageUnavailable'),
+      });
+      return {
+        status: 'error',
+        code: 'image_unavailable',
+        note: 'A requested image is unavailable or expired. No task was submitted. In On Demand mode, call appshot again and retry handoff with the fresh asset in input_refs.',
+      };
+    }
     if (options.isCurrent && !options.isCurrent())
       return { status: 'cancelled' };
     const adaptor = this.adaptorFor(backend);
@@ -4015,7 +4063,7 @@ export class LiveSession {
     task: string,
     activeTranscript: readonly RealtimeTranscriptEntry[],
     inputRefs: unknown,
-  ): Promise<ContentBlock[]> {
+  ): Promise<ContentBlock[] | undefined> {
     const parts = [task];
     const voiceContext = formatVoiceContext(activeTranscript);
     if (voiceContext) {
@@ -4024,21 +4072,23 @@ export class LiveSession {
       );
     }
     const blocks: ContentBlock[] = [{ type: 'text', text: parts.join('\n\n') }];
+    if (inputRefs !== undefined && !Array.isArray(inputRefs)) return undefined;
     if (Array.isArray(inputRefs)) {
       for (const ref of inputRefs) {
-        if (typeof ref !== 'string') continue;
+        if (typeof ref !== 'string') return undefined;
         const asset = this.handles.resolveAsset(ref);
-        if (!asset) continue;
+        if (!asset) return undefined;
         try {
           const data = await readFile(asset.path);
+          if (data.byteLength === 0) return undefined;
           blocks.push({
             type: 'image',
             mimeType: asset.mimeType,
             data: new Uint8Array(data),
-            name: `${asset.assetHandle}.png`,
+            name: `${asset.assetHandle}.${asset.mimeType === 'image/jpeg' ? 'jpg' : 'png'}`,
           });
         } catch {
-          /* the capture expired; the text task still stands */
+          return undefined;
         }
       }
     }
@@ -4479,11 +4529,13 @@ export class LiveSession {
   private enqueuePermission(
     context: CallContext,
     pending: PendingPermission,
+    announce = true,
   ): void {
     context.injector.enqueue({
       kind: 'permission',
       requestId: this.scopedPermissionId(pending.backend, pending.requestId),
       context: this.permissionContext(pending),
+      announce,
     });
   }
 
@@ -4668,20 +4720,8 @@ export class LiveSession {
   private enqueuePendingPermissions(context: CallContext): void {
     if (this.active !== context || context.stopping) return;
     for (const pending of this.broker.pendingUserRequests) {
-      this.enqueuePermission(context, pending);
+      this.enqueuePermission(context, pending, false);
     }
-  }
-
-  private schedulePermissionReminder(context: CallContext): void {
-    if (this.broker.pendingUserRequests.length === 0) return;
-    if (context.permissionReminderTimer !== undefined) {
-      clearTimeout(context.permissionReminderTimer);
-    }
-    context.permissionReminderTimer = setTimeout(() => {
-      context.permissionReminderTimer = undefined;
-      this.enqueuePendingPermissions(context);
-    }, PERMISSION_REMINDER_DELAY_MS);
-    context.permissionReminderTimer.unref?.();
   }
 
   private scopedPermissionId(
@@ -5075,7 +5115,7 @@ export class LiveSession {
     context: CallContext,
     delivery: ProactiveDelivery,
   ): boolean {
-    if (this.active !== context || context.stopping || !context.realtime) {
+    if (this.active !== context || context.stopping) {
       return false;
     }
     context.proactiveDeliveries.set(delivery.deliveryId, delivery);
@@ -5240,6 +5280,7 @@ export class LiveSession {
 
   private sendVisualSettings(context: CallContext): void {
     try {
+      this.publishSessionConfiguration(context);
       const sent = context.realtime?.sendBackendContext(
         `[VISUAL_INPUT] source=${context.visualInput.source} mode=${context.visualInput.mode}.`,
       );
@@ -5378,10 +5419,6 @@ export class LiveSession {
     if (this.active === context) {
       this.active = undefined;
       this.options.memory?.setLocked(false);
-    }
-    if (context.permissionReminderTimer !== undefined) {
-      clearTimeout(context.permissionReminderTimer);
-      context.permissionReminderTimer = undefined;
     }
     context.proactive?.dispose();
     context.proactive = undefined;

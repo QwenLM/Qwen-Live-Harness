@@ -57,6 +57,7 @@ interface RawBackend extends Record<string, unknown> {
 }
 
 interface RawConfig {
+  themeColor?: string;
   language?: LiveLanguage;
   realtimeApiKey?: string;
   realtimeEndpoint?: string;
@@ -553,6 +554,7 @@ export async function runInit(
 
   // 11. Write config
   const config: RawConfig = {
+    themeColor: 'iris',
     language,
     realtimeApiKey: apiKey,
     realtimeEndpoint,

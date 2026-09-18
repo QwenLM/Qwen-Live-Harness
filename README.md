@@ -92,7 +92,7 @@ Try saying:
 >
 > “Research current developments in AI worldwide and save a summary document to Downloads.”
 
-In Settings, choose **Audio Source**, **Video Source**, and **Capture Mode**. Both screen and camera sources support on-demand snapshots to reduce visual token usage. When the model needs a continuous view, select **Live Feed**, which defaults to **1 FPS at 720p**.
+In Settings, choose **Audio Source**, **Video Source**, and **Capture Mode**. Screen and Camera On Demand snapshots are delivered directly to the current Omni model without a background Harness. For continuous visual context, select **Live Feed**, which defaults to **1 FPS at 720p**.
 
 Open **Subagents** in the UI to inspect background tasks and Proactive monitors, handle permission requests, or stop tasks.
 
@@ -161,7 +161,7 @@ Tell Qwen Live Harness what you need. Qwen Omni can answer directly or use tools
 Keep these boundaries in mind when choosing how to use it:
 
 - **Background harness capabilities:** Audio/video interaction, Proactive, and Memory can run independently. File changes and command execution require an installed and authenticated background harness, whose capabilities and permissions determine what can be done. The application does not automatically take over existing work in arbitrary terminals.
-- **Different ways to see:** Visual input can come from your screen or camera, with two capture modes to balance context and token usage. On Demand uses a tool to capture an image when needed; Live Feed continuously supplies visual context to the main model for ongoing detail and change detection.
+- **Different ways to see:** Screen and camera support On Demand and Live Feed. On Demand captures one current image when requested and sends it to the main model before answering; Live Feed continuously supplies recent frames. Only explicitly delegated background work needs image attachments.
 - **Local memory, cloud inference:** Personalized and cross-session memories are stored in local memory libraries rather than in the cloud API, and can be created, retrieved, updated, and deleted.
 
 ## Community contributions

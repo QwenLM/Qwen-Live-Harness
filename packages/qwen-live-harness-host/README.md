@@ -74,6 +74,10 @@ Geometry constants live in [`overlay-geometry.ts`](src/shared/overlay-geometry.t
 
 When changing layout, test screen edges, multiple displays, negative coordinates, scaling, display removal, and expanded settings/previews. Temporary repositioning must not overwrite saved user positions. State updates and snapshots must not move windows. Keep media and editing controls mounted so subtitle updates do not discard focus, previews, or drafts. [`subagents-windows.ts`](src/main/subagents-windows.ts) manages subagent panels; expanded details must not cover the main UI or status bar.
 
+The Pebble interface uses a 234 × 194 px voice card with persistent call controls and a task summary. Settings appear beside the card; the task summary opens the existing task window. Terminal sessions, instruction deliveries, session reports, and searches remain available in their existing lists.
+
+Iris is the default palette. On connection or reconnection, Host reads top-level `themeColor` from the configuration path supplied by the authenticated daemon. Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`; missing or invalid values fall back to Iris without affecting calls. Light/dark appearance remains separately persisted. See the [configuration guide](../../docs/configuration.md#theme-palette).
+
 ## Boundary with the daemon
 
 Host connects over the loopback WebSocket endpoint `/live/host`. Its default discovery file is `~/.qwen-live-harness/run/daemon.json`, with mode `0600`; it contains the instance PID, nonce, and connection credentials. Do not print or share its contents.

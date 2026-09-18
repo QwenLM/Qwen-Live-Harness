@@ -111,6 +111,88 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}) {
 }
 
 describe('response state recovery', () => {
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
+  const imageRef = { callEpoch: 1, callId: 'capture' };
+
+  it('forwards tool images and recovers only the microphone audio buffered after media silence', async () => {
+    const onInputTranscriptDone = vi.fn();
+    const r = await rig({ onInputTranscriptDone });
+    const first = r.sockets[0]!;
+    first.user('question', 'Read this image.');
+    first.response('capture-response');
+    first.tool('capture-response', imageRef.callId);
+    first.done('capture-response');
+    const delivery = r.session.submitToolImage(imageRef, image);
+    const audio = new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]);
+    expect(r.session.pushAudio(audio)).toBe(true);
+    expect(first.count('input_image_buffer.append')).toBe(1);
+    first.message({ type: 'input_audio_buffer.committed', item_id: 'media' });
+    first.message({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'media',
+      transcript: '',
+    });
+    expect(await delivery).toBe(true);
+    expect(onInputTranscriptDone).toHaveBeenCalledTimes(1);
+    expect(r.session.submitFunctionOutput(imageRef, '{}')).toBe(true);
+    first.response('image-answer');
+    first.done('image-answer');
+    r.session.speakToUser('A pending notification.');
+    first.message({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'next-question',
+      audio_start_ms: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(r.sockets).toHaveLength(2);
+    const second = r.sockets[1]!;
+    second.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(second.count('input_image_buffer.append')).toBe(0);
+    expect(
+      second.sent.filter(
+        (event) => event['type'] === 'input_audio_buffer.append',
+      ),
+    ).toEqual([
+      expect.objectContaining({ audio: Buffer.from(audio).toString('base64') }),
+    ]);
+  });
+
+  it.each([false, true])(
+    'rejects a retired tool image across recovery (already sent: %s)',
+    async (sent) => {
+      const r = await rig();
+      const first = r.sockets[0]!;
+      first.user('question', 'Read this image.');
+      first.response('capture-response');
+      first.tool('capture-response', imageRef.callId);
+      const delivery = sent
+        ? r.session.submitToolImage(imageRef, image)
+        : undefined;
+      r.session.cancelResponse();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(r.sockets).toHaveLength(2);
+      if (delivery) expect(await delivery).toBe(false);
+      expect(await r.session.submitToolImage(imageRef, image)).toBe(false);
+      const second = r.sockets[1]!;
+      second.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      first.message({
+        type: 'input_audio_buffer.committed',
+        item_id: 'late-media',
+      });
+      first.message({
+        type: 'conversation.item.input_audio_transcription.completed',
+        item_id: 'late-media',
+        transcript: '',
+      });
+      expect(await r.session.submitToolImage(imageRef, image)).toBe(false);
+      expect(second.count('input_image_buffer.append')).toBe(0);
+      expect(second.count('response.create')).toBe(0);
+      expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(['respondToSearchResult', 'speakPeerReport'] as const)(
     'retains explicit notification language through the recovering %s facade',
     async (route) => {

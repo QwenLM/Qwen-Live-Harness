@@ -74,6 +74,10 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 
 修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能遮挡主界面和状态条。
 
+主界面采用 Pebble 布局：234 × 194 px 主卡、常驻通话控件与任务摘要，设置显示在卡片旁；点击任务摘要打开已有任务窗口。终端会话、指令送达、会话报告和搜索任务继续通过原有列表访问。
+
+默认主题色为 Iris 雾紫。Host 在首次连接或重连时，从已认证 daemon 提供的配置路径读取顶层 `themeColor`；支持 `iris`、`clay`、`sage`、`tide`、`graphite`、`rose`、`berry`。缺省或非法值回落到 Iris，不影响通话。浅深色模式继续独立持久化，详见[配置指南](../../docs/configuration_ZH.md#主题配色)。
+
 ## 与 daemon 的边界
 
 Host 通过 loopback WebSocket `/live/host` 连接 daemon。默认发现文件为 `~/.qwen-live-harness/run/daemon.json`，权限为 `0600`，包含实例 PID、nonce 和连接凭据。不要将文件内容写入诊断或公开分享。

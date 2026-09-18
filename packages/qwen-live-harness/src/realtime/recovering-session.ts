@@ -410,6 +410,23 @@ export async function openRecoveringQwenRealtimeSession(
     },
     pushImage: (image) =>
       recovering ? true : (active?.pushImage(image) ?? false),
+    submitToolImage: async (ref, image, isCurrent) => {
+      if (ended || recovering || retiredTools.has(ref.callId)) return false;
+      const transport = active;
+      const token = generation;
+      return (
+        (await transport?.submitToolImage(
+          ref,
+          image,
+          () =>
+            !ended &&
+            !recovering &&
+            generation === token &&
+            active === transport &&
+            (isCurrent?.() ?? true),
+        )) ?? false
+      );
+    },
     commitInputAudio: () => {
       if (recovering) {
         commitAfterRecovery = true;

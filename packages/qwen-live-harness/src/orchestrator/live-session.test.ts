@@ -309,6 +309,13 @@ function createFakeRealtime() {
     pushAudio: vi.fn((_pcm16: Uint8Array): boolean => true),
     setInputMuted: vi.fn((_muted: boolean): void => {}),
     pushImage: vi.fn((_jpegBase64: string): boolean => true),
+    submitToolImage: vi.fn(
+      async (
+        _ref: RealtimeFunctionCallRef,
+        _jpegBase64: string,
+        isCurrent?: () => boolean,
+      ): Promise<boolean> => isCurrent?.() ?? true,
+    ),
     commitInputAudio: vi.fn((): boolean => true),
     clearInputAudio: vi.fn((): boolean => true),
     cancelResponse: vi.fn((): boolean => true),
@@ -498,10 +505,13 @@ function createProactiveHarness(): {
 
 let tempDir: string;
 let pngPath: string;
+let jpegPath: string;
 
 beforeAll(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'qwen-live-harness-session-test-'));
   pngPath = join(tempDir, 'shot.png');
+  jpegPath = join(tempDir, 'shot.jpg');
+  await writeFile(jpegPath, Buffer.from(TEST_JPEG, 'base64'));
   // A real (if tiny) PNG signature so image blocks carry non-empty bytes.
   await writeFile(
     pngPath,
@@ -667,25 +677,25 @@ async function awaitReceipts(
 
 // -- tests --------------------------------------------------------------------
 
-describe('LiveSession transport recovery', () => {
-  function recover(
-    callbacks: QwenRealtimeCallbacks,
-    phase: 'started' | 'restoring' | 'completed',
-    inputKind: 'text' | 'audio' | 'none' = 'text',
-    inputReason?: 'completed' | 'tool_dispatched' | 'unavailable',
-  ) {
-    callbacks.onTransportRecovery?.({
-      callEpoch: 1,
-      phase,
-      inputKind,
-      ...(inputReason ? { inputReason } : {}),
-      responseId: 'lost-response',
-      authority: 'permission',
-      code: 'response_cancel_timeout',
-      sessionId: phase === 'started' ? 'old-session' : 'new-session',
-    });
-  }
+function recover(
+  callbacks: QwenRealtimeCallbacks,
+  phase: 'started' | 'restoring' | 'completed',
+  inputKind: 'text' | 'audio' | 'none' = 'text',
+  inputReason?: 'completed' | 'tool_dispatched' | 'unavailable',
+) {
+  callbacks.onTransportRecovery?.({
+    callEpoch: 1,
+    phase,
+    inputKind,
+    ...(inputReason ? { inputReason } : {}),
+    responseId: 'lost-response',
+    authority: 'permission',
+    code: 'response_cancel_timeout',
+    sessionId: phase === 'started' ? 'old-session' : 'new-session',
+  });
+}
 
+describe('LiveSession transport recovery', () => {
   it('restores current permission handles and live task state before the resumed user answer without restarting work', async () => {
     const harness = createProactiveHarness();
     const rig = await startSession(undefined, {
@@ -2495,7 +2505,7 @@ describe('LiveSession without a background Harness', () => {
   );
 
   it.each(['screen', 'camera'] as const)(
-    'keeps %s Appshot metadata receipts without changing the pixel protocol',
+    'delivers %s Appshot pixels directly without a background Harness',
     async (source) => {
       const { session, realtime, host, adaptor, callbacks } =
         await startSession(undefined, {
@@ -2520,8 +2530,20 @@ describe('LiveSession without a background Harness', () => {
           source,
           asset: 'asset_1',
         });
+        expect(receipt).toHaveProperty('image_delivery', 'realtime');
+        expect(receipt?.['note']).toContain('Answer directly');
+        expect(receipt?.['note']).not.toContain('call handoff');
         expect(host.captureVisualContext).toHaveBeenCalledOnce();
-        expect(realtime.pushImage).not.toHaveBeenCalled();
+        expect(realtime.submitToolImage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ callEpoch: 1 }),
+          TEST_JPEG,
+          expect.any(Function),
+        );
+        expect(
+          realtime.submitToolImage.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          realtime.submitFunctionOutput.mock.invocationCallOrder[0]!,
+        );
         expect(realtime.commitInputAudio).not.toHaveBeenCalled();
         expect(adaptor.createSession).not.toHaveBeenCalled();
         expect(host.failCall).not.toHaveBeenCalled();
@@ -4501,6 +4523,69 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
+  it.each(['opening', 'active'] as const)(
+    'shows actionable quota guidance without blocking later retries (%s)',
+    async (phase) => {
+      const host = createFakeHost({
+        source: 'screen',
+        image: TEST_JPEG,
+        width: 1280,
+        height: 720,
+      });
+      const setProviderReachability = vi.fn();
+      const error = new QwenRealtimeError(
+        'Allocated quota exceeded, please increase your quota limit.',
+        'connection_closed',
+        true,
+        { closeCode: 1007 },
+      );
+      let callbacks: QwenRealtimeCallbacks = {};
+      const session = new LiveSession({
+        host: { ...host, setProviderReachability },
+        registry: new BackendRegistry([
+          { adaptor: new FakeAdaptor(), isDefault: true },
+        ]),
+        realtime: {
+          endpoint: 'https://dashscope.example.com',
+          model: 'qwen3.5-omni-plus-realtime',
+        },
+        log: { write: vi.fn(), close: async () => {} } as unknown as SessionLog,
+        openRealtime: async (_config, handlers) => {
+          callbacks = handlers ?? {};
+          if (phase === 'opening') {
+            callbacks.onClose?.({ reason: 'remote', error });
+            throw error;
+          }
+          return createFakeRealtime() as unknown as QwenRealtimeSession;
+        },
+      });
+      try {
+        const starting = session.start({
+          epoch: 1,
+          callId: 'call-1',
+          mode: 'new',
+          visualInput: DEFAULT_VISUAL_INPUT,
+        });
+        if (phase === 'opening') await expect(starting).rejects.toBe(error);
+        else {
+          await starting;
+          callbacks.onError?.(error);
+        }
+        expect(host.failCall).toHaveBeenCalledOnce();
+        const message = host.failCall.mock.calls[0]![1]!;
+        expect(displayLiveMessage('en', message)).toContain(
+          'Realtime quota limit reached.',
+        );
+        expect(displayLiveMessage('en', message)).toContain(error.message);
+        expect(displayLiveMessage('zh-CN', message)).toContain('配额');
+        expect(displayLiveMessage('zh-CN', message)).toContain('重试');
+        expect(setProviderReachability).not.toHaveBeenCalled();
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
   it('surfaces an actionable Realtime authentication failure', async () => {
     const host = createFakeHost({
       source: 'screen',
@@ -4600,6 +4685,64 @@ describe('LiveSession', () => {
       blocker: 'provider_config',
       message: host.failCall.mock.calls[0]![1],
     });
+  });
+
+  it('queues a reminder that becomes due while the voice connection is recovering', async () => {
+    const proactive = createProactiveHarness();
+    const rig = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: proactive.createScheduler,
+    });
+    recover(rig.callbacks, 'started', 'none');
+    const accepted = proactive.options().onEvent({
+      taskId: 'task-timer',
+      taskGeneration: 1,
+      deliveryId: 'during-recovery',
+      event: 'The timer is ready.',
+    });
+    expect(accepted).toBe(true);
+    expect(rig.realtime.respondToProactiveEvent).not.toHaveBeenCalled();
+    recover(rig.callbacks, 'restoring', 'none');
+    recover(rig.callbacks, 'completed', 'none');
+    await vi.waitFor(() =>
+      expect(
+        rig.realtime.respondToProactiveEvent,
+      ).toHaveBeenCalledExactlyOnceWith('The timer is ready.'),
+    );
+    rig.session.dispose();
+  });
+
+  it('queues a search result that finishes while the voice connection is recovering', async () => {
+    const pending = deferredWebSearch();
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      realtimeModel: 'qwen3.5-omni-plus-realtime',
+      searchRealtime: vi
+        .fn<typeof searchQwenRealtime>()
+        .mockReturnValue(pending.promise),
+    });
+    beginSearchUserTurn(rig, 'search-request');
+    callToolForResponse(rig.callbacks, 'search-request', 'web_search', {
+      query: 'a simple public lookup',
+    });
+    await awaitReceipts(rig.realtime, 1);
+    finishSearchUserTurn(rig, 'search-request');
+    recover(rig.callbacks, 'started', 'none');
+    pending.resolve({
+      answer: 'The awaited result.',
+      searchStatus: 'performed',
+    });
+    await delay(30);
+    expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+    recover(rig.callbacks, 'restoring', 'none');
+    recover(rig.callbacks, 'completed', 'none');
+    await vi.waitFor(() =>
+      expect(rig.realtime.respondToSearchResult).toHaveBeenCalledWith(
+        expect.stringContaining('The awaited result.'),
+        { fallbackLanguage: 'en', outputLanguage: 'en' },
+      ),
+    );
+    rig.session.dispose();
   });
 
   it('does not replace a fatal provider error with a final-input commit error', async () => {
@@ -7991,17 +8134,70 @@ describe('LiveSession', () => {
     expect(image.data.byteLength).toBeGreaterThan(0);
   });
 
-  it('returns Camera appshot through the same asset receipt path', async () => {
-    const { callbacks, host, realtime } = await startSession(undefined, {
-      visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
-      capture: {
-        source: 'camera',
-        image: TEST_JPEG,
-        width: 1280,
-        height: 720,
-        screenshotPath: pngPath,
+  it.each(['expired', 'unknown'])(
+    'rejects a handoff with an %s image instead of sending a text-only task',
+    async (kind) => {
+      const capturePath = join(tempDir, `${kind}-shot.png`);
+      await writeFile(capturePath, Buffer.from(TEST_JPEG, 'base64'));
+      const { adaptor, callbacks, realtime } = await startSession(undefined, {
+        capture: {
+          source: 'screen',
+          image: TEST_JPEG,
+          width: 1280,
+          height: 720,
+          screenshotPath: capturePath,
+        },
+      });
+      callTool(callbacks, 'appshot', {});
+      await awaitReceipts(realtime, 1);
+      if (kind === 'expired') await rm(capturePath);
+
+      callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'image-handoff',
+        authority: 'direct',
+      });
+      callToolForResponse(callbacks, 'image-handoff', 'handoff', {
+        task: 'describe the attached image',
+        input_refs:
+          kind === 'expired' ? ['asset_1'] : ['asset_1', 'asset_unknown'],
+      });
+      const [, receipt] = await awaitReceipts(realtime, 2);
+
+      expect(receipt).toMatchObject({
+        status: 'error',
+        code: 'image_unavailable',
+      });
+      expect(adaptor.prompt).not.toHaveBeenCalled();
+      expect(realtime.speakToUser).not.toHaveBeenCalled();
+      callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'image-handoff',
+        authority: 'direct',
+        status: 'completed',
+      });
+      await vi.waitFor(() =>
+        expect(realtime.speakToUser).toHaveBeenCalledExactlyOnceWith(
+          'The image is no longer available. The task was not sent; capture a new image and try again.',
+        ),
+      );
+    },
+  );
+
+  it('sends Camera appshot directly and retains its asset for explicit delegation', async () => {
+    const { adaptor, callbacks, host, realtime } = await startSession(
+      undefined,
+      {
+        visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
+        capture: {
+          source: 'camera',
+          image: TEST_JPEG,
+          width: 1280,
+          height: 720,
+          screenshotPath: jpegPath,
+        },
       },
-    });
+    );
 
     callTool(callbacks, 'appshot', {});
     const [receipt] = await awaitReceipts(realtime, 1);
@@ -8020,8 +8216,168 @@ describe('LiveSession', () => {
       height: 720,
       asset: 'asset_1',
     });
-    expect(receipt).not.toHaveProperty('image_delivery');
+    expect(receipt).toHaveProperty('image_delivery', 'realtime');
+    expect(receipt?.['note']).toContain('Answer directly');
+    expect(realtime.submitToolImage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ callEpoch: 1 }),
+      TEST_JPEG,
+      expect.any(Function),
+    );
+    expect(adaptor.prompt).not.toHaveBeenCalled();
+
+    callTool(callbacks, 'handoff', {
+      task: 'describe this camera photo',
+      input_refs: ['asset_1'],
+    });
+    await awaitReceipts(realtime, 2);
+    expect(adaptor.prompt.mock.calls[0]?.[1]?.[1]).toEqual({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      name: 'asset_1.jpg',
+      data: new Uint8Array(Buffer.from(TEST_JPEG, 'base64')),
+    });
   });
+
+  it('sends the latest captured frame on repeated Appshots and a source switch', async () => {
+    const { session, callbacks, host, realtime, adaptor } =
+      await startSession();
+    const secondImage = Buffer.from([255, 216, 2, 255, 217]).toString('base64');
+    const cameraImage = Buffer.from([255, 216, 3, 255, 217]).toString('base64');
+    try {
+      callTool(callbacks, 'appshot', {});
+      await awaitReceipts(realtime, 1);
+      host.captureVisualContext.mockResolvedValueOnce({
+        source: 'screen',
+        image: secondImage,
+        width: 1,
+        height: 1,
+      });
+      callTool(callbacks, 'appshot', {});
+      await awaitReceipts(realtime, 2);
+      session.setVisualSettings({
+        epoch: 1,
+        callId: 'call-1',
+        visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
+      });
+      host.captureVisualContext.mockResolvedValueOnce({
+        source: 'camera',
+        image: cameraImage,
+        width: 1,
+        height: 1,
+      });
+      callTool(callbacks, 'appshot', {});
+      const receipts = await awaitReceipts(realtime, 3);
+      expect(
+        realtime.submitToolImage.mock.calls.map(([, image]) => image),
+      ).toEqual([TEST_JPEG, secondImage, cameraImage]);
+      expect(receipts.map((receipt) => receipt['source'])).toEqual([
+        'screen',
+        'screen',
+        'camera',
+      ]);
+      for (let i = 0; i < 3; i++) {
+        expect(
+          realtime.submitToolImage.mock.invocationCallOrder[i],
+        ).toBeLessThan(
+          realtime.submitFunctionOutput.mock.invocationCallOrder[i]!,
+        );
+      }
+      expect(adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it.each(['reject', 'throw'] as const)(
+    'reports an Appshot delivery failure when the image transport will %s',
+    async (failure) => {
+      const { session, callbacks, realtime, adaptor, host } =
+        await startSession();
+      try {
+        if (failure === 'reject')
+          realtime.submitToolImage.mockResolvedValue(false);
+        else
+          realtime.submitToolImage.mockImplementation(() => {
+            throw new Error('closed');
+          });
+        callTool(callbacks, 'appshot', {});
+        const [receipt] = await awaitReceipts(realtime, 1);
+        expect(receipt).toMatchObject({ status: 'error' });
+        expect(receipt).not.toHaveProperty('image_delivery');
+        expect(receipt).not.toHaveProperty('asset');
+        expect(adaptor.prompt).not.toHaveBeenCalled();
+        expect(host.failCall).not.toHaveBeenCalled();
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it.each(['stop', 'source', 'mode', 'reconnect', 'failed-response'] as const)(
+    'does not send a delayed Appshot image after %s',
+    async (change) => {
+      const rig = await startSession();
+      const { session, callbacks, host, realtime, log } = rig;
+      let finish!: (capture: LiveVisualCapture) => void;
+      host.captureVisualContext.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      try {
+        callToolForResponse(callbacks, 'capture-response', 'appshot', {});
+        await vi.waitFor(() =>
+          expect(host.captureVisualContext).toHaveBeenCalledOnce(),
+        );
+        if (change === 'stop') session.dispose();
+        else if (change === 'reconnect') {
+          recover(callbacks, 'started', 'none');
+          recover(callbacks, 'restoring', 'none');
+          recover(callbacks, 'completed', 'none');
+        } else if (change === 'failed-response') {
+          callbacks.onResponseDone?.({
+            callEpoch: 1,
+            responseId: 'capture-response',
+            status: 'failed',
+            authority: 'direct',
+          });
+        } else {
+          session.setVisualSettings({
+            epoch: 1,
+            callId: 'call-1',
+            visualInput: {
+              ...DEFAULT_VISUAL_INPUT,
+              ...(change === 'source'
+                ? { source: 'camera' as const }
+                : { mode: 'live-feed' as const }),
+            },
+          });
+          session.setVisualSettings({
+            epoch: 1,
+            callId: 'call-1',
+            visualInput: DEFAULT_VISUAL_INPUT,
+          });
+        }
+        finish({ source: 'screen', image: TEST_JPEG, width: 1, height: 1 });
+        await vi.waitFor(() =>
+          expect(log.write).toHaveBeenCalledWith(
+            'tool.result',
+            expect.objectContaining({ name: 'appshot' }),
+          ),
+        );
+        expect(realtime.submitToolImage).not.toHaveBeenCalled();
+        if (change === 'stop' || change === 'reconnect')
+          expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
+        else
+          expect(
+            JSON.parse(realtime.submitFunctionOutput.mock.calls[0]![1]),
+          ).toMatchObject({ status: 'error' });
+      } finally {
+        session.dispose();
+      }
+    },
+  );
 
   it('fails the call when an active Realtime response rejects a tool result', async () => {
     const { callbacks, host, log, realtime } = await startSession();
@@ -8732,7 +9088,7 @@ describe('LiveSession', () => {
     expect(respondReceipt).toEqual({ status: 'delivered' });
   });
 
-  it('replays an unresolved permission after the user interrupts its speech', async () => {
+  it('retains an interrupted permission as silent context for the user answer', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -8773,14 +9129,20 @@ describe('LiveSession', () => {
       responsePending: true,
     });
     await vi.waitFor(() => {
-      expect(realtime.askPermission).toHaveBeenCalledTimes(1);
+      expect(realtime.sendBackendContext).toHaveBeenCalledWith(
+        expect.stringContaining('"request_id":"req_1"'),
+      );
     });
-    expect(realtime.askPermission.mock.calls[0]?.[0]).toContain(
-      '"request_id":"req_1"',
-    );
+    expect(realtime.askPermission).not.toHaveBeenCalled();
+    callTool(callbacks, 'respond_permission', {
+      request_id: 'req_1',
+      decision: 'allow',
+    });
+    await awaitReceipts(realtime, 2);
+    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
   });
 
-  it('replays an active permission response after barge-in', async () => {
+  it('keeps an active permission pending without another speech after barge-in', async () => {
     const { adaptor, callbacks, host, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -8796,6 +9158,7 @@ describe('LiveSession', () => {
       expect(realtime.askPermission).toHaveBeenCalledTimes(1);
     });
     realtime.askPermission.mockClear();
+    realtime.sendBackendContext.mockClear();
     host.clearOutput.mockClear();
 
     callbacks.onResponseCreated?.({
@@ -8822,11 +9185,14 @@ describe('LiveSession', () => {
       responsePending: true,
     });
     await vi.waitFor(() => {
-      expect(realtime.askPermission).toHaveBeenCalledTimes(1);
+      expect(realtime.sendBackendContext).toHaveBeenCalledWith(
+        expect.stringContaining('"request_id":"req_1"'),
+      );
     });
+    expect(realtime.askPermission).not.toHaveBeenCalled();
   });
 
-  it('actively reminds after a direct response leaves permission unresolved', async () => {
+  it('does not repeat an unresolved approval after the user changes the subject', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -8854,16 +9220,12 @@ describe('LiveSession', () => {
       inputItemId: 'input-allow',
     });
 
-    await vi.waitFor(
-      () => {
-        expect(realtime.askPermission).toHaveBeenCalledTimes(1);
-      },
-      { timeout: 2_000 },
-    );
+    await delay(1_100);
+    expect(realtime.askPermission).not.toHaveBeenCalled();
     expect(adaptor.respondPermission).not.toHaveBeenCalled();
   });
 
-  it('cancels a pending reminder when a delayed permission tool call arrives', async () => {
+  it('delivers a delayed permission decision without another reminder', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -8890,16 +9252,11 @@ describe('LiveSession', () => {
       responseId: 'direct-ack',
       inputItemId: 'input-allow',
     });
-    await delay(500);
     callbacks.onResponseCreated?.({
       callEpoch: 1,
       responseId: 'direct-tool',
       authority: 'direct',
     });
-    // Let the reminder timer fire while the delayed tool response owns the
-    // response slot. The ask is now queued in Injector and must be retracted
-    // by the delivered vote rather than leaking after response.done.
-    await delay(600);
     callTool(callbacks, 'respond_permission', {
       request_id: 'req_1',
       decision: 'allow',
@@ -9628,7 +9985,7 @@ describe('LiveSession', () => {
     await stopPending;
   });
 
-  it('forwards Source and Mode changes as silent realtime context', async () => {
+  it('updates session instructions and silent context when Source and Mode change', async () => {
     const { realtime, session } = await startSession();
 
     session.setVisualSettings({
@@ -9640,10 +9997,22 @@ describe('LiveSession', () => {
         mode: 'live-feed',
       },
     });
+    expect(realtime.configure).toHaveBeenLastCalledWith({
+      instructions: expect.stringContaining(
+        '[VISUAL_INPUT] source=camera mode=live-feed.',
+      ),
+      tools: expect.any(Array),
+    });
     session.setVisualSettings({
       epoch: 1,
       callId: 'call-1',
       visualInput: DEFAULT_VISUAL_INPUT,
+    });
+    expect(realtime.configure).toHaveBeenLastCalledWith({
+      instructions: expect.stringContaining(
+        '[VISUAL_INPUT] source=screen mode=on-demand.',
+      ),
+      tools: expect.any(Array),
     });
 
     expect(realtime.sendBackendContext).toHaveBeenNthCalledWith(
@@ -9705,6 +10074,12 @@ describe('LiveSession', () => {
     expect(realtime.sendBackendContext).toHaveBeenCalledWith(
       '[VISUAL_INPUT] source=camera mode=live-feed.',
     );
+    expect(realtime.configure).toHaveBeenLastCalledWith({
+      instructions: expect.stringContaining(
+        '[VISUAL_INPUT] source=camera mode=live-feed.',
+      ),
+      tools: expect.any(Array),
+    });
   });
 
   it('routes tool calls to the owning adaptor when two backends coexist', async () => {
@@ -9851,6 +10226,7 @@ describe('LiveSession', () => {
 
     // Register the asset first (appshot), then hand off referencing it.
     callTool(callbacks, 'appshot', {});
+    await awaitReceipts(realtime, 1);
     callTool(
       callbacks,
       'handoff',

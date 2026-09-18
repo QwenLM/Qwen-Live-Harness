@@ -51,6 +51,7 @@ function harness(openOverride?: typeof openQwenRealtimeSession) {
     pushAudio: vi.fn(() => true),
     setInputMuted: vi.fn(),
     pushImage: vi.fn(() => true),
+    submitToolImage: vi.fn(async () => true),
     commitInputAudio: vi.fn(() => true),
     clearInputAudio: vi.fn(() => true),
     cancelResponse: vi.fn(() => true),

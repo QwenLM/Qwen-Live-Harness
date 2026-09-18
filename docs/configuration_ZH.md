@@ -8,16 +8,17 @@
 
 ## 想改什么，去哪里改
 
-| 我想……                           | 在哪里操作                               |
-| -------------------------------- | ---------------------------------------- |
-| 换一个麦克风                     | Settings → Audio Source                  |
-| 在屏幕和摄像头之间切换           | Settings → Video Source                  |
-| 让模型持续看画面                 | Settings → Capture Mode → Live Feed      |
-| 选择要看的显示器                 | Settings → Video Source → Display        |
-| 开关记忆、换记忆库、修改记忆名字 | Settings → Memory                        |
-| 切换中文／英文、浅色／深色       | Settings 最下方的 Language / Theme       |
-| 修改模型、API key、分辨率、帧率  | Settings → Open config.json ↗            |
-| 开始或结束交互                   | UI 上的 Start / End call，或 `Command+E` |
+| 我想……                           | 在哪里操作                                         |
+| -------------------------------- | -------------------------------------------------- |
+| 换一个麦克风                     | Settings → Sound → Microphone                      |
+| 在屏幕和摄像头之间切换           | Settings → Video Source                            |
+| 让模型持续看画面                 | Settings → Capture Mode → Live Feed                |
+| 选择要看的显示器                 | Settings → Video Source → Display                  |
+| 开关记忆、换记忆库、修改记忆名字 | Settings → Memory                                  |
+| 更换主题配色                     | 配置文件顶层 `themeColor`，重启 Host 后生效        |
+| 切换中文／英文、浅色／深色       | Settings → Personalization → Language / Appearance |
+| 修改模型、API key、分辨率、帧率  | Settings → Open configuration                      |
+| 开始或结束交互                   | UI 上的 Start / End call，或 `Command+E`           |
 
 ## 修改配置，只需五步
 
@@ -90,6 +91,18 @@ qwen-live-harness init
 
 Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给它们分别设置 Endpoint。
 
+## 主题配色
+
+默认使用 Iris 雾紫。在现有配置文件顶层添加或修改：
+
+```json
+{
+  "themeColor": "iris"
+}
+```
+
+支持 `iris`（雾紫）、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。保存后重启 Host 或重新连接 daemon，主卡和任务窗口会同时应用新配色。缺省或非法值使用雾紫；浅色／深色／跟随系统仍在 Settings 中独立设置。
+
 ## 视觉输入
 
 先选“看哪里”，再选“什么时候看”：
@@ -99,7 +112,7 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 - **Capture Mode → On Demand**：需要时才截图，是默认模式。
 - **Capture Mode → Live Feed**：通话期间持续发送近期画面，适合直接询问“你现在看见什么”。
 
-**没有后台 Harness 时，想让 Omni 直接理解完整画面，建议用 Live Feed。** On Demand 可以提供一些屏幕文字，但完整截图通常需要后台 Harness 帮助分析；摄像头的按需截图也不能当成 Omni 已经看到了画面。
+**On Demand 和 Live Feed 都由当前 Omni 直接理解画面，无需后台 Harness。** On Demand 在视觉提问时采集一张当前 Screen / Camera 图片，提交后直接回答；Live Feed 持续发送近期画面。截图或图片提交失败会明确报错。只有用户明确委派的后台工作才需要转交图片附件。
 
 Screen 的 Live Feed 和视觉监控会看选定显示器的完整画面。On Demand 主要看当前前台窗口。使用多个显示器时，在 **Display** 里选择；默认跟随主显示器。
 
@@ -199,7 +212,7 @@ Memory 默认开启，视觉记忆默认关闭。最方便的入口是 **Setting
 
 观察模型默认跟随记忆整理模型。它需要支持图片输入；如果整理模型只能处理文字，可另外设置 `memory.observer.model`。
 
-视觉记忆和“当前对话是否持续看画面”是不同功能。想让 Omni 直接回答眼前的画面，仍请选择 Live Feed。
+视觉记忆与当前对话的画面输入相互独立。直接询问眼前画面时，可用 On Demand 按需截图，或用 Live Feed 持续提供画面。
 
 ### 记忆保存在什么地方
 

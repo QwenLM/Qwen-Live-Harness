@@ -88,6 +88,7 @@ function fixture() {
     },
     liveMessage,
     theme: 'system',
+    themeColor: 'iris',
     resolvedTheme: () => 'light',
     language: 'en',
     overlayOffset: { x: 0, y: 0 },

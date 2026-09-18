@@ -180,7 +180,7 @@ describe('live session Proactive tools', () => {
     )!;
     expect(Boolean(handoff.continuesResponse)).toBe(false);
     expect(handoff.function.description).toContain(
-      'For simple current public-information queries, use web_search first',
+      'For simple lookups without an explicit request to create a task, use web_search first',
     );
     expect(handoff.function.description).toContain(
       'Do not duplicate a web_search fallback already managed by the runtime',

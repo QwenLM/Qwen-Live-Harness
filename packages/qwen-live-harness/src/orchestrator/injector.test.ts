@@ -176,6 +176,29 @@ describe('Injector permission questions', () => {
     spoken: 'Legacy English must never be read.',
   };
 
+  it('retains interrupted approval context silently without blocking later results', () => {
+    injector.enqueue({ ...permission, announce: false });
+    injector.enqueue(complete('later result', 'Task finished.'));
+    expect(sink.contextCalls).toEqual([permission.context, 'later result']);
+    expect(sink.permissionCalls).toEqual([]);
+    expect(sink.speechCalls).toEqual(['Task finished.']);
+    expect(sink.injected[0]?.spoken).toBe(false);
+    expect(injector.pendingCount).toBe(0);
+  });
+
+  it('keeps a silent permission queued on refusal and allows retraction', () => {
+    sink.contextResult = false;
+    injector.enqueue({ ...permission, announce: false });
+    expect(injector.pendingCount).toBe(1);
+    expect(sink.permissionCalls).toEqual([]);
+    injector.retractPermission(permission.requestId!);
+    sink.contextResult = true;
+    vi.advanceTimersByTime(QUIET_GAP_MS);
+    expect(injector.pendingCount).toBe(0);
+    expect(sink.permissionCalls).toEqual([]);
+    expect(sink.contextCalls).toHaveLength(1);
+  });
+
   it('reserves a distinct response so progress cannot replace the question', () => {
     injector.enqueue(permission);
     injector.enqueue(complete('result evidence', 'Task finished.'));
