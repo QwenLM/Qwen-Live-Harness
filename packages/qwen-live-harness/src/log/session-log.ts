@@ -44,6 +44,8 @@ export type SessionLogEventType =
   | 'failure'
   | 'instruction.delivery'
   | 'session.report'
+  | 'search.delivery'
+  | 'visual.analysis'
   | 'inject.context'
   | 'inject.speech'
   | 'permission.request'
@@ -57,6 +59,8 @@ export interface SessionLogOptions {
   liveSessionId: string;
   maxBytes?: number;
   now?: () => number;
+  /** Optional opt-in debug timeline mirror; never affects the normal log. */
+  onEvent?: (event: Record<string, unknown>) => void;
 }
 
 export class SessionLog {
@@ -82,14 +86,21 @@ export class SessionLog {
    * buffer at process.exit).
    */
   write(type: SessionLogEventType, payload: Record<string, unknown>): void {
-    if (this.failed || this.closed) return;
+    if (this.closed) return;
     try {
-      const line = `${JSON.stringify({
+      const event = {
         ts: this.now(),
         seq: ++this.seq,
         type,
         payload,
-      })}\n`;
+      };
+      try {
+        this.options.onEvent?.(event);
+      } catch {
+        // A diagnostic observer must never disable the normal session log.
+      }
+      if (this.failed) return;
+      const line = `${JSON.stringify(event)}\n`;
       const bytes = Buffer.byteLength(line);
       if (this.bytes + bytes > this.maxBytes) {
         this.rotate();

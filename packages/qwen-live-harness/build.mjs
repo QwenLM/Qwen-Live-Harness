@@ -11,7 +11,16 @@
  * leaves tsc's buildinfo claiming everything is up to date, so `tsc --build`
  * would emit nothing), compiles TypeScript, and sanity-checks the emit.
  */
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -98,3 +107,39 @@ for (const required of ['index.js', 'daemon.js']) {
     );
   }
 }
+
+// Identify the code actually built, including uncommitted development fixes.
+// Hash source contents; never include config, environment or source text itself.
+const sourceHash = createHash('sha256');
+const hashSources = (directory) => {
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort(
+    (a, b) => a.name.localeCompare(b.name),
+  )) {
+    const filename = path.join(directory, entry.name);
+    if (entry.isDirectory()) hashSources(filename);
+    else if (
+      entry.isFile() &&
+      entry.name.endsWith('.ts') &&
+      !entry.name.endsWith('.test.ts')
+    ) {
+      sourceHash.update(path.relative(here, filename).replaceAll('\\', '/'));
+      sourceHash.update('\0');
+      sourceHash.update(readFileSync(filename));
+      sourceHash.update('\0');
+    }
+  }
+};
+hashSources(path.join(here, 'src'));
+writeFileSync(
+  path.join(here, 'dist', 'build-info.json'),
+  JSON.stringify(
+    {
+      version: JSON.parse(readFileSync(path.join(here, 'package.json'), 'utf8'))
+        .version,
+      builtAt: new Date().toISOString(),
+      sourceSha256: sourceHash.digest('hex'),
+    },
+    null,
+    2,
+  ) + '\n',
+);

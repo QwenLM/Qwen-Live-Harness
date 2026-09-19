@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,50 @@ afterEach(async () => {
 });
 
 describe('SessionLog', () => {
+  it('continues its independent debug mirror if the normal log cannot open', async () => {
+    const base = await temporaryDirectory();
+    const occupied = join(base, 'not-a-directory');
+    await writeFile(occupied, 'test fixture');
+    const onEvent = vi.fn();
+    const log = new SessionLog({
+      directory: occupied,
+      liveSessionId: 'cannot-write',
+      onEvent,
+    });
+    log.write('session.start', { epoch: 1 });
+    log.write('response.done', { responseId: 'resp_after_disk_error' });
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'response.done',
+        payload: { responseId: 'resp_after_disk_error' },
+      }),
+    );
+    await log.close();
+    log.write('session.end', {});
+    expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('mirrors the complete emitted event and isolates observer errors', async () => {
+    const base = await temporaryDirectory();
+    const onEvent = vi.fn().mockImplementationOnce(() => {
+      throw new Error('diagnostic sink failed');
+    });
+    const log = new SessionLog({
+      directory: base,
+      liveSessionId: 'mirrored',
+      onEvent,
+      now: () => 123,
+    });
+    log.write('session.start', { epoch: 1 });
+    log.write('tool.result', { receipt: 'line1\n\nline2' });
+    await log.close();
+    const events = await readLines(log.filePath);
+    expect(events).toHaveLength(2);
+    expect(onEvent).toHaveBeenNthCalledWith(2, events[1]);
+    expect(events[1]?.payload['receipt']).toBe('line1\n\nline2');
+  });
+
   it('writes one JSON line per event with ts, monotonic seq, type, and payload', async () => {
     const base = await temporaryDirectory();
     let tick = 100;

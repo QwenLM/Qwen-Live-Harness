@@ -30,7 +30,7 @@ export function runtimeFailureSecrets(
     config ? process.env[config.memory.observer.apiKeyEnv] : undefined,
     ...(config?.backends ?? []).flatMap((backend) =>
       backend.kind === 'qwen-code'
-        ? [backend.token]
+        ? [backend.token, backend.peerDiscovery?.controllerToken]
         : Object.entries(backend.env ?? {})
             .filter(([key]) =>
               /key|token|secret|password|authorization/iu.test(key),
