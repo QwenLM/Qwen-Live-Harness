@@ -4,7 +4,7 @@
 
 [返回项目首页](../README_ZH.md) · [开发者高级配置](../packages/qwen-live-harness/README_ZH.md#高级配置参考)
 
-完成初始化后，大部分日常操作都可以在 UI 的 **Settings / 设置** 中完成。只有修改模型、API key、画面清晰度等参数时，才需要打开配置文件。
+完成初始化后，大部分日常操作都可以在 Pebble 交互卡片旁的 **Settings / 设置** 中完成。只有修改模型、API key、画面清晰度等参数时，才需要打开配置文件。
 
 ## 想改什么，去哪里改
 
@@ -14,15 +14,15 @@
 | 在屏幕和摄像头之间切换           | Settings → Video Source                            |
 | 让模型持续看画面                 | Settings → Capture Mode → Live Feed                |
 | 选择要看的显示器                 | Settings → Video Source → Display                  |
-| 开关记忆、换记忆库、修改记忆名字 | Settings → Memory                                  |
-| 更换主题配色                     | 配置文件顶层 `themeColor`，重启 Host 后生效        |
+| 开关记忆、换记忆库、修改记忆名字 | Settings → Personalization → Memory                |
+| 更换主题配色                     | 配置文件顶层 `themeColor`                          |
 | 切换中文／英文、浅色／深色       | Settings → Personalization → Language / Appearance |
 | 修改模型、API key、分辨率、帧率  | Settings → Open configuration                      |
 | 开始或结束交互                   | UI 上的 Start / End call，或 `Command+E`           |
 
 ## 修改配置，只需五步
 
-1. **打开文件。** 在 Settings 点击 **Open config.json ↗**，会用电脑默认的编辑器打开配置。
+1. **打开文件。** 在 Settings 点击 **Open configuration / 打开配置文件**，会用电脑默认的编辑器打开 `config.json`。
 2. **留一份备份。** 第一次修改前，把文件复制一份，例如 `config.backup.json`。
 3. **只改需要的字段。** 按下文示例找到同名设置，保留文件里的其他内容。
 4. **保存文件。** 配置使用 JSON：文字加双引号，不写注释，最后一项后面不要留逗号。
@@ -76,7 +76,7 @@ qwen-live-harness init
 }
 ```
 
-当前默认主模型是 `qwen3.8-omni-flash-realtime`。使用其他模型或邀测别名时，把控制台提供的**完整 Realtime 模型 ID** 填入 `realtimeModel`，不要直接填写产品宣传名称。已有配置中的显式模型选择优先于默认值，不会自动替换。
+默认主模型是 `qwen3.8-omni-flash-realtime`。使用其他模型或邀测别名时，把控制台提供的**完整 Realtime 模型 ID** 填入 `realtimeModel`，不要直接填写产品宣传名称。已有配置中的显式模型选择优先于默认值，不会自动替换。
 
 ### 常用设置速查
 
@@ -93,7 +93,7 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 
 ## 主题配色
 
-默认使用 Iris 雾紫。在现有配置文件顶层添加或修改：
+默认使用 Iris 雾紫。在配置文件顶层设置：
 
 ```json
 {
@@ -101,7 +101,7 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 }
 ```
 
-支持 `iris`（雾紫）、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。保存后重启 Host 或重新连接 daemon，主卡和任务窗口会同时应用新配色。缺省或非法值使用雾紫；浅色／深色／跟随系统仍在 Settings 中独立设置。
+支持 `iris`（雾紫）、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。保存后重启 Host 或重新连接 daemon，交互卡片和任务窗口会应用相同配色。缺省或非法值使用 Iris；浅色／深色／跟随系统在 **Personalization → Appearance / 个性化 → 外观** 中独立设置。
 
 ## 视觉输入
 
@@ -112,9 +112,9 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 - **Capture Mode → On Demand**：需要时才截图，是默认模式。
 - **Capture Mode → Live Feed**：通话期间持续发送近期画面，适合直接询问“你现在看见什么”。
 
-**On Demand 和 Live Feed 都由当前 Omni 直接理解画面，无需后台 Harness。** On Demand 在视觉提问时采集一张当前 Screen / Camera 图片，提交后直接回答；Live Feed 持续发送近期画面。截图或图片提交失败会明确报错。只有用户明确委派的后台工作才需要转交图片附件。
+**On Demand 不接入后台 Harness 也能理解截图。** 询问画面时，会由只读的“画面分析”子智能体分析一张截图，再交给 Omni 回答。在 Subagents 中可查看状态、结果或手动停止；结束通话会取消未完成的分析。它复用主对话的模型、API key 和地域，不需要另选模型。
 
-Screen 的 Live Feed 和视觉监控会看选定显示器的完整画面。On Demand 主要看当前前台窗口。使用多个显示器时，在 **Display** 里选择；默认跟随主显示器。
+Screen 的 Live Feed、On Demand 和视觉监控都采集选定显示器的完整画面。使用多个显示器时，在 **Display** 里选择；默认跟随主显示器。On Demand 把截图交给视觉子智能体，再将文字分析交给主 Omni，而非直接给主对话输入图片。分析失败不代表空白桌面；执行文件或应用操作仍需后台 Harness。
 
 ### 修改帧率和清晰度
 
@@ -166,11 +166,11 @@ Screen 的 Live Feed 和视觉监控会看选定显示器的完整画面。On De
 
 选择 Camera 后默认显示预览。小窗的眼睛按钮只控制显示／隐藏，**隐藏预览不等于关闭摄像头输入**。结束通话后可能仍保留本地预览；切回 Screen 或退出 Host 可关闭摄像头流程。
 
-请按界面提示授予当前来源所需权限。Camera 不要求先授权屏幕；Screen 实时画面需要屏幕录制权限，按需截图还可能需要辅助功能权限。
+请按界面提示授予当前来源所需权限。Camera 不要求先授权屏幕；Screen 的实时画面和按需截图都需要屏幕录制权限，不需要辅助功能权限。
 
 ## Memory：让对话有记忆
 
-Memory 默认开启，视觉记忆默认关闭。最方便的入口是 **Settings → Memory**：
+Memory 默认开启，视觉记忆默认关闭。在 **Settings → Personalization → Memory / 设置 → 个性化 → 记忆** 中，可以：
 
 - 开关 Memory：关闭不会删除以前保存的内容。
 - 选择或新建记忆库：适合区分工作、个人或不同项目。
@@ -182,7 +182,7 @@ Memory 默认开启，视觉记忆默认关闭。最方便的入口是 **Setting
 
 ### 修改记忆整理模型
 
-整理模型用来提炼值得保留的信息，和负责实时说话的主模型是两个设置。当前默认是 `qwen3.7-plus`，请使用所选地域可用的模型 ID。
+整理模型用来提炼值得保留的信息，和负责实时说话的主模型是两个设置。默认是 `qwen3.7-plus`，请使用所选地域可用的模型 ID。
 
 ```json
 {
@@ -212,7 +212,7 @@ Memory 默认开启，视觉记忆默认关闭。最方便的入口是 **Setting
 
 观察模型默认跟随记忆整理模型。它需要支持图片输入；如果整理模型只能处理文字，可另外设置 `memory.observer.model`。
 
-视觉记忆与当前对话的画面输入相互独立。直接询问眼前画面时，可用 On Demand 按需截图，或用 Live Feed 持续提供画面。
+视觉记忆和“回答当前画面的问题”是不同功能。单次问题可以用 On Demand，由画面分析子智能体读取一张截图；连续看画面则用 Live Feed。这两种方式都不要求开启视觉记忆。
 
 ### 记忆保存在什么地方
 
@@ -242,37 +242,43 @@ Proactive 默认开启。你可以直接说：
 
 如果模型正在说话，主动通知会等待当前播报结束后依次播放。结束通话会停止这次通话中的 Proactive 观察和提醒；它与继续运行的后台 Harness 任务不同。
 
+### 没有听到主动播报时
+
+如果 Proactive 响应正常结束却没有生成语音，Live 最多会尝试一次独立播报，仍使用相同模型与音色。它把 Monitor 的观察摘要说出来，不是重新分析原始媒体，也不需要另选模型。这会增加一次模型调用，但不会增加监控触发次数。
+
+Subagents 中的**准备播报**表示还在准备响应；设备确认开始播放后才变成**正在播报**。独立兜底收到播放完成确认后才显示**已播报**，未完整送达则显示**未送达**。因此，一次性任务可能已经完成，但通知没有送达；重复监控不会因为这一次兜底失败而停止。
+
+兜底生成最多等待 20 秒，并受播报时限约束。排队中的兜底会等待前面的回复或回执处理；用户说话、关闭播报、取消任务或结束通话会丢弃它。已被打断的兜底生成／播放不会重新播报。主通路在静音时消费通知，重新打开播报也不会补播；关闭播报期间显示任务完成，不代表听到了声音。
+
 ### 常用 Proactive 设置
 
 ```json
 {
   "proactive": {
     "enabled": true,
-    "monitor": { "chunkDurationSec": 1, "representationCompact": "normal" },
+    "monitor": { "representationCompact": "normal" },
     "scheduler": { "evalIntervalSec": 1 },
-    "vision": { "fps": 2, "windowSizeSec": 10 },
+    "vision": { "windowSizeSec": 10 },
     "audio": { "windowSizeSec": 60 }
   }
 }
 ```
 
-| 设置                                      | 默认值     | 通俗解释                                                         |
-| ----------------------------------------- | ---------- | ---------------------------------------------------------------- |
-| `proactive.enabled`                       | `true`     | 是否开放主动观察和提醒功能                                       |
-| `proactive.monitor.chunkDurationSec`      | `1`        | 每轮交给 Monitor 的新音频／视频片段时长，单位秒，可设 `0.1`–`60` |
-| `proactive.monitor.representationCompact` | `"normal"` | 视频表征压缩；`normal` 聚合画面表征，`none` 保留更细粒度的表征   |
-| `proactive.scheduler.evalIntervalSec`     | `1`        | 每隔几秒检查是否已有完整片段可供下一轮判断                       |
-| `proactive.vision.fps`                    | `2`        | 视觉 Monitor 每秒采集几张图，默认每个片段两张                    |
-| `proactive.vision.windowSizeSec`          | `10`       | 本地最多暂存最近几秒的画面，防止慢推理积压过多数据               |
-| `proactive.audio.windowSizeSec`           | `60`       | 本地最多暂存最近几秒的声音                                       |
+| 设置                                      | 默认值     | 通俗解释                                                       |
+| ----------------------------------------- | ---------- | -------------------------------------------------------------- |
+| `proactive.enabled`                       | `true`     | 是否开放主动观察和提醒功能                                     |
+| `proactive.monitor.representationCompact` | `"normal"` | 视频表征压缩；`normal` 聚合画面表征，`none` 保留更细粒度的表征 |
+| `proactive.scheduler.evalIntervalSec`     | `1`        | 每隔几秒检查是否已有完整片段可供下一轮判断                     |
+| `proactive.vision.windowSizeSec`          | `10`       | 本地最多暂存最近几秒的画面，防止慢推理积压过多数据             |
+| `proactive.audio.windowSizeSec`           | `60`       | 本地最多暂存最近几秒的声音                                     |
 
-Monitor 帧率和前台 Live Feed 帧率是分别设置的，实际速度还受输入画面和设备影响。监控结果存在采样、网络和模型判断延迟，不是每一帧都会立刻触发提醒。
+Monitor 的媒体节奏**固定为 1 FPS、每轮 2 秒**，与可配置的前台 Live Feed 帧率独立。监控结果存在采样、网络和模型判断延迟，不是每一帧都会立刻触发提醒。
 
-默认每轮发送 1 秒新音频、两张新画面，或对应的音视频组合，等待 Monitor 回答后再发送下一轮。前面的回答保留在同一模型会话中，不需要反复发送。`windowSizeSec` 是本地暂存上限，不是每轮都重发这么长的内容，也不代表模型会自动忘记更早的会话历史。
+每轮 Monitor 处理 **2 秒**的新内容。纯音频监控发送 2 秒新麦克风音频；视觉监控**每秒采集 1 张新画面**，每轮共两张；音视频监控把这两张图与同一时段的 2 秒麦克风音频一起发送。纯视频监控使用协议所需的静音音轨，不包含麦克风声音。等待 Monitor 回答后再发送下一片段。前面的回答保留在同一模型会话中，不需要反复发送。`windowSizeSec` 是本地暂存上限，不是每轮都重发这么长的内容，也不代表模型会自动忘记更早的会话历史。
 
-音视频监控建议保留 `chunkDurationSec: 1` 和 `fps: 2`；一段音频需要匹配同一时段的至少两张画面。配置要求 `chunkDurationSec × fps ≥ 2`，两个 `windowSizeSec` 都不能小于片段时长；例如要用 `fps: 1`，就把片段改为至少 2 秒。不满足时启动会明确提示。即使配置正确，采集过慢或画面不足仍可能跳过不完整片段，debug 日志会记录原因，不会复制旧画面凑数。
+Monitor 帧率和片段时长不是配置选项；可以调整本地缓冲、调度、冷却与视觉压缩。两个 `windowSizeSec` 都不能小于 2 秒。视觉或音视频片段需要同一时段内的两张新画面，采集过慢或画面不足会跳过不完整片段，debug 日志会记录原因，不会复制此前的画面凑数。
 
-视频表征压缩仅作用于 Proactive 视觉 Monitor，不改变前台 Live Feed 或截图分辨率。默认的 `normal` 适合关注整体变化的监控；需要关注细小文字或画面细节时，可以改成 `none`。修改后重启 Qwen Live Harness 生效，初始化向导不额外询问此项。
+这个压缩配置只作用于 Proactive 视觉 Monitor，不改变前台 Live Feed 或截图分辨率。默认的 `normal` 适合关注整体变化的监控；需要关注细小文字或画面细节时，可以改成 `none`。On Demand 画面分析使用自己固定的 `normal` 设置。修改后重启 Qwen Live Harness 生效，初始化向导不额外询问此项。
 
 ## 要不要接入后台 Harness
 
@@ -288,7 +294,7 @@ Monitor 帧率和前台 Live Feed 帧率是分别设置的，实际速度还受�
 }
 ```
 
-请保留这个空数组，不要直接删除 `backends` 字段：删除会启用旧的默认后端行为。
+请保留这个空数组；省略 `backends` 会选择默认的本机 Qwen Serve 连接，而不是关闭委托。
 
 ### 联网查询
 
@@ -315,11 +321,13 @@ Qwen Omni 会先简短回应，例如“我查一下最新信息”，再在后�
 
 **提示 API key 或模型不可用？** 检查 key 和 Endpoint 是否属于同一地域，再确认填写的是该地域可用的完整模型 ID。
 
-**没有声音或一直显示正在开始？** 检查麦克风权限，在 Audio Source 换一个有效设备，然后点击 Start 重试。超时后不要反复连续点击。
+**提示 Realtime 配额受限？** 在服务商控制台检查所选地域的账户配额和并发会话。结束不用的会话可能释放并发，但账户额度不足需要在服务商侧处理，反复重启不能解决。
 
-**蓝牙耳机打开麦克风后，音乐音质变差？** 可把 Audio Source 改成电脑内置或独立麦克风，继续用蓝牙耳机播放声音；调整软件采样率不能避免耳机切换通话模式。
+**没有声音或一直显示正在开始？** 检查麦克风权限，在 Settings → Sound → Microphone 换一个有效设备，然后点击 Start 重试。超时后不要反复连续点击。
 
-**只想结束交互？** 点击 End call 或按 `Command+E`，本次搜索及其自动转交的查询也会停止。要完全退出，请使用 Quit；从终端启动时也可按 `Ctrl+C`。
+**蓝牙耳机打开麦克风后，音乐音质变差？** 可在 Sound → Microphone 选择电脑内置或独立麦克风，继续用蓝牙耳机播放声音。模型输出使用 24 kHz PCM，16 kHz 是麦克风输入采样率；Host 播放时会重采样到输出设备的实际采样率。调整软件采样率不能避免蓝牙耳机切换到低音质通话模式。
+
+**只想结束交互？** 点击 End call 或按 `Command+E`，本次画面分析、Proactive 监控、搜索及其自动转交的查询也会停止。要完全退出，请使用 Quit；从终端启动时也可按 `Ctrl+C`。
 
 ### 需要更多日志时
 
@@ -333,10 +341,14 @@ qwen-live-harness --debug
 npm start -- --debug
 ```
 
-debug 会打印更详细的运行信息。Monitor 还会按轮次保存实际发送的声音、图片和请求／响应 JSON，便于核对模型看到了、听到了什么。它不是连续录音或录像，未开启 debug 时的媒体无法事后补录。
+debug 会打印更详细的运行信息，并在 `<dataDir>/debug/run-*` 下创建本次运行归档，默认位置为 `~/.qwen-live-harness/debug/run-*`，日志会显示具体目录。归档关联模型请求／响应、工具与运行事件，以及对应通路实际处理的声音和图片。它不是设备的连续录音或录像，未开启 debug 时的媒体无法事后补录。
 
-媒体归档位于系统临时目录的 `qwen-live-harness-monitor-debug/`，日志会显示具体位置。所有模态合计保留最近创建的 **10 个 Monitor**，不是只保留 10 次请求，也不是固定的磁盘容量上限。需要逐轮分析时，见开发者指南中的 [Monitor 诊断归档](../packages/qwen-live-harness/README_ZH.md#monitor-诊断归档)。
+默认保留最近 **10 次已结束的运行归档**，**每次归档预算为 512 MiB**。正在运行的归档不会被清理，因此目录总数可能暂时超过十个。达到存储上限、记录丢失、文件缺失或写入失败时，归档可能不完整；分析前先看 `manifest.json` 和警告日志，不能把缺失部分当成没有发生。这些诊断故障不应导致交互停止。
 
-Debug 会保存真实私密声音、屏幕／摄像头画面及任务文字；会话日志与记忆库也可能包含私人内容。分享前逐项检查，不要直接上传整个数据目录。问题排查完后建议关闭 debug。
+逐 Monitor 媒体归档独立位于系统临时目录的 `qwen-live-harness-monitor-debug/`，日志会显示具体位置。所有模态合计保留最近创建的 **10 个 Monitor**，不是只保留 10 次请求，也不是固定的磁盘容量上限。需要逐轮分析时，见开发者指南中的 [Monitor 诊断归档](../packages/qwen-live-harness/README_ZH.md#monitor-诊断归档)。
+
+Debug 会保存真实私密声音、屏幕／摄像头画面、Prompt、Memory 上下文、工具参数／结果及对话文字。已知凭据会脱敏，但不代表私人内容或媒体中的秘密也被匿名化。分享前逐项检查，不要直接上传整个数据目录。问题排查完后建议关闭 debug。
+
+离线校验和导出指定模型连接的方法，见 [运行归档与离线检查](../packages/qwen-live-harness/README_ZH.md#运行归档与离线检查)。辅助工具不会调用 API 或执行记录里的任务，也不能保证未来模型生成完全相同的回答。
 
 源码启动、开发调试见 [Daemon 开发指南](../packages/qwen-live-harness/README_ZH.md)。如果需要自定义后端、完整环境变量列表、Memory 检索参数或其他高级选项，请查看[高级配置参考](../packages/qwen-live-harness/README_ZH.md#高级配置参考)。

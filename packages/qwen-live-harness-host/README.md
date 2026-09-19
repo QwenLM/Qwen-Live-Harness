@@ -74,9 +74,9 @@ Geometry constants live in [`overlay-geometry.ts`](src/shared/overlay-geometry.t
 
 When changing layout, test screen edges, multiple displays, negative coordinates, scaling, display removal, and expanded settings/previews. Temporary repositioning must not overwrite saved user positions. State updates and snapshots must not move windows. Keep media and editing controls mounted so subtitle updates do not discard focus, previews, or drafts. [`subagents-windows.ts`](src/main/subagents-windows.ts) manages subagent panels; expanded details must not cover the main UI or status bar.
 
-The Pebble interface uses a 234 × 194 px voice card with persistent call controls and a task summary. Settings appear beside the card; the task summary opens the existing task window. Terminal sessions, instruction deliveries, session reports, and searches remain available in their existing lists.
+The Pebble UI uses a 234 × 194 px interaction card with persistent call controls and a task summary. Settings appear beside the card; the task summary opens the task window. Terminal sessions, instruction deliveries, session reports, searches, visual analyses, and monitors have their own status and detail views.
 
-Iris is the default palette. On connection or reconnection, Host reads top-level `themeColor` from the configuration path supplied by the authenticated daemon. Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`; missing or invalid values fall back to Iris without affecting calls. Light/dark appearance remains separately persisted. See the [configuration guide](../../docs/configuration.md#theme-palette).
+Iris is the default palette. On connection or reconnection, Host reads top-level `themeColor` from the configuration path supplied by the authenticated daemon. Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`; missing or invalid values use Iris without affecting calls. Light/dark/system appearance is independently persisted. See the [configuration guide](../../docs/configuration.md#theme-palette).
 
 ## Boundary with the daemon
 
@@ -95,23 +95,25 @@ An installed Host can start the daemon using the Node path, CLI path, and workin
 
 ## Devices and permissions
 
-| Visual mode        | Required macOS permissions                  |
-| ------------------ | ------------------------------------------- |
-| Screen + On Demand | Microphone, Screen Recording, Accessibility |
-| Screen + Live Feed | Microphone, Screen Recording                |
-| Camera             | Microphone, Camera                          |
+| Visual mode        | Required macOS permissions   |
+| ------------------ | ---------------------------- |
+| Screen + On Demand | Microphone, Screen Recording |
+| Screen + Live Feed | Microphone, Screen Recording |
+| Camera             | Microphone, Camera           |
 
 Permissions for an unselected source must not block interaction. The default `Command+E` shortcut uses Electron `globalShortcut` and does not require Input Monitoring. macOS manages development Electron and released-app permissions separately; verify the actual application identity being run.
 
-Appshot is a module built into Host, not an external capture application, CLI, MCP, or runtime download. Screen On Demand captures the foreground window and accessibility text. Live Feed and visual Proactive monitors capture the entire selected display and exclude Host windows. Full-display coverage does not imply native pixel resolution; frames are resized to transport limits. The same camera engine provides preview, live frames, and snapshots. Hiding its preview does not stop capture.
+Appshot is a module built into Host, not an external capture application, CLI, MCP, or runtime download. Screen On Demand, Live Feed, and visual Proactive monitors all capture the entire selected display and exclude Host windows. On Demand saves the native PNG asset; its encoded snapshot follows the configured resolution and transport limits. No Accessibility permission is needed for this full-display path. The same camera engine provides preview, live frames, and snapshots. Hiding its preview does not stop capture.
 
-The daemon decides how Appshot metadata, accessibility text, and image assets are used for a response. “Host captured an image” is not proof that the main model received its pixels. See [Configuration and features](../../docs/configuration.md) for sources, modes, resolution, and capability boundaries.
+The daemon sends an On Demand snapshot to its read-only visual-analysis worker and returns that worker's text evidence to the main conversation. Host presents its progress and result in Subagents; it does not call the model itself. Live Feed and Proactive use their own input paths. See [Configuration and features](../../docs/configuration.md) for sources, modes, resolution, and capability boundaries.
 
 Validate capture dimensions separately from protocol limits. Live frames are currently limited to `1920 × 1080` and `190 KiB` per frame; snapshot assets are limited to `8 MiB`. A larger configured capture size does not guarantee that those pixels survive live transmission. Native camera snapshots prefer still-photo capture and fall back to video constraints where possible; unsupported requests must fail explicitly. When changing dimensions or encoding, check [`camera-engine.ts`](src/preload/camera-engine.ts), [`appshot-capture.ts`](src/main/appshot-capture.ts), and shared protocol limits together.
 
 ### Audio and failure handling
 
-An AudioWorklet converts microphone input to mono, 16-bit, 16 kHz PCM. The model returns 24 kHz PCM. Playback uses an AudioContext at the output device's actual sample rate. Connections with negotiated end markers use continuous streaming resampling and wait until the corresponding output has actually played. Preserve frame order, output IDs, and playback-complete acknowledgements.
+An AudioWorklet converts microphone input to mono, 16-bit, 16 kHz PCM. The daemon requests **24 kHz PCM** from the model, and Host uses the same rate to decode it. Playback uses an AudioContext at the output device's actual sample rate, not a forced system rate. Connections with negotiated end markers use continuous streaming resampling and wait until the corresponding output has actually played. Preserve frame order, output IDs, and playback-complete acknowledgements.
+
+Playback uses **10 ms scheduling headroom** and preserves the PCM stream's playback rate. Fragments already queued remain contiguous; the delay is not added to each chunk. Stop or mute clears scheduled audio immediately. Preparing a model response, forwarding audio, and the device actually playing it are distinct states; notification delivery depends on the matching playback acknowledgements.
 
 Enabling a Bluetooth headset's own microphone may switch macOS to a hands-free profile; this is separate from the model output sample rate. Test built-in/USB microphone input together with Bluetooth output. Forcing a device sample rate does not solve operating-system audio routing.
 
@@ -135,7 +137,7 @@ Host preferences and routine failure logs are stored under Electron `userData`, 
 
 Selected failure events are recorded even without debug. Logs contain allowlisted error codes, stages, epochs, and related metadata. Files use mode `0600`, rotate at 1 MiB, and retain the current file plus one backup. Logging failures must not interrupt media or shutdown. See [`host-diagnostics.ts`](src/main/host-diagnostics.ts).
 
-`--live-harness-debug` adds Host state, device, and frame-transport diagnostics. The daemon's `--debug` provides separate Realtime, tool, and Monitor logs and may archive real Monitor requests, images, and audio. Inspect sensitive content before sharing. See [Configuration and features](../../docs/configuration.md) for diagnostic options and data locations.
+`--live-harness-debug` records Host state, device, and frame-transport diagnostics. The daemon's `--debug` archives the five model-connection kinds—main, Monitor, search, visual analysis, and notification speech—plus runtime/control events under `<dataDir>/debug/run-*`. Those archives include private prompts, Memory context, tools, and media; credential redaction does not remove secrets inside audio or images. Per-Monitor media archives are separate. See [Run archives and offline inspection](../qwen-live-harness/README.md#run-archives-and-offline-inspection) for verification/export without executing recorded tasks, and [Configuration and features](../../docs/configuration.md) for user-facing options and data locations.
 
 Fixed UI strings are centralized in [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts), with paired `en` and `zh-CN` entries. Host bundles shared messages, startup, and subagent modules through build aliases rather than depending on an installed daemon npm package at runtime. Rebuild and verify both packages after changing shared files.
 

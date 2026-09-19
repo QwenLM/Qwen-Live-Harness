@@ -92,13 +92,29 @@ qwen-live-harness
 >
 > “调研一下目前国际上 AI 的发展情况，总结一个文档到下载目录下”
 
-在设置中可以选择 **Audio Source / 音频来源**、**Video Source / 视频来源** 和 **Capture Mode / 采集模式**。屏幕、摄像头的按需截图均由当前 Omni 直接解读，无需后台 Harness；需要持续理解画面时，选择 **Live Feed / 实时画面**。默认实时采集为 **1 FPS、720p**。
+在设置的 **Sound / 声音** 中选择麦克风，在 **Visual / 视觉** 中选择 **Video Source / 视频来源** 和 **Capture Mode / 采集模式**。**On Demand / 按需截图** 会把选定显示器或摄像头的截图交给独立视觉子智能体分析，无需后台 Harness 也能回答画面问题；需要让主模型持续看到画面时，选择 **Live Feed / 实时画面**，默认实时采集为 **1 FPS、720p**。
 
-可以在 UI 中打开 **Subagents / 子智能体** 来查看后台任务和主动交互 Monitor的运行情况，并处理权限请求或停止任务。
+可以在 UI 中打开 **Subagents / 子智能体**，查看画面分析、联网搜索、后台任务和主动交互 Monitor 的运行情况，并处理权限请求或停止任务。Monitor 固定按 **1 FPS、每轮 2 秒**观察，通知等待当前对话和播放结束后依次播报。采样和模型推理存在延迟，也可能误判，不应作为安全关键场景的报警系统。
 
-配置文件默认位于 `~/.qwen-live-harness/config.json`，可通过设置页面的 **打开 config.json** 用本地编辑器打开，手动修改后重启应用即可生效。
+配置文件默认位于 `~/.qwen-live-harness/config.json`，可通过设置页面的 **打开配置文件** 用本地编辑器打开，手动修改后重启应用即可生效。
 
 完整参数、示例、记忆管理和排障方法见 [配置指南](docs/configuration_ZH.md)。
+
+### 支持的后台 Harness
+
+先安装并登录希望使用的 Harness，再在 `qwen-live-harness init` 中选择，Live 会自动建立对应的后台连接。
+
+| Harness     | 协议                             | 接入方式                                                                                           |
+| ----------- | -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Qwen Code   | Qwen Serve（REST/SSE）或原生 ACP | 默认由 Live 托管本机 Serve，也可连接已有 Serve 或使用 `qwen --acp`。                               |
+| Qoder CLI   | 原生 ACP                         | `qodercli --acp`                                                                                   |
+| Codex       | ACP 适配器                       | [`@agentclientprotocol/codex-acp`](https://github.com/agentclientprotocol/codex-acp)               |
+| Claude Code | ACP 适配器                       | [`@agentclientprotocol/claude-agent-acp`](https://github.com/agentclientprotocol/claude-agent-acp) |
+| Gemini CLI  | 原生 ACP                         | `gemini --experimental-acp`                                                                        |
+
+[ACP（Agent Client Protocol）](https://agentclientprotocol.com/get-started/introduction) 通过本机标准输入／输出传输 JSON-RPC 消息。Codex 和 Claude Code 的适配器由 `npx` 启动，首次使用可能需要下载依赖。可用工具、图片支持和授权行为取决于后台 Harness 及其版本。
+
+后台 Harness 并非必需，初始化时可以选择不接入，仍可使用实时音视频交流、联网搜索、Proactive 主动交互和 Memory。
 
 ## 开发上手
 
@@ -127,33 +143,39 @@ npm start
 | [daemon 开发指南](packages/qwen-live-harness/README_ZH.md)    | 模型连接、工具与后端适配、Proactive、Memory、协议和测试。   |
 | [Host 开发指南](packages/qwen-live-harness-host/README_ZH.md) | Electron UI 界面、系统权限、音视频、原生截图、窗口布局与打包。 |
 
-已有 Qwen Code 终端的接入、授权和诊断方式见 [Qwen 终端接入](packages/qwen-live-harness/README_ZH.md#qwen-终端接入)。
+接入已有 Qwen Code 终端需要使用独立的 **Qwen peer 协议**，支持发现终端、经授权发送文字指令，以及按需接收报告，不会接管任意终端，详见 [Qwen 终端接入](packages/qwen-live-harness/README_ZH.md#qwen-终端接入)。
 
 ## 架构设计
 
 可以把整个系统理解成三部分：**Host 负责采集和呈现，daemon 负责调度，模型与后台 Harness 负责理解和执行。**
 
 ```mermaid
-flowchart TB
-  subgraph local["你的 Mac"]
-    host["Host · 桌面 UI<br/>采集音视频、播放声音、展示状态"]
-    daemon["daemon · 调度中心<br/>管理对话、工具与任务"]
-    backend["可选后台 Harness<br/>Qwen Code / Codex / Claude Code / …"]
-    memory[("本地记忆库")]
-    host <-->|本机连接| daemon
-    daemon <-->|任务与进度| backend
-    daemon <--> memory
-  end
-  subgraph cloud["云端模型 API"]
-    omni["Qwen Omni Realtime<br/>实时理解与语音回答"]
-    search["搜索子智能体<br/>Omni Realtime 原生联网搜索"]
-    monitor["Proactive Monitor<br/>判断音频或画面中的触发条件"]
-    memoryapi["Memory API<br/>整理记忆、生成检索向量"]
-  end
-  daemon <-->|音频、画面与工具结果| omni
-  daemon <-->|公开信息查询与结果| search
-  daemon <-->|按任务发送观察内容| monitor
-  daemon <-->|按需发送相关上下文| memoryapi
+flowchart LR
+  host["<b>Host · 桌面 UI</b><br/>音视频采集与播放"]
+  daemon["<b>daemon · 调度中心</b><br/>对话 · 工具 · 权限"]
+  omni["<b>Qwen Omni Realtime</b><br/>云端理解与语音回答"]
+  host <-->|本机 WebSocket| daemon
+  daemon <--> omni
+  harness["<b>任务委托</b><br/>可选后台 Harness<br/>ACP · Qwen Serve"]
+  search["<b>联网搜索</b><br/>Omni Realtime<br/>原生搜索"]
+  visual["<b>按需视觉</b><br/>Omni Realtime<br/>截图分析"]
+  monitor["<b>Proactive</b><br/>Omni Realtime<br/>音频／画面监视"]
+  memory[("<b>Memory</b><br/>本地记忆库<br/>云端整理与向量化")]
+
+  daemon <--> harness
+  daemon <--> search
+  daemon <--> visual
+  daemon <--> monitor
+  daemon <--> memory
+
+  classDef local fill:#eef4ff,stroke:#a5bde8,color:#193457,stroke-width:1px
+  classDef model fill:#f0ecff,stroke:#b7a5e8,color:#382965,stroke-width:1px
+  classDef optional fill:#edf7f2,stroke:#9acbb2,color:#234d3d,stroke-width:1px
+  classDef storage fill:#fff6e6,stroke:#dfc086,color:#664b22,stroke-width:1px
+  class host,daemon local
+  class omni,search,visual,monitor model
+  class harness optional
+  class memory storage
 ```
 
 用户可以对着 Qwen Live Harness 提出需求，驱动它的 Qwen Omni 理解后直接回答，或调用工具将复杂的生产任务交给后台 Harness，前台仍可异步进行对话和交互，后台的任务的触发结果后会排队交回主会话播报，此外还有 Memory 为后续对话提供相关上下文。
@@ -161,8 +183,8 @@ flowchart TB
 了解下面几条，就能更好地选择使用方式：
 
 - **后台 Harness 的能力边界：** 音视频交互、Proactive 和 Memory 可以独立使用，文件修改、命令执行等任务需要已安装并登录的后台 Harness，能力和权限取决于该后端。应用不会自动接管任意终端中的既有任务。
-- **“看画面”有不同路径：** 屏幕和摄像头都支持 On Demand 与 Live Feed。On Demand 按需采集一张当前图片，交给主模型后直接回答；Live Feed 持续提供近期画面。只有明确委派的后台工作才需要转交图片附件。
-- **记忆存储在本地，推理仍在云端：** 用户交流过程中个性化的记忆库和跨 Session 的记忆是保存在本地的记忆库的，它与云端的 API 无关，并且可以对记忆库进行增删查改的管理。
+- **“看画面”有不同路径：** On Demand 截取选定显示器的完整画面或摄像头画面，将视觉子智能体的分析交回主对话；Live Feed 持续将图片交给主模型。Proactive Monitor 独立观察所选来源，不会代替用户打开网页或操作应用。
+- **记忆存储在本地，推理仍在云端：** 个性化信息和跨 Session 的记忆保存在可管理的本地记忆库中。记忆整理、可选视觉观察和向量化会把相关内容发送到配置的模型 API，本地存储不等于离线推理。
 
 ## 社区共建
 

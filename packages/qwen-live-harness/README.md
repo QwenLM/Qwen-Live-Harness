@@ -170,7 +170,7 @@ node packages/qwen-live-harness/dist/index.js init --peers
 node packages/qwen-live-harness/dist/index.js doctor --peers
 ```
 
-Installed equivalents are `qwen-live-harness init --peers` and `qwen-live-harness doctor --peers`. The source launcher does not currently forward `--peers`, so use the built entry point above.
+Installed equivalents are `qwen-live-harness init --peers` and `qwen-live-harness doctor --peers`. The source launcher does not forward `--peers`, so use the built entry point above.
 
 `init --peers` edits only the selected `qwen-code` backend's `peerDiscovery`. It can select an existing backend or add one connected to an existing Serve; it does not convert ACP to Serve. Other configuration and the original default backend are preserved; cancellation writes nothing. A normal `config.json` must already exist. The command refuses edits when backend environment overrides would hide their effects. Saving uses a lock and atomic replacement; do not edit the same file concurrently. Restart Live afterward.
 
@@ -234,26 +234,40 @@ The main assistant identifies as **Qwen Omni** in both backend and no-backend mo
 
 The tool immediately returns `accepted + taskId`; searches execute independently and can run concurrently, each with a 25-second timeout. Only the query is sent, not microphone audio, screenshots, Memory, or other work-session context. Search usage comes from service metadata; an unknown search status must not be presented as verified browsing.
 
-Results enter the Injector's `search_result` channel and wait for speech, foreground responses, and playback to finish. Main Omni composes the answer from query/answer/searchStatus rather than reading the raw result verbatim. The result creates no user message and has no tool permissions, so webpage text cannot trigger another search, delegation, or Memory mutation. Search tasks have `kind: "search"`, support independent cancellation, and distinguish waiting for delivery from completed delivery.
+Results enter the Injector's `search_result` channel and wait for speech, foreground responses, and playback to finish. Main Omni composes the answer from query/answer/searchStatus rather than reading the raw result verbatim. Each result is a quoted `[NOTIFICATION]` user-context message, not a real user request. Its response has no tool permissions, so webpage text cannot authorize another search, delegation, or Memory mutation. Search tasks have `kind: "search"`, support independent cancellation, and distinguish waiting for delivery from completed delivery.
+
+Main-conversation system instructions remain constant for the call; each transport sends them once in `session.update`. `response.create` never repeats or overrides them. Subagent results use `conversation.item.create` with typed, quoted data. Memory updates use replaceable `[MEMORY_CONTEXT]` user snapshots, not system-prompt rewrites; disabling Memory sends an empty disabled snapshot. A reconnect restores only the latest snapshot, while tool-list changes use tools-only `session.update`. Already-sent messages are not physically erased from the service's current conversation.
+
+Tools execute only after a completed `response.done` confirms their final IDs, names, arguments, and status. A result must be acknowledged before tool continuation. A matching `Unknown function call id` or a 10-second result-ACK timeout stops that continuation and records a silent delivery diagnostic without repeating the action or closing the call. Unmatched protocol/configuration errors use their own failure handling. Receipt rejection does not prove the task failed or authorize another execution.
+
+Accepted asynchronous receipts require a separate `tool_continuation`: after the service acknowledges a search, Appshot analysis, managed handoff, or Proactive creation receipt, the daemon consumes that response before injecting the final visual, search, backend, or Monitor notification. The service consumes the receipt response separately from the final result notification. This continuation does not repeat the task or rewrite system instructions.
+
+Only duplicate confirmation audio is suppressed, and only when the tool chain already produced a preamble and **every tool in the parent response** successfully admitted an eligible asynchronous task: `web_search`, an accepted Appshot visual analysis, a managed `handoff` without warnings, or a committed `create_proactive_monitor` / `create_live_narration`. The model still completes the receipt response; its text remains in provider history and diagnostic transcripts with `audioSuppressed:true`, but is not recorded as user-heard dialogue in Memory, handoff context, or reconnect history. Without a preceding audio preamble, with errors or warnings, or with mixed query tools, confirmation remains audible. Terminal instruction deliveries, permission responses, `session_create`, timers, and task updates/cancellation are not eligible for this suppression. A late receipt superseded by a newer user turn is drained separately without audio or the old turn's tool authority; genuine new-user answers and final task-result notifications are not muted by that drain.
+
+If a receipt continuation repeats the same already-admitted request, the runtime returns that admission receipt instead of starting another task. This guard is scoped to that continuation; different chained requests and a fresh real user request remain executable. Warnings are preserved even when the prior receipt is reused.
 
 If native search fails and a backend is configured, runtime creates an isolated default-backend session using only the original query plus read-only public-information constraints. It reuses existing handoff, task records, and permission handling. Failed output and webpage instructions do not become authorization, and the main model does not duplicate the fallback. Without a backend, failure is reported. The search record tracks failure/fallback, and the backend job follows real events. End call or a new conversation cancels unfinished searches, withdraws pending results, and stops that call's automatic fallback queries; unrelated jobs keep their normal lifecycle. Requesting cancellation is distinct from backend confirmation.
 
 ### Audio and visual input
 
-The main session requests `semantic_vad`, `create_response: false`, and `interrupt_response: true`: the service detects turns, while the daemon schedules `response.create`. Memory updates and tool continuation must not switch the main VAD mode. Independent monitors manually commit media chunks; search is text-only. Their `turn_detection: null` does not disable VAD in the main conversation.
+The main session requests `semantic_vad`, `create_response: false`, and `interrupt_response: true`: the service detects turns, while the daemon schedules `response.create`. Memory updates and tool continuation must not switch the main VAD mode. Independent monitors manually submit media chunks; search is text-only. Their `turn_detection: null` does not disable VAD in the main conversation.
 
-Transport uses mono PCM16: 16 kHz input and 24 kHz model output. Host resamples output to the device's actual rate; do not force the system output clock to match the model.
+Transport uses mono PCM16: 16 kHz microphone input and **24 kHz model output** (`session.audio.output.format.sample_rate: 24000`). Host resamples output to the device's actual rate; do not force the system output clock to match the model. Restart both components after updating; `session.start.outputSampleRate` records the playback input rate.
 
 There is one selected visual source and capture mode:
 
-| Path                     | Content and scope                                                                                                                |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| Live Feed                | Continuous frames from the selected camera or full selected display to main Omni                                                 |
-| On Demand Appshot        | Source metadata, available accessibility text, and a snapshot asset handle; Screen captures the foreground window                |
-| Proactive visual monitor | Selected camera or full-display frames to an independent Monitor, including independent sampling in On Demand mode               |
-| Optional visual Memory   | Reuses Live Feed frames or privately captures the foreground window/camera in On Demand mode; stores processed text observations |
+| Path                     | Content and scope                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Live Feed                | Continuous frames from the selected camera or full selected display to main Omni                                                |
+| On Demand Appshot        | A snapshot goes to an independent Visual Analysis worker; the main model receives text evidence, plus an asset/metadata receipt |
+| Proactive visual monitor | Selected camera or full-display frames to an independent Monitor, including independent sampling in On Demand mode              |
+| Optional visual Memory   | Reuses Live Feed frames or privately captures the selected display/camera in On Demand mode; stores processed text observations |
 
-Appshot returns an image asset through `function_call_output`; it **does not append pixels directly to main Realtime** or commit audio. Pixel-level analysis requires an image-capable backend. Without one, suggest Live Feed. An asset handle is not evidence that the model has seen the image.
+Appshot captures a snapshot and returns an asynchronous `accepted + taskId` receipt with its image asset. A `kind: "visual"` subagent inspects the encoded snapshot using the main model/endpoint/key, with no tools or native search. The result enters a `visual_result` notification and has no tool authority. This works without a background Harness. Main Realtime receives text evidence, not direct pixels; an asset alone is never evidence that it saw the image.
+
+The visual helper sends two one-second protocol-silence segments, each followed by the same still JPEG, commits once, waits for the commit acknowledgement, and requests text inference with the visual question in `response.instructions`. Duplicate frames satisfy the video input format and must not imply motion. The fixed system prompt is sent once; private Memory and unrelated conversation are not sent. Analysis has a 25-second deadline, aborts on task cancellation or End call, and never falls back to a coding agent after failure. Independent analyses can run in parallel; completed results share the read-only result FIFO and playback receipts. Queued or running analyses appear in Subagents, with output preserved when muted. Screen assets retain their original PNG while model input respects the snapshot transport limits.
+
+An optional Appshot `query` supplies the current visual question. If omitted, the current turn's final transcript is used when available, otherwise a general description is requested. Only successful task admission may suppress duplicate confirmation audio. The result prompt forbids guessing a blank desktop from `app=Unknown`, repeating accepted requests, obeying instructions inside screenshots, or inventing illegible details. `visual.analysis` and `visual.delivery` diagnostics correlate the worker and main response without logging image bytes.
 
 Protocol types and limits are defined in [`host/types.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/host/types.ts), [`realtime-session.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/realtime/realtime-session.ts), and Host's shared protocol. Current Host protocol is v9:
 
@@ -266,7 +280,9 @@ Protocol types and limits are defined in [`host/types.ts`](https://github.com/Qw
 
 Use `--debug` to correlate Host connections, epochs, capture dimensions, frame hashes, tool results, and playback timing. Session JSONL, Memory databases, and diagnostic files serve different purposes and may contain user conversations and task content.
 
-Audio, visual, and combined Monitor debug archives include actual requests and original images/audio. Only the latest ten Monitor directories are retained; this is not a fixed disk quota. See [Monitor diagnostic archives](#monitor-diagnostic-archives) and inspect sensitive content before sharing.
+Search-result delivery records `search.delivery` in session JSONL and `web_search.delivery` in debug output. Correlate the task, provider session, and response IDs across `queued`, `requested`, `response_started`, `transcript`, `audio_started`, `response_done`, and `finished` phases. `audio_started` means audio was forwarded to Host, not proof that the user heard it; completed delivery also requires playback acknowledgement. If a result response completes without playable audio, the result remains in Subagents with the `search.answerUnspoken` activity, and a nonfatal `search_answer_unspoken` diagnostic is recorded instead of claiming it was spoken.
+
+Debug also records cross-connection [run archives](#run-archives-and-offline-inspection), separate from session JSONL and per-Monitor archives. Audio, visual, and combined Monitor archives include actual requests and original images/audio. Only the latest ten Monitor directories are retained; that separate retention rule is not a fixed disk quota. See [Monitor diagnostic archives](#monitor-diagnostic-archives) and inspect sensitive content before sharing.
 
 All fixed UI/init text lives in [`src/i18n/messages.ts`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/packages/qwen-live-harness/src/i18n/messages.ts), with paired `en` / `zh-CN` entries and matching placeholders. Host reuses it at build time. System prompts and raw backend output are not UI translation-table entries.
 
@@ -306,7 +322,7 @@ Example configuration for an existing REST/SSE service:
 }
 ```
 
-Set `token` if authentication is required. `baseUrl` is an alternative to `serveUrl`. These entries do not use ACP process fields. Omitting `backends` preserves the legacy local `qwen serve` connection behavior; use `[]` to disable backends explicitly.
+Set `token` if authentication is required. `baseUrl` is an alternative to `serveUrl`. These entries do not use ACP process fields. Omitting `backends` selects the default local `qwen serve` connection; use `[]` to disable backends explicitly.
 
 ### ACP permission modes
 
@@ -320,7 +336,7 @@ Actual permission scope comes from the backend. Check its documentation and fina
 
 Main Omni generates permission questions in the current real conversation's language, falling back to `config.language` only when conversation language cannot be determined. English backend titles, commands, and paths are approval data, not language instructions or user consent. The independent permission response cannot call tools or substitute a progress announcement for a question. A later explicit user answer is handled by ordinary conversation through `respond_permission`. The original action remains visible in subagent details.
 
-Completion/failure notifications use an independent `task_result` response. Runtime supplies the real status, task, and summary; the model briefly explains them in the current conversation's language rather than using a fixed English template. It must not read internal IDs, raw paths, or Markdown aloud or call tools through the notification. Recent real-user language samples can persist across calls only for language selection, not as result facts. Without a sample, trusted response instructions explicitly specify the configured language.
+Completion/failure notifications use an independent `task_result` response. Runtime supplies the real status, task, and summary; the model briefly explains them in the current conversation's language using trusted language metadata. It must not read internal IDs, raw paths, or Markdown aloud or call tools through the notification. Recent real-user language samples can persist across calls only for language selection, not as result facts. The notification envelope carries trusted language metadata; it never modifies system instructions, and a newer real user turn determines the language of a merged response.
 
 After an actual permission request, ordinary `allow` approves only that request. Use `allow_always` only when the user explicitly asks for ongoing permission. This applies to ACP and Qwen Serve backends with permission forwarding.
 
@@ -332,36 +348,60 @@ A later explicit `deny` removes the matching local Live rule, not permissions al
 
 ### Proactive tuning
 
-The scheduler supplies fixed chunks of new media to an independent Monitor. Capture, inference, and foreground delivery are separate stages. Higher FPS or shorter intervals do not guarantee proportionally faster triggers; capture, network, and audio queues also matter.
+The scheduler supplies **two-second media chunks at a fixed visual cadence of 1 FPS** to an independent Monitor. Capture, inference, and foreground delivery are separate stages; scheduling more frequently does not make a partial chunk ready or remove network/model/playback latency.
+
+`create_proactive_monitor` creates a condition-based observer, `create_proactive_timer` creates a time-based reminder, and `create_live_narration` creates ongoing descriptions of meaningful changes. Narration creation accepts exactly three fields: `title`, `modalities`, and `narration_focus`. Runtime binds the task to its original real-user request and carries its applicable language, tone, and detail preferences through Monitor judgments and speech delivery. Preferences from unrelated tasks do not expand its scope, and requested content is not treated as observed evidence. Explicit changes to `narration_style` through the task-update tool override conflicting style preferences for that task. Cancellation and updates invalidate queued events from the prior task generation.
 
 | Field under `proactive`                | Default    | Meaning                                                                                                               |
 | -------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
 | `enabled`                              | `true`     | Enable monitoring and tools                                                                                           |
-| `monitor.chunkDurationSec`             | `1`        | Seconds per user media chunk; range `0.1`–`60`, independent of scheduler interval                                     |
 | `monitor.sessionRecycleEvals`          | `60`       | Rebuild a Monitor connection after this many evaluations                                                              |
 | `monitor.representationCompact`        | `"normal"` | Visual representation aggregation: `normal` or `none`; unused for audio-only monitors                                 |
 | `scheduler.evalIntervalSec`            | `1`        | Seconds between checks for the next evaluation                                                                        |
 | `scheduler.maxFailuresPerTask`         | `3`        | Consecutive failures before stopping a task                                                                           |
 | `scheduler.repeat.cooldownSec`         | `3`        | Repeat-trigger cooldown, seconds                                                                                      |
-| `scheduler.repeat.maxWaitTtsSec`       | `30`       | Playback-completion wait after foreground Realtime creates a notification response; does not limit earlier queue time |
+| `scheduler.repeat.maxWaitTtsSec`       | `30`       | Preparation-to-playback-ack deadline per attempt, including fallback generation/playback; excludes earlier queue time |
 | `scheduler.repeat.clearBufferOnResume` | `true`     | Clear old pending capture on resume                                                                                   |
-| `vision.fps`                           | `2`        | Independent target Monitor FPS; limited by capture speed                                                              |
 | `vision.windowSizeSec`                 | `10`       | Local new-frame buffer limit, seconds; not history resent every round                                                 |
 | `vision.minEvalDurationSec`            | `0`        | Extra observation before the first evaluation; zero still requires a full chunk and at least two valid new frames     |
 | `audio.windowSizeSec`                  | `60`       | Local new-audio buffer limit, seconds                                                                                 |
 | `audio.minEvalDurationSec`             | `0`        | Audio observation before the first evaluation                                                                         |
 
-Minimum observation duration cannot exceed the corresponding window. `vision.fps` ranges from `0.1` to `60`, with `vision.fps × monitor.chunkDurationSec ≥ 2`. Both windows must be at least the chunk duration. Invalid configurations fail explicitly at startup rather than creating tasks that can never collect a complete chunk. Device speed is not guaranteed. Foreground `visualInput.fps` is independent. Long capture gaps reset continuous observation duration, and old frames do not count as fresh evidence.
+Both buffer windows must be at least two seconds, and minimum observation duration cannot exceed the corresponding window. Monitor FPS and chunk duration are protocol constants, not configurable fields. Foreground Live Feed uses its independent `visualInput.fps` setting. Long capture gaps reset continuous observation duration; an incomplete chunk is skipped and previously evaluated frames do not count as fresh evidence.
 
-Monitor uses an interleaved session: one `session.update` sets system instructions, `turn_detection: null`, `smooth_output: false`, and empty tools, followed by a user text describing the task. Each round sends one new media chunk, waits for acknowledgement of `input_audio_buffer.commit`, sends `response.create`, then waits for `response.done` before the next chunk. The service retains previous user media and assistant replies; the client does not repeatedly reconstruct history.
+All Monitor modalities use an interleaved streaming-buffer session. One initial `session.update` per connection sets the fixed system instructions, `turn_detection: null`, `smooth_output: false`, and empty tools. Each round appends new audio and, for visual monitors, new images; it then sends `input_audio_buffer.commit` and waits for `input_audio_buffer.committed` before requesting inference. The next chunk is submitted only after `response.done`. The service retains earlier user media and assistant replies; the client does not reconstruct or resend that history.
 
-Default audio-only chunks are one second of mono PCM16 at 16 kHz, without extra silence. Video-only chunks pair two images with a one-second `protocol_silence` track to carry the audio-buffer commit. Mixed chunks use one second of real audio and two frames from the same time span. Missing images are not replaced with old ones; incomplete mixed chunks log their drop reason. Less than 2 FPS is unsuitable for default one-second mixed chunks.
+Only the first media request on a Monitor connection includes the task text, using `{"type":"response.create","response":{"instructions":"TASK_TEXT"}}`. Here `response.instructions` carries the task text for that first user media turn, not the Monitor's system prompt. Later chunks use bare `response.create` without the field; no separate task-only `conversation.item.create` is sent. A rebuilt connection includes the task with its first new media chunk again, without replaying old media. Independent On Demand Visual Analysis uses the same field for its one image question. These are manual-media request paths; foreground conversation, tool continuations, runtime result notifications, and Web Search continue without response-scoped instructions.
+
+Every audio-only chunk contains two seconds of mono PCM16 at 16 kHz, without extra silence. A video-only chunk appends one second of `protocol_silence`, one fresh image, another second of silence, and a second fresh image, then commits once; it contains no microphone audio. An audio/video chunk uses the same order with real one-second microphone segments and their corresponding images. Each visual round therefore contains exactly two fresh frames from the same two-second span. Missing images are not replaced with previously captured ones; incomplete chunks log their drop reason.
 
 During slow inference, new media stays in bounded local queues rather than entering the server's in-flight buffer or being combined into a multi-second evaluation. Rebuilding a connection loses that transport's model history. Only unconsumed new media is retained; previously evaluated sounds or images are not replayed. Use `transportGeneration` to identify history boundaries.
 
 `monitor.representationCompact` maps to `session.video.input.representation_compact` in the initial session update, before any audio, including protocol silence. It does not change within a connection and remains configured after recycle/recovery. Restart after editing; `none` is useful for fine visual detail.
 
-The legacy `scheduler.maxConcurrentTasks` field can still be read but no longer limits task count; omit it in new configurations. Monitor judgments and notifications remain subject to sampling, network, and delivery delays.
+There is no configured Monitor-count limit. Resource use, sampling, model latency, and notification queues still constrain practical concurrency.
+
+#### Proactive announcement fallback
+
+When a foreground Proactive response finishes with `status: completed` but produces no audio, including `remain_silent`, the same delivery may use **one** independent speech fallback. It does not create another Monitor, increment its trigger count, or re-evaluate the evidence. Failed or cancelled primary responses retain their separate handling.
+
+If there is a `remain_silent` call, its function result must be acknowledged and its silent receipt continuation drained first. The fallback then waits through the Injector's FIFO, foreground-response, and playback gates. It uses the same endpoint, model, key, and voice as the main conversation, with 24 kHz PCM, `smooth_output:false`, no tools/search, and `turn_detection:null`. It receives a short fixed policy, the quoted observation summary, and current conversation language—not raw media, Memory, the requested trigger condition, or intervention instructions. This is speech delivery, not independent verification of the observation. Its `response.create` carries no instructions.
+
+Audio is buffered until the entire response succeeds. The helper has a 20-second request timeout and a 20-second mono PCM budget (960,000 bytes). `maxWaitTtsSec` limits preparation plus playback for the attempt; a shorter configured deadline can expire first and is not extended. Fallback failure or timeout retires the delivery as `undelivered` without failing a repeat monitor.
+
+For the independent fallback, notification state and task status are separate:
+
+| Notification state | Meaning                                                                        |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `queued`           | Waiting in order, including an unfinished receipt drain or transport recovery  |
+| `preparing`        | Preparing a response; generated/buffered audio is not proof of playback        |
+| `speaking`         | Host has actually acknowledged playback start                                  |
+| `delivered`        | Successful generation and Host playback completion have both been confirmed    |
+| `undelivered`      | This announcement was not fully delivered; it must not be represented as heard |
+
+A one-shot can be `completed` with notification `undelivered`: detection ended, but its announcement did not complete. A repeat monitor continues after a fallback delivery failure. User speech, output mute, task cancellation, or End call invalidates queued fallback. Transport recovery can preserve an unstarted queued fallback behind the receipt barrier; once generation or playback starts, interruption, mute, cancellation, stop, or recovery aborts it without replaying the old announcement.
+
+Preparing/Speaking distinguish generation from actual playback on the primary path. A primary event can be consumed without playback while muted and will not replay on unmute. That consumed/completed state is **not evidence that the user heard it**; the strict `delivered` guarantee above describes the independent fallback. Debug events `proactive.fallback_queued`, `proactive.fallback_started`, `proactive.fallback_audio_ready`, `proactive.fallback_delivered`, `proactive.fallback_undelivered`, and `proactive.delivery_undelivered` correlate the same task/delivery IDs without adding a trigger.
 
 ### Memory model connections
 
@@ -467,7 +507,7 @@ General precedence is **environment → `config.json` → built-in defaults**. A
 | `QWEN_LIVE_HARNESS_PROACTIVE_ENABLED`                     | `proactive.enabled`; accepts `true` / `1` / `false` / `0`     |
 | `QWEN_LIVE_HARNESS_LOG_LEVEL`                             | `debug` / `info` / `warn` / `error`; default `info`           |
 
-Legacy configuration without `backends` also supports `serveUrl` / `serveToken` and `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`. Prefer explicit backend arrays in new configurations.
+Configuration without `backends` supports `serveUrl` / `serveToken` and `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`. Explicit backend arrays describe multi-backend and no-backend setups.
 
 Installed desktop registration records absolute Node/CLI paths, PATH, configuration/discovery directories, and working directory, not arbitrary shell environment variables. Prefer the configuration file for settings needed when double-clicking Host; a variable present in one terminal may not exist in desktop startup.
 
@@ -481,6 +521,33 @@ qwen-live-harness
 ```
 
 For source development, replace the final two commands with `npm run init` and `npm start`. `DATA_DIR` is environment-only; there is no `dataDir` configuration field. `discoveryDir` can be configured and overridden by `QWEN_LIVE_HARNESS_DISCOVERY_DIR`. A manually connected Host uses `QWEN_LIVE_HARNESS_DISCOVERY_FILE` with the complete discovery-file path.
+
+### Run archives and offline inspection
+
+Debug runs write `<dataDir>/debug/run-*`, independently of the temporary per-Monitor archives below. The run archive records the observed main, Monitor, search, visual-analysis, and notification model connections plus runtime/control events. Known credential fields, configured secrets, and recognized credential text patterns are redacted; the archive does not use OCR or audio recognition to find secrets inside media. Prompts, Memory context, tool arguments/results, transcripts, and media remain private content, not safe-to-share anonymous telemetry.
+
+Each run contains `manifest.json`, append-only `events.jsonl`, and `media/`. Events retain a run-wide `globalSeq`, per-connection `connectionSeq`, connection kind/ID, wall time, monotonic time, direction, and recorded payload. `archive.connection_registered` holds connection metadata; it is not another model request. Actual outbound requests are `wire.send` records. Their matching `wire.send_result` is `sent` or `failed_or_uncertain`: `sent` means the local socket accepted the write, not that the provider acknowledged it. No result means `unconfirmed`. Provider acknowledgements remain separate inbound events.
+
+Media references carry a relative path, byte offset, byte length, SHA-256, kind, and encoding. They identify exact archived byte ranges rather than approximate reconstructed recordings. Session/configuration snapshots provide context; do not interpret them as instructions resent every round. The recorded wire sequence is authoritative for what the client attempted, subject to the archive's completeness status.
+
+The default budget is **512 MiB per run**, retaining the **10 newest finished runs**, including finished incomplete captures. Active runs are protected and can temporarily bring the total above ten. `manifest.json` records `recording`, `closed`, or `incomplete`, warnings, and counters. A limit, dropped event, or storage error makes evidence incomplete without failing the call. A write failure can also prevent updating the manifest; check runtime warnings and missing files, not just the status field. Non-debug input cannot be reconstructed afterward.
+
+From the repository root, inspect a run without printing its prompts or transcripts:
+
+```sh
+node scripts/replay-live-debug.mjs /path/to/debug/run-example
+```
+
+Use a connection ID from that summary to export into a **new directory outside the archive**:
+
+```sh
+node scripts/replay-live-debug.mjs /path/to/debug/run-example \
+  --connection conn-000001 --output /path/to/new-export
+```
+
+The helper checks event sequences, send outcomes, media bounds and hashes, and rejects unsafe paths or symlinks. The summary lists observed connection states, validated provider `sess_*` IDs when available, and unique response counts without printing message bodies. It exports `requests.json`, `responses.json`, selected `events.jsonl`, copied media ranges, and an inspection/manifest summary; base64 media is restored in the JSON requests/responses. Original byte arrays use explicit `$binary` envelopes, and redaction flags remain attached. Failed or unconfirmed sends stay labeled, and incomplete captures are never presented as complete. Existing output directories are not overwritten. Exported files contain sensitive content; inspect them before sharing.
+
+Despite its filename, the helper is **offline only**. It does not read an API key, contact an endpoint, start a device, execute recorded function calls, or rerun backend commands. Main-session tool histories are exported as inert data for analysis, not automatically replayed. No archive can guarantee identical future model output, server state, or sampling randomness.
 
 ### Monitor diagnostic archives
 
@@ -504,13 +571,14 @@ qwen-live-harness-monitor-debug/
 ```
 
 - `proactive.monitor_debug_started` and `proactive.monitor_request_saved` log absolute directories. Rebuilding a Monitor WebSocket keeps the same Monitor directory.
-- JPEGs are frames successfully written to the model connection. `input.wav` contains mono 16 kHz PCM16 successfully sent before that commit and not discarded by `input_audio_buffer.clear`, concatenated in send order, including protocol silence. It is not an uninterrupted microphone recording. Audio offsets exclude the WAV header.
-- Audio events in `request.json.events` have `origin`: `microphone`, `protocol_silence` for a video-only carrier track, or `unknown`. `audioSummary` lists `totalBytes`, `microphoneBytes`, `protocolSilenceBytes`, and `unknownBytes`. These archive-only fields are not sent to the model and do not classify energy or events. Media buffered during a handshake or slow inference may be sent later; send time is not capture time.
-- `request.json` records initialization settings, task text, event order, frame hashes, audio offsets, and `previousRequest`. `transportGeneration` identifies connection history boundaries. `previousRequest` links only within a transport and resets after reconnection. Server context can retain earlier committed media and replies; a single WAV is not the entire context visible to the model.
-- `request.json.session` is an initialization snapshot included for standalone inspection, **not a replay of system instructions or task text each round**. Event IDs in that snapshot stay the same within a transport. Actual incremental sends are in `events`, normally media append, commit, and `response.create`. Only a new transport resends initialization.
+- JPEGs are frames successfully written to the model connection. `input.wav` contains the mono 16 kHz PCM16 successfully appended before that commit and not discarded by `input_audio_buffer.clear`. Audio parts are concatenated in send order, including any protocol silence. This is not an uninterrupted microphone recording. Audio offsets exclude the WAV header.
+- All Monitor modalities use the same `request.json.events` layout: individual audio/image append events, `input_audio_buffer.commit`, and `response.create`. Each audio append points to `input.wav` with its byte offset, length, and `origin`. `origin` is `microphone`, `protocol_silence` for a video-only carrier track, or `unknown`. `audioSummary` lists `totalBytes`, `microphoneBytes`, `protocolSilenceBytes`, and `unknownBytes`. These archive-only fields are not sent to the model and do not classify energy or events. Media buffered during a handshake or slow inference may be sent later; send time is not capture time.
+- `request.json` records initialization settings, event order, frame hashes, audio offsets, and `previousRequest`. Find task text in the first request's `response.create` event at `response.instructions`; it is absent from later response requests, and there is no separate task-only user item. `transportGeneration` identifies connection history boundaries. `previousRequest` links only within a transport and resets after reconnection. Server context can retain earlier submitted media and replies; a single WAV is not the entire context visible to the model.
+- `request.json.session` is an initialization snapshot included for standalone inspection, **not a replay of system instructions or task text each round**. Event IDs in that snapshot stay the same within a transport. The actual incremental wire sequence is in `events`: media append, commit, then `response.create` after the commit acknowledgement. Only a new transport resends initialization, with task text included once in its first media inference request; the system prompt stays in the initial `session.update`.
 - Valid `providerSessionId` values are recorded when available. `response.json` contains raw action text and parsed results, plus `responseId`, `eventId`, and `usage` when provided. Request events preserve available send IDs. Do not infer missing identifiers; usage is not equivalent to useful microphone duration.
 - Correlate Host, daemon, and `proactive.monitor_image_sent` frame hashes. `proactive.monitor_commit` counts successful socket writes; `proactive.monitor_committed` records service acknowledgement. Queued or dropped frames are not evidence of delivery.
-- `proactive.monitor_chunk_prepared` records capture ranges and actual frame counts. `proactive.monitor_chunk_dropped` records missing images, capture gaps, invalidated pending chunks, or uncertain commit sends. `proactive.monitor_input_dropped` aggregates local eviction counts, bytes, and time ranges. These debug session events distinguish missing complete input from a model `wait` decision.
+- `proactive.monitor_chunk_prepared` records capture ranges and actual frame counts. `proactive.monitor_chunk_dropped` records missing images, capture gaps, invalidated pending chunks, or uncertain media/commit sends. `proactive.monitor_input_dropped` aggregates local eviction counts, bytes, and time ranges. These debug session events distinguish missing complete input from a model `wait` decision.
+- `proactive.monitor_ready` reports `streaming_buffers` as the input path. `proactive.monitor_response_requested` records `taskTextIncluded`, which is true only for the first media inference on each connection, so task text is distinguishable from the fixed system prompt.
 - Retention is the **10 newest Monitor directories across all modalities**, not 10 per modality, 10 requests, or a total disk quota. Evicted monitors continue running without further archival. Directories/files use private permissions; pending and queued writes have a 32 MiB memory budget. Disk faults or budget limits can make archives incomplete but must not end a call.
 - JSON redacts connection credential fields and known API keys, not every secret spoken, shown, or written by the user. Inspect WAV, JPEG, and JSON before sharing, not just terminal output. Do not share the whole data directory.
 

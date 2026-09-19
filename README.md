@@ -92,13 +92,29 @@ Try saying:
 >
 > “Research current developments in AI worldwide and save a summary document to Downloads.”
 
-In Settings, choose **Audio Source**, **Video Source**, and **Capture Mode**. Screen and Camera On Demand snapshots are delivered directly to the current Omni model without a background Harness. For continuous visual context, select **Live Feed**, which defaults to **1 FPS at 720p**.
+In Settings, choose your microphone under **Sound**, and the **Video Source** and **Capture Mode** under **Visual**. **On Demand** sends a snapshot of the selected display or camera to an independent visual-analysis subagent, so visual questions work without a background Harness. When the main model needs a continuous view, select **Live Feed**, which defaults to **1 FPS at 720p**.
 
-Open **Subagents** in the UI to inspect background tasks and Proactive monitors, handle permission requests, or stop tasks.
+Open **Subagents** in the UI to inspect visual analyses, web searches, background tasks, and Proactive monitors, handle permission requests, or stop tasks. Monitor observation uses a fixed **1 FPS and two-second chunks**; notifications wait for the ongoing conversation and playback to finish. Sampling and model inference introduce delay and can produce mistakes, so monitoring is not a safety-critical alarm system.
 
-The configuration file is stored at `~/.qwen-live-harness/config.json` by default. Use **Open config.json** in Settings to open it in a local editor. Restart the application after editing it manually.
+The configuration file is stored at `~/.qwen-live-harness/config.json` by default. Use **Open configuration** in Settings to open it in a local editor. Restart the application after editing it manually.
 
 See the [configuration guide](docs/configuration.md) for the full parameter reference, examples, memory management, and troubleshooting.
+
+### Supported background harnesses
+
+Install and authenticate the harnesses you want to use, then select them during `qwen-live-harness init`. Live launches their background connections for you.
+
+| Harness     | Protocol                            | Connection                                                                                         |
+| ----------- | ----------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Qwen Code   | Qwen Serve (REST/SSE) or native ACP | Managed local Serve by default; an existing Serve or `qwen --acp` is also supported.               |
+| Qoder CLI   | Native ACP                          | `qodercli --acp`                                                                                   |
+| Codex       | ACP adapter                         | [`@agentclientprotocol/codex-acp`](https://github.com/agentclientprotocol/codex-acp)               |
+| Claude Code | ACP adapter                         | [`@agentclientprotocol/claude-agent-acp`](https://github.com/agentclientprotocol/claude-agent-acp) |
+| Gemini CLI  | Native ACP                          | `gemini --experimental-acp`                                                                        |
+
+[ACP (Agent Client Protocol)](https://agentclientprotocol.com/get-started/introduction) connections use JSON-RPC over local standard input/output. Codex and Claude Code adapters are launched through `npx` and may download dependencies on first use. Available tools, image support, and approval behavior depend on the backend and its version.
+
+A background harness is optional: choose none during initialization to use realtime audio/video interaction, web search, Proactive, and Memory.
 
 ## Getting started with development
 
@@ -127,33 +143,39 @@ npm start
 | [Daemon development](packages/qwen-live-harness/README.md)    | Model connections, tools and backend adapters, Proactive, Memory, protocols, and tests.         |
 | [Host development](packages/qwen-live-harness-host/README.md) | Electron UI, system permissions, audio/video, native screenshots, window layout, and packaging. |
 
-For connecting to, authorizing, and diagnosing existing Qwen Code terminals, see [Qwen terminal integration](packages/qwen-live-harness/README.md#qwen-terminal-integration).
+Existing Qwen Code terminals use a separate **Qwen peer protocol** for discovery, authorized text instructions, and optional reports; this does not take over arbitrary terminals. See [Qwen terminal integration](packages/qwen-live-harness/README.md#qwen-terminal-integration).
 
 ## Architecture
 
 Think of the system as three parts: **Host captures and presents, the daemon coordinates, and models and background harnesses understand and execute.**
 
 ```mermaid
-flowchart TB
-  subgraph local["Your Mac"]
-    host["Host · Desktop UI<br/>Capture audio/video, play audio, display status"]
-    daemon["daemon · Coordinator<br/>Manage conversations, tools, and tasks"]
-    backend["Optional background harness<br/>Qwen Code / Codex / Claude Code / …"]
-    memory[("Local memory libraries")]
-    host <-->|Local connection| daemon
-    daemon <-->|Tasks and progress| backend
-    daemon <--> memory
-  end
-  subgraph cloud["Cloud model APIs"]
-    omni["Qwen Omni Realtime<br/>Realtime understanding and spoken responses"]
-    search["Search subagent<br/>Native Omni Realtime web search"]
-    monitor["Proactive Monitor<br/>Evaluate audio or visual trigger conditions"]
-    memoryapi["Memory APIs<br/>Consolidate memory and generate retrieval vectors"]
-  end
-  daemon <-->|Audio, images, and tool results| omni
-  daemon <-->|Public-information queries and results| search
-  daemon <-->|Task-specific observations| monitor
-  daemon <-->|Relevant context as needed| memoryapi
+flowchart LR
+  host["<b>Host · Desktop UI</b><br/>Audio/video capture & playback"]
+  daemon["<b>daemon · Coordinator</b><br/>Conversations · Tools · Approvals"]
+  omni["<b>Qwen Omni Realtime</b><br/>Cloud understanding & speech"]
+  host <-->|Local WebSocket| daemon
+  daemon <--> omni
+  harness["<b>Task delegation</b><br/>Optional background harness<br/>ACP · Qwen Serve"]
+  search["<b>Web search</b><br/>Omni Realtime<br/>Native search"]
+  visual["<b>On-demand vision</b><br/>Omni Realtime<br/>Snapshot analysis"]
+  monitor["<b>Proactive</b><br/>Omni Realtime<br/>Audio / visual monitors"]
+  memory[("<b>Memory</b><br/>Local libraries<br/>Cloud consolidation & embeddings")]
+
+  daemon <--> harness
+  daemon <--> search
+  daemon <--> visual
+  daemon <--> monitor
+  daemon <--> memory
+
+  classDef local fill:#eef4ff,stroke:#a5bde8,color:#193457,stroke-width:1px
+  classDef model fill:#f0ecff,stroke:#b7a5e8,color:#382965,stroke-width:1px
+  classDef optional fill:#edf7f2,stroke:#9acbb2,color:#234d3d,stroke-width:1px
+  classDef storage fill:#fff6e6,stroke:#dfc086,color:#664b22,stroke-width:1px
+  class host,daemon local
+  class omni,search,visual,monitor model
+  class harness optional
+  class memory storage
 ```
 
 Tell Qwen Live Harness what you need. Qwen Omni can answer directly or use tools to delegate complex work to a background harness while the foreground conversation continues. Background results are queued for the main conversation to announce, and Memory provides relevant context for later conversations.
@@ -161,8 +183,8 @@ Tell Qwen Live Harness what you need. Qwen Omni can answer directly or use tools
 Keep these boundaries in mind when choosing how to use it:
 
 - **Background harness capabilities:** Audio/video interaction, Proactive, and Memory can run independently. File changes and command execution require an installed and authenticated background harness, whose capabilities and permissions determine what can be done. The application does not automatically take over existing work in arbitrary terminals.
-- **Different ways to see:** Screen and camera support On Demand and Live Feed. On Demand captures one current image when requested and sends it to the main model before answering; Live Feed continuously supplies recent frames. Only explicitly delegated background work needs image attachments.
-- **Local memory, cloud inference:** Personalized and cross-session memories are stored in local memory libraries rather than in the cloud API, and can be created, retrieved, updated, and deleted.
+- **Different ways to see:** On Demand captures the full selected display or camera and returns the visual subagent's analysis to the main conversation. Live Feed continuously supplies images to the main model. Proactive monitors independently observe the selected source; they do not open webpages or operate applications for you.
+- **Local memory, cloud inference:** Personalized and cross-session memories are stored in local libraries you can manage. Memory consolidation, optional visual observation, and embeddings send the relevant content to the configured model APIs; local storage does not mean offline inference.
 
 ## Community contributions
 

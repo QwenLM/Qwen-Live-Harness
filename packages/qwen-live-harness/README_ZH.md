@@ -180,7 +180,7 @@ node packages/qwen-live-harness/dist/index.js doctor --peers
 
 发现要求 `kind: "qwen-code"` 后端配置 `peerDiscovery.qwenHome`，并与目标 Qwen 终端使用同一个本地 Qwen home。Qwen 侧需要 `agents.crossSessionMessaging: true`；修改后应重启目标终端。省略 `peerDiscovery` 会关闭发现，ACP 条目不支持这个设置。
 
-启动一次语音通话后，`session_list` 会同时列出托管会话和可达的 `tui` 终端。Host 的 Subagents 面板新增 **Terminal sessions**，可用 Refresh 更新列表。外部终端执行状态保持 `unknown`，没有 controller 授权时标为只读；它们不计入普通任务的 Running / Completed 数量。
+启动一次语音通话后，`session_list` 会同时列出托管会话和可达的 `tui` 终端。Host 的 Subagents 面板包含 **Terminal sessions**，可用 Refresh 更新列表。外部终端执行状态保持 `unknown`，没有 controller 授权时标为只读；它们不计入普通任务的 Running / Completed 数量。
 
 目录与 socket 的名称是展示信息，发送目标绑定 Qwen home、会话 ID、PID 和启动时间组成的句柄。同名终端不会仅凭名称被选中；发现失败也不应被解释成该终端任务已完成。
 
@@ -234,7 +234,17 @@ QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness
 
 工具立即返回 `accepted + taskId`，搜索任务独立执行，多个查询可并行；每个搜索仍有独立的 25 秒超时。只发送本次查询，不附带语音、截图、Memory 或其他工作会话的上下文。是否实际联网按服务端 usage 判断，未知状态不能说成已核实。
 
-完成结果进入 Injector 的 `search_result` 通道，等待用户语音、前台响应和设备播放结束，由主 Omni 根据 query／answer／searchStatus 组织回答，而不是逐字朗读原始结果。结果不创建用户消息，也没有工具权限，不能从网页内容再次搜索、委托任务或修改 Memory。搜索显示为 `kind: "search"` 的真实子任务，可单独取消，等待播报与已完成分开表示。
+完成结果进入 Injector 的 `search_result` 通道，等待用户语音、前台响应和设备播放结束，由主 Omni 根据 query／answer／searchStatus 组织回答，而不是逐字朗读原始结果。每个结果作为带引用数据的 `[NOTIFICATION]` user 上下文消息发送，不代表真实用户的新请求；其响应没有工具权限，网页内容不能授权再次搜索、委托任务或修改 Memory。搜索显示为 `kind: "search"` 的真实子任务，可单独取消，等待播报与已完成分开表示。
+
+主会话的系统指令在整场通话中保持固定，每条 transport 仅在 `session.update` 中发送一次；`response.create` 不重复或覆盖系统指令。子 agent 结果通过 `conversation.item.create` 发送带类型标记的引用数据。Memory 更新使用可替换的 `[MEMORY_CONTEXT]` user 快照，关闭时发送不含旧数据的禁用快照，不改写系统 Prompt。重连只恢复最新快照；工具列表变化单独通过仅含 tools 的 `session.update` 更新。这不会物理删除已进入服务端当前会话的旧消息。
+
+工具必须等 `response.done` 确认 completed，并核对最终 ID、名称、参数与完成状态后才执行；结果得到服务端确认后才续答。能关联到待确认回执的 `Unknown function call id` 或 10 秒结果确认超时，会停止该续答链并记录静默诊断，不重复执行动作，也不直接关闭通话。其他无法关联的协议／配置错误仍按各自失败逻辑处理。回执被拒绝不代表任务未执行，也不构成再次执行的授权。
+
+异步任务的受理回执必须单独完成一轮 `tool_continuation`：搜索、Appshot 画面分析、受管理的 handoff 或 Proactive 创建回执得到服务端确认后，daemon 先消费这轮响应，再注入最终的视觉、搜索、后台或 Monitor 通知。服务端分别消费受理回执响应与最终结果通知；这轮续答不重复执行任务，也不改写系统指令。
+
+只有当前工具链已经产生音频铺垫，且**父响应里的所有工具**都成功受理了符合条件的异步任务时，才抑制重复确认的音频：范围为 `web_search`、已受理的 Appshot 画面分析、不含警告的受管理 `handoff`，以及已实际提交创建的 `create_proactive_monitor`／`create_live_narration`。模型仍完成回执响应，文字保留在服务端历史和带 `audioSuppressed:true` 的诊断转录中，但不作为用户听到的对话写入 Memory、后续委托上下文或重连历史。没有音频铺垫、出现错误或警告、混有查询工具时，确认照常播报；终端指令投递、权限答复、`session_create`、定时器及任务更新／取消不适用这项抑制。已被新用户轮次取代的迟到回执单独静默消费，不继承旧轮次的工具权限，也不会因此静音真实用户的新回答或最终任务结果通知。
+
+如果确认续答再次调用完全相同的已受理请求，运行时复用原受理回执，不会启动第二个任务。该保护只作用于对应确认续答；不同的链式请求和用户新一轮明确请求仍可执行。复用回执也不会隐藏其中的警告。
 
 原生搜索请求失败（包括服务端拒绝）后，如果已配置后台，运行时只用原查询在默认后台新建隔离会话，添加只读公开信息查询约束，复用现有 handoff、任务记录与权限流程；不把失败输出或网页指令当成授权，也不让主模型重复转交。未配置后台时明确报告查询失败。原搜索记录失败及转交情况，新后台任务按真实事件更新。结束通话或新建对话会取消未完成搜索、撤回待播结果，并停止该通话自动转交的查询；其他后台任务保持原生命周期。停止请求与后台停止确认仍然是两回事。
 
@@ -242,18 +252,22 @@ QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness
 
 主语音会话请求 `semantic_vad`、`create_response: false`、`interrupt_response: true`：服务端识别轮次，daemon 调度 `response.create`。Memory 更新和工具续答不应切换主会话的 VAD 模式。独立 Monitor 按窗口手动提交输入，独立搜索只有文本，两者的 `turn_detection: null` 不代表主语音关闭了 VAD。
 
-音频传输使用单声道 PCM16，输入为 16 kHz、模型输出为 24 kHz。Host 将输出重采样到设备的实际采样率；不要为了适配模型而强制切换系统输出设备的时钟。
+音频传输使用单声道 PCM16，麦克风输入为 16 kHz，**模型输出为 24 kHz**（`session.audio.output.format.sample_rate: 24000`）。Host 将输出重采样到设备的实际采样率；不要为了适配模型而强制切换系统输出设备的时钟。更新后需重启两端，可通过 `session.start.outputSampleRate` 检查本次通话的播放输入采样率。
 
 视觉输入只有一个选定来源和一种采集模式：
 
-| 路径               | 送入内容与范围                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------- |
-| Live Feed          | 连续向主 Omni 发送所选摄像头或所选显示器的完整画面                                 |
-| On Demand Appshot  | 返回来源信息、可能的屏幕辅助功能文本和截图资产句柄；屏幕路径捕获当前前台窗口       |
-| Proactive 视觉监控 | 向独立 Monitor 发送所选摄像头或完整显示器画面；On Demand 下也可独立采样            |
-| 可选视觉 Memory    | Live Feed 复用当前帧；On Demand 私下采集当前前台窗口或摄像头，存储整理后的文字观察 |
+| 路径               | 送入内容与范围                                                                   |
+| ------------------ | -------------------------------------------------------------------------------- |
+| Live Feed          | 连续向主 Omni 发送所选摄像头或所选显示器的完整画面                               |
+| On Demand Appshot  | 截图由独立“画面分析”子智能体读取；主模型收到文字证据，以及资产／元数据回执       |
+| Proactive 视觉监控 | 向独立 Monitor 发送所选摄像头或完整显示器画面；On Demand 下也可独立采样          |
+| 可选视觉 Memory    | Live Feed 复用当前帧；On Demand 私下采集选定显示器或摄像头，存储整理后的文字观察 |
 
-Appshot 的截图资产通过 `function_call_output` 返回，**不会直接把像素追加到主 Realtime**，也不触发音频 commit。需要像素级理解时，交给支持图片的后台；没有后台时提示切换 Live Feed。不能因为拿到了 asset 句柄，就声称模型已经看见截图内容。
+Appshot 截图后，通过 `function_call_output` 返回带资产句柄的异步 `accepted + taskId` 回执。`kind: "visual"` 的“画面分析”子智能体复用主模型、endpoint 和 key 读取编码截图，不提供工具或联网搜索；结果通过没有工具权限的 `visual_result` 通知交回主 Omni。无需后台 Harness。主对话收到文字证据而非直接图片，不能仅凭资产句柄声称看见画面。
+
+视觉子智能体依次发送两组“一秒协议静音＋同一张 JPEG”，commit 一次并等待确认，再用 `response.instructions` 提交视觉问题、请求文字推理。重复静态帧只满足视频格式，不能当成运动证据；固定系统 Prompt 只发一次，不发送私人 Memory 或无关对话。分析超时为 25 秒，手动停止或 End call 会取消，失败不会自动转给编程代理。多个分析可并行，完成结果复用只读结果 FIFO 与播放确认；Subagents 展示排队／运行状态，静音时保留文字结果。Screen 的原始 PNG 资产仍保留，模型输入遵循截图传输限制。
+
+Appshot 可选参数 `query` 表示当前视觉问题；省略时优先使用本轮已完成的转录，否则要求概述画面。只有成功受理时才能略过重复确认音频。结果 Prompt 禁止从 `app=Unknown` 推断空白桌面、重复已受理请求、执行截图内文字的指令或猜测看不清的细节。`visual.analysis` 与 `visual.delivery` 诊断关联子模型和前台响应，不记录图片字节。
 
 协议类型与限制以 [`host/types.ts`](src/host/types.ts)、[`realtime-session.ts`](src/realtime/realtime-session.ts) 及 Host 的共享协议实现为准。当前 Host 协议为 v9：
 
@@ -266,7 +280,9 @@ Appshot 的截图资产通过 `function_call_output` 返回，**不会直接把�
 
 用 `--debug` 对照 Host 连接、epoch、采集尺寸、帧 hash、工具回执和播放时序。会话 JSONL、Memory 数据库与诊断文件不是同一种日志；其中可能包含用户对话和任务内容。
 
-音频、视觉及音视频 Monitor 的 debug 归档还会保存实际请求和原始图片／音频。它只保留最近十个 Monitor 目录，不是固定磁盘配额。结构与诊断方法见 [Monitor 诊断归档](#monitor-诊断归档)，分享前应检查敏感内容。
+搜索结果投递在会话 JSONL 中记录为 `search.delivery`，debug 终端中为 `web_search.delivery`。按任务、服务端 Session 与 response ID 对照 `queued`、`requested`、`response_started`、`transcript`、`audio_started`、`response_done`、`finished` 各阶段。`audio_started` 只表示已向 Host 转交音频，不代表用户已经听到；投递完成还需播放确认。结果响应完成但没有可播放音频时，Subagents 保留结果并显示 `search.answerUnspoken` 对应的“未生成语音答复”状态，同时记录非致命的 `search_answer_unspoken` 诊断，不误报已经播报。
+
+debug 还会记录跨连接的[运行归档](#运行归档与离线检查)，它与会话 JSONL、逐 Monitor 归档分开。音频、视觉及音视频 Monitor 归档保存实际请求和原始图片／音频，只保留最近十个 Monitor 目录；这项独立的保留规则不是固定磁盘配额。结构与诊断方法见 [Monitor 诊断归档](#monitor-诊断归档)，分享前应检查敏感内容。
 
 所有固定 UI／init 文案集中在 [`src/i18n/messages.ts`](src/i18n/messages.ts)，维护成对的 `en` / `zh-CN` 字段及一致的占位符。Host 构建复用该模块；system prompt 和原始后台输出不是 UI 翻译表的一部分。
 
@@ -306,7 +322,7 @@ ACP 后端的 `command`、字符串数组 `args`、字符串值对象 `env` 与�
 }
 ```
 
-服务需要认证时另外设置 `token`；`baseUrl` 是 `serveUrl` 的另一种写法。此类后端不使用 ACP 的进程配置字段。省略 `backends` 会保留连接本机旧 `qwen serve` 的行为，关闭后台必须显式使用 `[]`。
+服务需要认证时另外设置 `token`；`baseUrl` 是 `serveUrl` 的另一种写法。此类后端不使用 ACP 的进程配置字段。省略 `backends` 会选择默认的本机 `qwen serve` 连接，关闭后台必须显式使用 `[]`。
 
 ### ACP 授权模式
 
@@ -320,7 +336,7 @@ ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回�
 
 权限询问由主 Omni 根据当前真实对话语言生成；没有可判断的对话语言时才回退 `config.language`。后台返回的英文标题、命令或路径是待审批数据，不决定播报语言，也不是用户授权。独立权限询问响应不能调用工具或用进度播报替代询问；用户随后明确答复，再由正常对话调用 `respond_permission`。原始动作在子任务详情中保留。
 
-任务完成／失败通知使用独立 `task_result` 响应，不再拼接 `The task to … finished` 等固定英文。运行时提供真实状态、任务和摘要，模型按当前对话语言简短概括，不朗读内部 ID、原始路径或 Markdown，也不能借通知调用工具。最近的真实用户语言样本可以跨通话保留，但只用于选择语言，不能当作该任务的结果事实；没有样本时在可信响应指令中明确指定配置语言。
+任务完成／失败通知使用独立 `task_result` 响应。运行时提供真实状态、任务和摘要，模型按当前对话语言简短概括，不朗读内部 ID、原始路径或 Markdown，也不能借通知调用工具。最近的真实用户语言样本可以跨通话保留，但只用于选择语言，不能当作该任务的结果事实。通知消息携带可信语言元数据，不修改系统指令；如果之后有新的真实用户发言，合并回复遵循该发言的语言。
 
 后台提出真实权限请求后，普通 `allow` 只批准当前请求。只有用户明确表示“以后都允许”等持续授权意图，才使用 `allow_always`；这适用于支持权限转发的 ACP 和 Qwen Serve 后端。
 
@@ -332,36 +348,60 @@ ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回�
 
 ### Proactive 调优参数
 
-调度器将新媒体按固定片段提供给独立 Monitor；观察、模型推理和前台播报是不同阶段。调高 FPS 或缩短间隔不保证同等缩短触发延迟，还受采集、网络和前台音频队列影响。
+调度器将新媒体按**固定 1 FPS、每段 2 秒**的节奏提供给独立 Monitor。观察、模型推理和前台播报是不同阶段；更频繁地检查调度不会让不完整片段提前就绪，也不能消除网络、推理和播放延迟。
 
-| 字段，均位于 `proactive`               | 默认值     | 说明                                                                           |
-| -------------------------------------- | ---------- | ------------------------------------------------------------------------------ |
-| `enabled`                              | `true`     | 是否启用工具与监控能力                                                         |
-| `monitor.chunkDurationSec`             | `1`        | 每个 user 媒体片段的时长，秒；可设 `0.1`–`60`，独立于调度检查间隔              |
-| `monitor.sessionRecycleEvals`          | `60`       | 一条 Monitor 连接达到此推理次数后重建连接                                      |
-| `monitor.representationCompact`        | `"normal"` | 视觉 Monitor 的视频表征聚合模式：`normal` 或 `none`；不作用于纯音频 Monitor    |
-| `scheduler.evalIntervalSec`            | `1`        | 检查是否可以发起下一次推理的间隔，秒                                           |
-| `scheduler.maxFailuresPerTask`         | `3`        | 连续推理失败达到此次数后停止该任务                                             |
-| `scheduler.repeat.cooldownSec`         | `3`        | 重复触发的冷却时间，秒                                                         |
-| `scheduler.repeat.maxWaitTtsSec`       | `30`       | 前台 Realtime 创建通知响应后，等待播报完成确认的上限，秒；不限制前面的排队时间 |
-| `scheduler.repeat.clearBufferOnResume` | `true`     | 恢复观察时清理旧感知缓冲                                                       |
-| `vision.fps`                           | `2`        | Monitor 独立视觉目标采样帧率，实际受采集耗时限制                               |
-| `vision.windowSizeSec`                 | `10`       | 本地新画面的暂存时长上限，秒；不是每轮重发的历史窗口                           |
-| `vision.minEvalDurationSec`            | `0`        | 首次推理前的额外视觉观察时长；`0` 仍需完整片段和至少两张有效新帧               |
-| `audio.windowSizeSec`                  | `60`       | 本地新音频的暂存时长上限，秒                                                   |
-| `audio.minEvalDurationSec`             | `0`        | 首次推理前的音频观察时长                                                       |
+`create_proactive_monitor` 创建条件观察任务，`create_proactive_timer` 创建时间提醒，`create_live_narration` 持续描述有意义的变化。创建解说只接受三个字段：`title`、`modalities` 和 `narration_focus`。运行时将任务绑定到原始真实用户请求，并把适用于该任务的语言、语气和详细程度偏好传递到 Monitor 判断与播报；其他任务的偏好不能扩大此任务范围，用户要求描述的内容也不等于已观察到的事实。通过任务更新工具明确设置 `narration_style` 时，它覆盖冲突的风格偏好。取消或更新任务会使先前任务代次的排队事件失效。
 
-视觉与音频的最短观察时长不能超过各自窗口。`vision.fps` 可设为 `0.1`–`60`，并要求 `vision.fps × monitor.chunkDurationSec ≥ 2`；两个 `windowSizeSec` 均不能小于 `monitor.chunkDurationSec`。不满足的配置会在启动时明确报错，避免创建永远凑不齐片段的任务。配置不保证设备能达到目标帧率；前台 Live Feed 的 `visualInput.fps` 则是独立设置。较长采集间断会重新计算连续观察时长，旧帧不会被当成新证据。
+| 字段，均位于 `proactive`               | 默认值     | 说明                                                                        |
+| -------------------------------------- | ---------- | --------------------------------------------------------------------------- |
+| `enabled`                              | `true`     | 是否启用工具与监控能力                                                      |
+| `monitor.sessionRecycleEvals`          | `60`       | 一条 Monitor 连接达到此推理次数后重建连接                                   |
+| `monitor.representationCompact`        | `"normal"` | 视觉 Monitor 的视频表征聚合模式：`normal` 或 `none`；不作用于纯音频 Monitor |
+| `scheduler.evalIntervalSec`            | `1`        | 检查是否可以发起下一次推理的间隔，秒                                        |
+| `scheduler.maxFailuresPerTask`         | `3`        | 连续推理失败达到此次数后停止该任务                                          |
+| `scheduler.repeat.cooldownSec`         | `3`        | 重复触发的冷却时间，秒                                                      |
+| `scheduler.repeat.maxWaitTtsSec`       | `30`       | 每次尝试从准备到播放完成确认的上限，含兜底生成／播放；不限制前面的排队时间  |
+| `scheduler.repeat.clearBufferOnResume` | `true`     | 恢复观察时清理旧感知缓冲                                                    |
+| `vision.windowSizeSec`                 | `10`       | 本地新画面的暂存时长上限，秒；不是每轮重发的历史窗口                        |
+| `vision.minEvalDurationSec`            | `0`        | 首次推理前的额外视觉观察时长；`0` 仍需完整片段和至少两张有效新帧            |
+| `audio.windowSizeSec`                  | `60`       | 本地新音频的暂存时长上限，秒                                                |
+| `audio.minEvalDurationSec`             | `0`        | 首次推理前的音频观察时长                                                    |
 
-Monitor 使用交错会话：一次 `session.update` 设置系统 instructions、`turn_detection: null`、`smooth_output: false` 和空工具列表；再以 user text 提交任务。每轮发送一个新的媒体片段，`input_audio_buffer.commit` 确认后才 `response.create`，等待 `response.done` 后再发送下一片段；服务端保存先前 user 媒体与 assistant 回复，不由客户端重复拼接历史。
+两个缓冲窗口均不能小于 2 秒，最短观察时长不能超过各自窗口。Monitor 帧率和片段时长是固定协议常量，不是可配置字段；前台 Live Feed 使用独立的 `visualInput.fps` 设置。较长采集间断会重新计算连续观察时长，不完整片段会被跳过，已经判断过的画面不能当成新证据。
 
-默认纯音频片段为 1 秒 PCM16／16 kHz／单声道，不额外补静音。纯视频片段使用两张图和 1 秒标为 `protocol_silence` 的静音音轨承载音频缓冲提交；混合片段使用同一时段的 1 秒真实音频与两张图。图像不足时不复制旧图，混合片段无法配齐会记录丢弃原因；低于 2 fps 不适合默认 1 秒混合片段。
+所有模态的 Monitor 都使用交错的流式缓冲区会话。每条连接只在初始 `session.update` 中设置固定的系统 instructions、`turn_detection: null`、`smooth_output: false` 和空工具列表。每轮 append 新音频，视觉监控同时 append 新图像，然后发送 `input_audio_buffer.commit`，收到 `input_audio_buffer.committed` 后才请求推理。等到 `response.done` 后再提交下一片段。服务端保留先前 user 媒体与 assistant 回复，客户端不重复拼接或发送这些历史。
+
+只有 Monitor 连接的首个媒体请求附带任务文字，写法为 `{"type":"response.create","response":{"instructions":"TASK_TEXT"}}`。这里的 `response.instructions` 是首轮 user 媒体对应的任务文字，不是 Monitor 的系统 Prompt。后续片段使用不含该字段的裸 `response.create`，不会单独发送只有任务文字的 `conversation.item.create`。重建连接时，任务文字随首个新媒体片段再次发送，不重放旧媒体。独立的 On Demand 画面分析也用该字段提交一次图片问题。这两条都是手动媒体推理通路；前台对话、工具续答、后台结果通知和 Web Search 仍不携带 response 级 instructions。
+
+每个纯音频片段包含 2 秒 PCM16／16 kHz／单声道音频，不额外补静音。纯视频片段依次 append 1 秒 `protocol_silence` 静音、一张新图、第二秒静音、第二张新图，然后只 commit 一次，不包含麦克风声音。音视频片段按相同顺序提交两段真实的 1 秒麦克风音频及其对应画面；每个视觉轮次因此包含同一两秒时段内的两张新图。图像不足时不复制此前画面，不完整片段会记录丢弃原因。
 
 慢响应时新媒体留在有界本地队列中，不继续写入正在推理的服务端缓冲，也不把积压多秒音频合并成一轮。重建连接会丢失该 transport 的模型历史；只保留尚未消费的新媒体，不重放已经判断过的旧咳嗽／旧画面。调试时用 `transportGeneration` 区分这些历史边界。
 
 `monitor.representationCompact` 映射到 `session.video.input.representation_compact`，在 Monitor 初始 `session.update` 中、第一段音频（含协议静音）发送前设置。连接内不动态修改，回收或失败重建连接时保留同一配置。调整配置后重启服务；`none` 适合需要保留细粒度视觉信息的监控。
 
-旧的 `scheduler.maxConcurrentTasks` 字段仍可读取，但不再限制任务数，新配置无需填写。Monitor 按窗口和模型判断工作，触发有采样、网络及播报排队延迟。
+Monitor 不设可配置的任务数量上限；实际并发能力仍受设备资源、采样、模型延迟及播报队列影响。
+
+#### Proactive 独立播报兜底
+
+前台 Proactive 响应以 `status: completed` 正常结束却未产生音频时，包括返回 `remain_silent` 的情况，同一次通知最多使用 **一次**独立播报兜底。它不创建新 Monitor、不增加触发次数，也不重新判断证据。失败或被取消的前台响应不满足这项兜底条件。
+
+如果有 `remain_silent` 调用，必须先回传结果并等确认，完成静默的回执续答，兜底才可通过 Injector 的 FIFO、前台响应与播放门控。它复用主会话的 endpoint、模型、key 和音色，输出 24 kHz PCM，设置 `smooth_output:false`、无工具／搜索、`turn_detection:null`。只发送简短固定规则、引用的观察摘要与当前对话语言，不复制原始媒体、Memory、要求监测的触发条件或干预指令。这是播报通路，不是再次核实观察事实；其 `response.create` 不携带 instructions。
+
+兜底先缓冲完整且成功的生成结果，再交给 Host 播放。请求最多等待 20 秒，PCM 上限为 20 秒单声道音频（960,000 字节）。`maxWaitTtsSec` 限制该次尝试的准备与播放总时长，不因兜底延长；用户设置更短时间时可能先到期。兜底失败或超时只把这次播报记为 `undelivered`，不把重复监控变成失败。
+
+独立兜底的播报状态与任务状态分开：
+
+| 播报状态      | 含义                                             |
+| ------------- | ------------------------------------------------ |
+| `queued`      | 按顺序等待，包括等待尚未完成的回执续答或连接恢复 |
+| `preparing`   | 正在准备响应；已生成／缓冲音频不代表开始播放     |
+| `speaking`    | Host 已实际确认开始播放                          |
+| `delivered`   | 生成成功，并已收到 Host 播放完成确认             |
+| `undelivered` | 本次通知未完整送达，不能表示用户已经听到         |
+
+一次性任务可能显示 `completed`，同时播报为 `undelivered`：表示检测任务结束，不表示通知已播完。重复监控在一次兜底播报失败后仍继续。用户说话、关闭播报、取消任务或结束通话会使排队中的兜底失效。连接恢复时，尚未开始的兜底可继续排在回执流程之后；一旦开始生成或播放，打断、静音、取消、停止或连接恢复都会中止它，不重新播放旧通知。
+
+主通路用 Preparing／Speaking 区分生成和真实播放。关闭播报时，主通路事件可能直接被消费，重新打开后不会补播。此时的已消费／已完成状态**不代表用户听到了声音**；上表严格的 `delivered` 保证针对独立兜底。debug 事件 `proactive.fallback_queued`、`proactive.fallback_started`、`proactive.fallback_audio_ready`、`proactive.fallback_delivered`、`proactive.fallback_undelivered` 与 `proactive.delivery_undelivered` 通过同一 task／delivery ID 关联，不增加触发次数。
 
 ### Memory 模型服务连接
 
@@ -467,7 +507,7 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | `QWEN_LIVE_HARNESS_PROACTIVE_ENABLED`                     | `proactive.enabled`，接受 `true` / `1` / `false` / `0` |
 | `QWEN_LIVE_HARNESS_LOG_LEVEL`                             | `debug` / `info` / `warn` / `error`，默认 `info`       |
 
-省略 `backends` 的兼容配置还支持 `serveUrl` / `serveToken`，以及环境变量 `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`；新配置建议使用明确的 `backends` 数组。
+省略 `backends` 的配置支持 `serveUrl` / `serveToken`，以及环境变量 `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`；多后端或无后端模式使用明确的 `backends` 数组。
 
 安装版的桌面启动登记保存 Node／CLI 的绝对路径、PATH、配置／发现目录和工作目录，不复制任意 shell 环境变量。需通过双击 Host 使用的参数，建议写入配置文件；仅存在于某个终端的环境变量，不保证从启动器打开应用时仍存在。
 
@@ -481,6 +521,33 @@ qwen-live-harness
 ```
 
 源码开发将这两条 CLI 命令换成 `npm run init` 和 `npm start`。`DATA_DIR` 只能通过环境变量指定，没有对应的 `dataDir` 配置字段；`discoveryDir` 可以写入配置，并被 `QWEN_LIVE_HARNESS_DISCOVERY_DIR` 覆盖。手动配置独立 Host 连接时，将 `QWEN_LIVE_HARNESS_DISCOVERY_FILE` 设为对应完整发现文件路径。
+
+### 运行归档与离线检查
+
+debug 运行会写入 `<dataDir>/debug/run-*`，与下文系统临时目录里的逐 Monitor 归档独立。运行归档记录实际观察到的主模型、Monitor、搜索、画面分析、通知播报连接，以及运行／控制事件。已知凭据字段、配置中的密钥和可识别的凭据文本模式会脱敏，但不会通过 OCR 或语音识别查找媒体中的秘密；Prompt、Memory 上下文、工具参数／结果、转录及媒体仍是私密内容，不能当作可直接分享的匿名遥测。
+
+每次归档包含 `manifest.json`、追加写入的 `events.jsonl` 和 `media/`。事件保留全局 `globalSeq`、连接内 `connectionSeq`、连接类型／ID、墙上时间、单调时间、方向与记录的内容。`archive.connection_registered` 是连接元数据，不是又发送了一次模型请求；真正的出站请求看 `wire.send`。对应的 `wire.send_result` 为 `sent` 或 `failed_or_uncertain`，其中 `sent` 仅表示本地 socket 接受了写入，不等于服务端确认收到；缺少结果时为 `unconfirmed`。服务端确认是另外的入站事件。
+
+媒体引用记录相对路径、字节偏移、长度、SHA-256、类型与编码，指向准确的归档字节范围，不是事后近似重建的录音。会话／配置快照仅提供上下文，不应误认为每轮都重发了 instructions；判断客户端尝试发送了什么，应查看实际 wire 序列，并结合归档是否完整。
+
+默认**每次归档预算为 512 MiB**，保留**最近 10 次已结束的运行归档**，包括已结束但不完整的归档；活跃归档受保护，总数可能暂时超过十个。`manifest.json` 记录 `recording`、`closed` 或 `incomplete`、警告及计数。达到上限、记录丢失或存储故障只令证据不完整，不应终止通话。写入失败也可能导致 manifest 无法更新，因此还要检查运行警告与缺失文件，不能只看状态字段；未开启 debug 的输入无法追补。
+
+在仓库根目录离线检查一次归档，默认输出不包含 Prompt 或转录正文：
+
+```sh
+node scripts/replay-live-debug.mjs /path/to/debug/run-example
+```
+
+从摘要中选择连接 ID，导出到**归档外尚不存在的新目录**：
+
+```sh
+node scripts/replay-live-debug.mjs /path/to/debug/run-example \
+  --connection conn-000001 --output /path/to/new-export
+```
+
+工具校验事件序号、发送结果、媒体范围及哈希，并拒绝不安全路径或符号链接。摘要列出观察到的连接状态、可用且通过格式校验的服务端 `sess_*` ID，以及去重后的响应数量，不输出消息正文。导出包含 `requests.json`、`responses.json`、选中连接的 `events.jsonl`、复制的媒体片段及检查／manifest 摘要；请求／响应 JSON 中恢复 base64 媒体，原始字节数组使用明确的 `$binary` 包装，脱敏标记也会保留。失败或未确认的发送会保留标记，不完整的归档不会标成完整，也不会覆盖已有输出目录。导出内容仍含隐私，分享前必须检查。
+
+虽然文件名含 replay，这个工具**只做离线检查与导出**：不会读取 API key、联网调用、启动设备、执行记录中的函数调用或后台命令。主会话的工具历史仅作为数据导出，供分析使用，不自动重放。任何归档都不能保证未来的模型输出、服务端状态或采样随机性完全相同。
 
 ### Monitor 诊断归档
 
@@ -504,13 +571,14 @@ qwen-live-harness-monitor-debug/
 ```
 
 - `proactive.monitor_debug_started` 和 `proactive.monitor_request_saved` 记录绝对目录。一次 Monitor 的 WebSocket 回收重建仍使用同一目录。
-- JPEG 是成功写入模型连接的帧；`input.wav` 是该次 commit 前已成功发送、且未被 `input_audio_buffer.clear` 丢弃的单声道 16 kHz PCM16，按实际发送顺序拼接，包含协议静音。它不是原始麦克风全程录音；归档中的音频偏移不包含 WAV 文件头。
-- `request.json.events` 的音频事件带 `origin`：`microphone` 为麦克风来源、`protocol_silence` 为纯视频片段的静音音轨承载、`unknown` 为未标注来源。`audioSummary` 提供 `totalBytes`、`microphoneBytes`、`protocolSilenceBytes`、`unknownBytes`。这些只是归档诊断字段，不会发送给模型；来源不是能量或事件判断，握手／慢推理时本地缓存的新媒体也可能较晚送出，不能把发送时间当作采集时间。
-- `request.json` 保存初始化配置、任务文字、事件顺序、帧哈希、音频偏移和 `previousRequest`。`transportGeneration` 区分同一 Monitor 的不同连接，`previousRequest` 仅串联同一 transport 的先前请求；重建连接会重置该引用。服务端驻留会话仍可能保有此前已提交媒体和回复历史，不能把模型看到的全部上下文等同于当前这一个 WAV；排查时需要结合前序请求和 transport。
-- 每个 `request.json.session` 是为了单独查看文件而附带的初始化快照，不表示本轮重发了系统 Prompt 或任务文本。同一 transport 的快照中事件 ID 保持相同；本轮实际增量发送看 `events`，通常只有媒体 append、commit 和 `response.create`。只有建立新 transport 才重新发送初始化。
+- JPEG 是成功写入模型连接的帧。`input.wav` 保存 commit 前成功 append、且未被 `input_audio_buffer.clear` 丢弃的单声道 16 kHz PCM16，按发送顺序拼接，包含协议静音。它不是原始麦克风全程录音；归档中的音频偏移不包含 WAV 文件头。
+- 所有模态的 `request.json.events` 都统一保存逐条音频／图像 append、`input_audio_buffer.commit` 和 `response.create` 事件。每条音频 append 指向 `input.wav`，记录字节偏移、长度和 `origin`。`origin` 中，`microphone` 为麦克风来源、`protocol_silence` 为纯视频片段的静音音轨承载、`unknown` 为未标注来源。`audioSummary` 提供 `totalBytes`、`microphoneBytes`、`protocolSilenceBytes`、`unknownBytes`。这些只是归档诊断字段，不会发送给模型；来源不是能量或事件判断，握手／慢推理时本地缓存的新媒体也可能较晚送出，不能把发送时间当作采集时间。
+- `request.json` 保存初始化配置、事件顺序、帧哈希、音频偏移和 `previousRequest`。任务文字位于首轮 `response.create` 事件的 `response.instructions` 中，后续请求不包含该字段，也没有单独的任务 user 消息。`transportGeneration` 区分同一 Monitor 的不同连接，`previousRequest` 仅串联同一 transport 的先前请求；重建连接会重置该引用。服务端驻留会话仍可能保有此前已提交媒体和回复历史，不能把模型看到的全部上下文等同于当前这一个 WAV；排查时需要结合前序请求和 transport。
+- 每个 `request.json.session` 是为了单独查看文件而附带的初始化快照，不表示本轮重发了系统 Prompt 或任务文本。同一 transport 的快照中事件 ID 保持相同；本轮实际增量发送看 `events`：媒体 append、commit，收到 commit 确认后再发送 `response.create`。只有建立新 transport 才重新发送初始化，任务文字只随该连接的首次媒体推理请求提交一次；系统 Prompt 保持在初始 `session.update` 中。
 - 合法的 `providerSessionId` 在可用时写入对应 transport 的 request／response JSON；`response.json` 保存原始动作文本、解析结果，并在服务端提供时保留 `responseId`、`eventId`、`usage`。请求事件也保留可用的发送事件 ID。字段缺失不应由分析者猜补，服务端 usage 也不等于有效麦克风时长。
 - 对照 Host、daemon 和 `proactive.monitor_image_sent` 的 `frameHash`；`proactive.monitor_commit` 的计数只包含成功 socket 写入，`proactive.monitor_committed` 对应服务端确认。队列中或已丢弃的帧不能当作已发送证据。
-- `proactive.monitor_chunk_prepared` 记录片段采集时间范围和真实发送帧数；`proactive.monitor_chunk_dropped` 记录缺图、采集间断、未提交片段失效或 commit 发送不确定等原因。`proactive.monitor_input_dropped` 聚合本地缓存淘汰的数量、字节和时间范围。上述事件在 debug 模式下进入会话 JSONL，帮助区分“没有完整输入”和“模型判断为 wait”。
+- `proactive.monitor_chunk_prepared` 记录片段采集时间范围和真实发送帧数；`proactive.monitor_chunk_dropped` 记录缺图、采集间断、未提交片段失效或媒体／commit 发送不确定等原因。`proactive.monitor_input_dropped` 聚合本地缓存淘汰的数量、字节和时间范围。上述事件在 debug 模式下进入会话 JSONL，帮助区分“没有完整输入”和“模型判断为 wait”。
+- `proactive.monitor_ready` 标注输入通路为 `streaming_buffers`；`proactive.monitor_response_requested` 的 `taskTextIncluded` 只在每条连接的首次媒体推理时为 true，用于区分一次性的任务文字与固定的系统 Prompt。
 - 所有模态共同保留最近创建的 **10 个 Monitor 目录**，不是每种模态各 10 个，也不是只保存 10 次请求或限制总磁盘用量。被移出归档的任务继续运行但不再归档。目录／文件使用私有权限，待处理和排队写入有 32 MiB 预算；磁盘错误或超预算可能令归档不完整，但不应因此中断通话。
 - JSON 会清理连接凭据字段与已知 API key，但真实声音、画面和用户文字中的其他秘密不会自动脱敏。共享前必须检查 WAV、JPEG 和 JSON，不要只检查终端日志或直接发送整个数据目录。
 

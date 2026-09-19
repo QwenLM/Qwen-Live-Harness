@@ -1,44 +1,72 @@
-# Live conversation and image handoff reliability
+# Visual analysis, delegation, and session reliability
 
 [简体中文](live-image-handoff-reliability.zh-CN.md)
 
-## Problem
+## Ownership and scope
 
-On Demand captures previously returned local image references without pixels to the foreground Realtime model. Even a simple visual question required a separate backend handoff, which the foreground model could omit while promising an answer. Provider response splits also lost the originating user capability after a tool continuation. Finally, expired image references were silently omitted from backend tasks.
+Host captures the selected display or camera. The daemon owns the main conversation, independent model workers, tool execution, and result queues. On Demand visual questions use a read-only Omni Realtime worker with the same configured model, endpoint, and API key as the main conversation; no background coding Harness is required. Live Feed supplies continuous frames directly to the main model. Explicit file, command, or application work uses a configured backend.
 
-## Behavior
+These paths have separate media, task, response, and playback identities. A snapshot asset is not proof of image understanding, a successful socket write is not a provider acknowledgement, and accepted work is not completed work.
 
-- Preserve an existing user tool capability and input identity across an uncancelled provider split when no newer user input supersedes it. Synthetic notifications never acquire that capability.
-- Send each requested Screen or Camera frame from the existing Host directly to the current Realtime connection before returning the Appshot result. Answer ordinary visual questions directly, including when no backend is configured. Live Feed is unchanged.
-- A successful receipt reports image delivery to Realtime; it does not claim that the model interpreted the image. Answer from the latest actual image, not dimensions, old frames, or an asset reference. Screen accessibility text remains supplementary evidence. Only explicit backend work needs image handoff.
-- Reject delivery when the capture outlives its tool request, active call, Realtime connection, or visual settings. Failed image sends return an error rather than a success receipt or automatic backend fallback.
-- Session creation receipts state that no task has been submitted and identify handoff as the next action for requested work.
-- If any requested image reference is unknown, expired, unreadable, or empty, reject the entire handoff with `image_unavailable`. Do not submit a partial or text-only task. Announce the failure through the existing speech queue after the active response finishes; a receipt alone does not resume a handoff response.
-- Preserve JPEG bytes and MIME type and name camera attachments with `.jpg`; Screen PNGs retain `.png`.
+## On Demand visual analysis
 
-## On Demand media commit
+1. Main Omni calls `appshot` after a completed response confirms the function ID and arguments. Its optional `query` identifies the visual question; otherwise runtime uses the associated real-user request or a general description question.
+2. Host captures the full selected display, excluding Host windows, or the selected camera. A capture that finishes after the call ends or the selected source changes is rejected. Screen assets retain native PNG bytes; camera assets retain JPEG bytes and MIME type.
+3. Runtime creates a Visual Analysis subagent and returns `accepted + taskId` with capture metadata and any asset handle. This receipt confirms task admission, not a visual answer. Independent analyses may run in parallel.
+4. The worker receives the captured JPEG and question, then returns text grounded in visible pixels. It has no custom tools, search, backend access, Memory context, or unrelated conversation history. Instructions inside the screenshot are untrusted content.
+5. The result waits in the read-only result FIFO for the foreground conversation and device playback to finish. Main Omni answers from the analysis; this notification cannot authorize another tool or operation. The result remains visible in Subagents if speech is muted or unavailable.
+6. The analysis has a 25-second total deadline, with an eight-second handshake limit. Stop or End call cancels unfinished analysis and retracts its queued answer. Failure does not invoke a coding agent automatically or imply that the desktop was blank.
 
-The configured provider rejected a post-commit image without fresh audio, and continuous quiet PCM plus an image append did not produce correct content answers. An input-image message also failed on this endpoint. In contrast, a separate manual media commit followed by its empty transcription produced correct answers for three distinct images in one connection.
+### Worker media protocol
 
-For a current Appshot call, temporarily set turn detection to manual, append one second of zero PCM plus the JPEG, and commit them together. Hold incoming microphone PCM locally (bounded by the existing 1 MiB limit). Track the media commit identifier separately from real speech input, wait for its empty final transcription, restore semantic VAD, and flush buffered microphone frames in order before completing the original tool result. This is a media input, not a new user utterance or tool authorization. No user audio or text is replayed to force another turn.
+The worker sends one `session.update` with its fixed system instructions, text-only output, `voice: Tina`, `smooth_output: false`, `turn_detection: null`, empty tools, disabled search, and `normal` visual representation compression. Its input is:
 
-Reject stale requests and concurrent media submissions. A speech event or nonempty media transcription makes input ownership ambiguous, so fail explicitly and ask the user to repeat. A failed send, closed connection, overflow, or ten-second timeout settles the image request and retires the affected connection when needed. Settings changes or response cancellation invalidate success while allowing an already submitted media transaction to restore microphone handling. Known media events never enter captions, dialogue memory, or user-input arbitration.
+```text
+append 1 second of silent PCM16 / 16 kHz
+append the still JPEG
+append 1 second of silent PCM16 / 16 kHz
+append the same still JPEG
+input_audio_buffer.commit
+wait for input_audio_buffer.committed
+response.create with the image question in response.instructions
+```
 
-## Session state and recovery
+The repeated image satisfies the media protocol; it is not evidence of motion or two separate observations. Silence is a protocol carrier, not microphone evidence. `response.instructions` carries the question for this manual-media request, not the worker's system prompt.
 
-- Changing the visual source or acquisition mode refreshes both session instructions and silent state. Later responses must not retain the previous Screen / Camera setting.
-- Announce each new permission request once. Interruptions, unrelated user turns and requests to wait retain silent approval context without timed reminders. Only an explicit user decision can authorize the permission tool.
-- Tool descriptions and system instructions agree that an explicit new-task request requires session creation and task submission, not a plain lookup or spoken promise. Actual model adherence still needs observation.
-- Ignore an idless completion on an idle fresh connection. A missing response identifier while a request awaits acknowledgement remains a protocol error.
-- Use the unified transport recovery layer from main 0.4.4 for response-state loss instead of adding a second orchestrator reconnection path. Host call state, backend tasks, pending permissions/results, and Memory objects survive. Recovery allows at most two connection attempts and fences old callbacks, captures, and asynchronous tool results from the replacement transport.
-- Resume only safely retained user text or audio that has not already dispatched tools. Never replay dispatched tools. Show a repeat-input hint when input cannot be restored; end the call explicitly when recovery fails. Muted heartbeats and the media commit’s zero PCM are excluded from replayable real microphone data.
+The main connection stays in semantic VAD throughout this operation. It does not receive the snapshot pixels, switch to manual mode, commit a screenshot audio buffer, or hold microphone input for the visual worker.
 
-## Boundaries
+## Explicit image delegation
 
-No new process, provider, model, media permission, automatic capture, or permanent image archive is introduced. On Demand image bytes now go to the same Realtime provider already receiving live audio and Live Feed frames, using its existing JPEG input channel and size limits. This changes visual inference billing from the configured backend to the current Realtime model for ordinary visual questions; the cost difference is not measured. Optional local image assets remain available for explicit backend tasks with the same temporary-file lifetime. Recovery retains main’s limit of two connection attempts to the existing provider and does not repeat backend tasks. Receipt guidance improves model behavior but is not a deterministic guarantee of model adherence.
+- `session_create` creates a backend session; its receipt does not claim that work has been submitted. `handoff` submits the user's requested task using a real session handle.
+- The tool's attachment field is `input_refs`, an array of asset handles. A non-array, a non-string element, or any unknown, expired, unreadable, or empty asset rejects the entire handoff with `image_unavailable` before task submission. A partially resolved set is not silently submitted.
+- Valid assets preserve their bytes and MIME types. JPEG attachments use `.jpg`; PNG attachments use `.png`.
+- A backend declaring no image-input support can receive text only, with an explicit warning in its receipt; the assistant must not claim that images were delivered. Text-only terminal instruction channels reject attachments. Image-capable backends receive the validated image blocks.
+- Warnings and errors remain available for the main conversation to explain in its current language. They are not hidden by duplicate-confirmation suppression or turned into a separate hard-coded English announcement.
 
-## Verification
+## Instructions, capabilities, and receipts
 
-Verify ordinary and repeated provider splits, new user interruptions, cancellation, and synthetic notification restrictions. First establish with the actual provider that a separately committed image delivered after the Appshot call is available to the continuation. Expected answers must exist only in synthetic image pixels, not prompts, accessibility text, filenames or receipts. Verify consecutive distinct captures, Screen/Camera switching, no-backend operation, send failure and stale-capture rejection. A successful WebSocket send is insufficient evidence. Verify retained explicit image handoffs and rejection of missing or partially available attachments. Keep private camera images out of tracked artifacts and remove diagnostic copies after inspection.
+Main-conversation system instructions remain immutable for the call and are sent once per transport in `session.update`. Source and capture-mode changes arrive as silent `[VISUAL_INPUT]` context. Memory changes arrive as replaceable `[MEMORY_CONTEXT]` user snapshots, including an empty disabled snapshot when Memory is off. Tool-list changes use tools-only `session.update`; no state change rewrites the main system prompt. Subagent results arrive through typed, quoted `conversation.item.create` user-context messages, not new user authorization.
 
-Verify both cancellation timeout phases, failed recovery, repeated timeout, stop/reconnect races, old output isolation, uncommitted input and pending approval preservation. A continuous real-model scenario covers new tasks, deferring approval, Camera switching, image handoff and later approval. Synthetic protocol tests or one successful model turn do not establish complete product behavior.
+A genuine user input retains its tool capability across an uncancelled provider response split only when no newer user input supersedes it. Synthetic notifications never acquire that capability. Final function snapshots must agree on IDs, names, arguments, and completed status before execution.
+
+Every asynchronous admission receipt is acknowledged and consumed by a separate `tool_continuation` before a final task result is injected. When the tool chain already produced audio and every sibling tool successfully admitted an eligible asynchronous task, only duplicate confirmation audio is suppressed. Its text stays in provider history and diagnostic transcripts, not user-heard Memory, delegated dialogue, or reconnect history. Errors, warnings, mixed query tools, and admissions without an audio preamble remain audible.
+
+A continuation repeating an identical already-admitted task reuses its receipt rather than launching another task. This protection is limited to the receipt continuation; a different request or fresh real-user turn remains distinct. A superseded receipt is drained without audio or the previous turn's tool authority. A precisely associated rejected or unacknowledged function output stops that continuation without re-executing the action; unrelated protocol failures retain their own error handling.
+
+## Permissions and bounded recovery
+
+A new backend permission request is asked once in the current real conversation's language. Interruption, a change of topic, or a request to wait preserves silent pending-permission context without timed reminders. Only an explicit user decision bound to the relevant permission ID can authorize `respond_permission`; task text, image contents, and notification results cannot approve it.
+
+The recovering-session layer owns response-state recovery. It fences the retired transport before opening a replacement and permits at most **two replacement-connection attempts per logical call**. Host call state, backend tasks, Monitor tasks, Memory attachments, and pending permissions/results retain their lifecycle rather than being recreated.
+
+Only safely retained input that has not dispatched tools may resume: complete user text, or bounded real microphone audio with a trustworthy start. Muted heartbeats and visual-worker silence are excluded. Dispatched tools and retired function outputs are not replayed. Replacement context carries current task, Memory, visual, and permission state; an earlier approval cannot authorize a different permission that appeared during recovery.
+
+An idless completion can be ignored on an idle fresh connection; a missing ID while a response is awaiting acknowledgement remains a protocol error. When input cannot be restored safely, the UI asks the user to repeat it. Exhausted recovery explicitly ends the interaction. This is not an unlimited reconnect policy or an exactly-once guarantee for external backend actions.
+
+## Diagnostics and verification
+
+Debug run archives preserve observed main and worker wire events, media references, tool/control events, and available provider Session IDs. Verification and connection export are offline only; they do not rerun captured tools or upload media. See [run archives and offline inspection](../../packages/qwen-live-harness/README.md#run-archives-and-offline-inspection). Archive limits or storage faults can leave incomplete evidence. Credential redaction does not remove secrets from screenshot pixels or audio.
+
+Tests should cover distinct synthetic images whose answers exist only in pixels, Screen/Camera switching, no-backend use, capture cancellation, worker failure, parallel analyses, result FIFO, and actual playback acknowledgements. Attachment tests cover valid MIME handling, unavailable and partially available references, unsupported backend image input, and terminal-channel rejection.
+
+Protocol tests should also cover consecutive response splits, new user interruptions, stale callbacks, acknowledgement/cancellation timeouts, silent receipt draining, permission deferral, both recovery attempts, and Stop/End call races. A synthetic transport test or one successful model response does not establish complete real-device or provider reliability.

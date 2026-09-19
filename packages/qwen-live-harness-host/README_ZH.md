@@ -74,9 +74,9 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 
 修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能遮挡主界面和状态条。
 
-主界面采用 Pebble 布局：234 × 194 px 主卡、常驻通话控件与任务摘要，设置显示在卡片旁；点击任务摘要打开已有任务窗口。终端会话、指令送达、会话报告和搜索任务继续通过原有列表访问。
+Pebble UI 使用 234 × 194 px 交互卡片，包含常驻通话控件和任务摘要。设置显示在卡片旁，任务摘要打开任务窗口；终端会话、指令投递、会话报告、搜索、视觉分析和 Monitor 分别展示状态与详情。
 
-默认主题色为 Iris 雾紫。Host 在首次连接或重连时，从已认证 daemon 提供的配置路径读取顶层 `themeColor`；支持 `iris`、`clay`、`sage`、`tide`、`graphite`、`rose`、`berry`。缺省或非法值回落到 Iris，不影响通话。浅深色模式继续独立持久化，详见[配置指南](../../docs/configuration_ZH.md#主题配色)。
+默认主题为 Iris 雾紫。Host 在连接或重连时，从已认证 daemon 提供的配置路径读取顶层 `themeColor`，支持 `iris`、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`；缺省或非法值使用 Iris，不影响通话。浅色／深色／跟随系统独立持久化，见[配置指南](../../docs/configuration_ZH.md#主题配色)。
 
 ## 与 daemon 的边界
 
@@ -95,23 +95,25 @@ Host 通过 loopback WebSocket `/live/host` 连接 daemon。默认发现文件�
 
 ## 设备与权限
 
-| 当前视觉模式       | 所需 macOS 权限            |
-| ------------------ | -------------------------- |
-| Screen + On Demand | 麦克风、屏幕录制、辅助功能 |
-| Screen + Live Feed | 麦克风、屏幕录制           |
-| Camera             | 麦克风、摄像头             |
+| 当前视觉模式       | 所需 macOS 权限  |
+| ------------------ | ---------------- |
+| Screen + On Demand | 麦克风、屏幕录制 |
+| Screen + Live Feed | 麦克风、屏幕录制 |
+| Camera             | 麦克风、摄像头   |
 
 未选中来源的权限不应阻止交互。默认快捷键 `Command+E` 使用 Electron `globalShortcut`，不需要 Input Monitoring。开发 Electron 与正式应用的系统授权分别由 macOS 管理，应在实际运行的应用身份上验证。
 
-Appshot 是随 Host 构建的内置模块，不依赖外部截图 App、CLI、MCP 或运行时下载。Screen On Demand 捕获前台窗口和 AX 文本；Live Feed 与视觉 Proactive monitor 捕获选定显示器的完整画面，并排除 Host 自身窗口。完整画面范围不等于原生像素尺寸，传输前仍按限制缩放。Camera 使用同一设备引擎提供预览、实时帧和单次照片；隐藏预览只改变显示，不代表停止采集。
+Appshot 是随 Host 构建的内置模块，不依赖外部截图 App、CLI、MCP 或运行时下载。Screen On Demand、Live Feed 和视觉 Proactive monitor 都捕获选定显示器的完整画面，并排除 Host 自身窗口。On Demand 保存原生 PNG 资产，编码后的截图遵循分辨率配置及传输上限；完整显示器采集不要求辅助功能权限。Camera 使用同一设备引擎提供预览、实时帧和单次照片；隐藏预览只改变显示，不代表停止采集。
 
-前台 `appshot` 的 metadata、AX 文本和图片 asset 如何用于回答由 daemon 处理，不能把“Host 已截图”当成“主模型已收到像素”。具体 Source、Mode、分辨率与能力边界见[配置指南](../../docs/configuration_ZH.md)。
+daemon 将 On Demand 截图交给只读视觉分析子模型，再把文字证据交回主对话；Host 在 Subagents 中展示进度和结果，不直接调用模型。Live Feed 和 Proactive 使用各自的输入通路。具体 Source、Mode、分辨率与能力边界见[配置指南](../../docs/configuration_ZH.md)。
 
 采集尺寸与协议上限分开校验：实时帧目前最多 `1920 × 1080`、每帧 `190 KiB`，截图资产上限为 `8 MiB`。配置允许更大的采集目标，不代表实时传输会保留同样的像素数。Camera 原生截图优先使用静态拍照能力，否则尝试视频约束回退；不支持时应明确失败。修改尺寸或编码策略时，同时检查 [`camera-engine.ts`](src/preload/camera-engine.ts)、[`appshot-capture.ts`](src/main/appshot-capture.ts) 和共享协议限制。
 
 ### 音频与故障恢复
 
-麦克风通过 AudioWorklet 转为单声道 16-bit、16 kHz PCM。模型返回 24 kHz PCM；播放 AudioContext 使用输出设备自身的采样率，协商了结束标记的连接采用连续流式重采样，并等待对应输出真正播放完毕。修改时保持帧顺序、output ID 和播放完成回执一致。
+麦克风通过 AudioWorklet 转为单声道 16-bit、16 kHz PCM。daemon 请求模型输出 **24 kHz PCM**，Host 按同一采样率解码。播放 AudioContext 使用输出设备自身的采样率，不强制切换系统设备时钟。协商了结束标记的连接采用连续流式重采样，并等待对应输出真正播放完毕。修改时保持帧顺序、output ID 和播放完成回执一致。
+
+播放使用 **10 ms 调度余量**并保持 PCM 流的播放速度；已排队分片始终连续衔接，不会每片再等 10 ms。停止或静音立即清理待播音频。模型准备响应、向设备转交音频、设备实际播放是不同状态；通知送达需要对应的播放回执。
 
 蓝牙耳机启用自身麦克风时，macOS 可能进入免提模式；这与模型输出采样率不同。测试应同时覆盖内置／USB 麦克风与蓝牙输出，不能通过强制设备采样率解决系统路由问题。
 
@@ -135,7 +137,7 @@ Host 偏好和常态故障日志位于 Electron `userData`，默认路径为：
 
 未开启 debug 时也会记录精选故障事件。日志仅包含白名单错误码、阶段、epoch 等元信息，文件权限为 `0600`；每份上限 1 MiB，最多保留当前文件与一份轮转。日志写入失败不能中断音视频或退出流程，见 [`host-diagnostics.ts`](src/main/host-diagnostics.ts)。
 
-`--live-harness-debug` 增加 Host 状态、设备和帧传输诊断。daemon 的 `--debug` 另有 Realtime、工具与 Monitor 日志，并可能保存真实 Monitor 请求、画面和音频；分享前必须检查敏感内容。诊断开关与数据路径说明集中在[配置指南](../../docs/configuration_ZH.md)。
+`--live-harness-debug` 记录 Host 状态、设备和帧传输诊断。daemon 的 `--debug` 在 `<dataDir>/debug/run-*` 归档主模型、Monitor、搜索、视觉分析、通知播报五类连接，以及运行／控制事件，包含私密 Prompt、Memory 上下文、工具和媒体；凭据脱敏不能去除音视频里的秘密。逐 Monitor 媒体归档独立保存。无需执行记录中的任务即可检查／导出归档，见[运行归档与离线检查](../qwen-live-harness/README_ZH.md#运行归档与离线检查)；普通用户的诊断开关与数据路径见[配置指南](../../docs/configuration_ZH.md)。
 
 固定展示文本统一放在 [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts)，每个键包含 `en` 与 `zh-CN`。Host 构建通过别名编入共用的文案、启动和子任务模块，不在运行时依赖已安装的 daemon npm 包。修改共用文件后应重建并验证两个包。
 
