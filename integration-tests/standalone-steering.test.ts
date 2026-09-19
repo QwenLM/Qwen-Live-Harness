@@ -36,6 +36,7 @@ import {
   FakeHost,
   spawnQwenLiveHarness,
   startLiveCall,
+  waitForLiveResponseAfter,
   type SpawnedQwenLiveHarness,
 } from './qwen-live-harness.js';
 
@@ -102,6 +103,14 @@ describe('standalone daemon steering an ACP turn mid-flight', () => {
     const message = await fakeDash.waitForMessage(
       (m) => functionCallOutputOf(m)?.callId === callId,
       { fromIndex, description: `the handoff receipt for ${callId}` },
+    );
+    // A handoff receipt has its own continuation, even when its admission
+    // audio is muted. Do not let that request consume the next queued tool
+    // call which belongs to a different real user turn.
+    await waitForLiveResponseAfter(
+      { fakeDash, dataDir },
+      message,
+      'tool_continuation',
     );
     return {
       fromIndex,

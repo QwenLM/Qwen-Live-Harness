@@ -85,6 +85,7 @@ class FakeSocket extends EventEmitter {
 }
 
 const coordinators: LiveHostCoordinator[] = [];
+const FIXTURE_DISPLAY_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 function readyHello(overrides: Partial<LiveHostHello> = {}): LiveHostHello {
   return {
@@ -139,6 +140,25 @@ afterEach(() => {
 });
 
 describe('LiveHostCoordinator', () => {
+  it('observes validated Host identity without changing readiness when diagnostics fail', () => {
+    const onDebug = vi.fn(() => {
+      throw new Error('diagnostic sink failed');
+    });
+    const value = coordinator({ onDebug });
+    const hello = readyHello();
+    const socket = connectReady(value, hello);
+    expect(onDebug).toHaveBeenCalledWith(
+      'host.hello',
+      expect.objectContaining({
+        hostVersion: hello.hostVersion,
+        protocolVersion: hello.protocolVersion,
+        instanceNonce: hello.instanceNonce,
+      }),
+    );
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    expect(value.getStatus().host?.version).toBe(hello.hostVersion);
+  });
+
   it('forwards input mute transitions only for the active call and preserves pre-call mute', () => {
     const onInputMuteChanged = vi.fn();
     const value = coordinator({ handlers: { onInputMuteChanged } });
@@ -171,7 +191,7 @@ describe('LiveHostCoordinator', () => {
     expect(onInputMuteChanged).toHaveBeenCalledTimes(2);
   });
 
-  it('requests the selected full display for monitors but keeps Appshot window-scoped', async () => {
+  it('requests the selected full display with separate Monitor and Appshot snapshot sizing', async () => {
     const displayId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const debug = vi.fn();
     const value = coordinator({
@@ -188,6 +208,8 @@ describe('LiveHostCoordinator', () => {
         fps: 1,
         liveWidth: 1280,
         liveHeight: 720,
+        snapshotWidth: 1600,
+        snapshotHeight: 900,
       },
     });
     const socket = connectReady(value);
@@ -241,16 +263,20 @@ describe('LiveHostCoordinator', () => {
       .slice(0, 16);
     expect(captureLog).toContain(`"frameHash":"${expectedHash}"`);
     expect(captureLog).not.toContain(image);
-    const window = value.captureVisualContext('coordinator-1', {
+    const snapshot = value.captureVisualContext('coordinator-1', {
       persistAsset: false,
     });
-    const windowRequest = socket
+    const snapshotRequest = socket
       .messages()
       .findLast((message) => message.type === 'host.capture_visual');
-    expect(windowRequest).not.toHaveProperty('screenScope');
-    expect(windowRequest).not.toHaveProperty('screenDisplayId');
+    expect(snapshotRequest).toMatchObject({
+      screenScope: 'display',
+      screenDisplayId: displayId,
+      snapshotWidth: 1600,
+      snapshotHeight: 900,
+    });
     value.stop();
-    await expect(window).rejects.toThrow();
+    await expect(snapshot).rejects.toThrow();
   });
 
   it('fails full-display capture against an old Host without silently requesting a window', async () => {
@@ -259,11 +285,11 @@ describe('LiveHostCoordinator', () => {
       value,
       readyHello({ displayCaptureV1: undefined }),
     );
-    const call = value.start('resume');
-    value.setCoordinator(call.epoch, {
-      workspaceCwd: '/fixture',
-      sessionId: 'coordinator-1',
+    expect(value.getStatus()).toMatchObject({
+      available: false,
+      blocker: 'host_version',
     });
+    expect(() => value.start('resume')).toThrow(LiveUnavailableError);
     await expect(
       value.captureVisualContext('coordinator-1', {
         screenScope: 'display',
@@ -1163,6 +1189,8 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'Google Chrome',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       windowTitle: 'LIVE_APP_A',
       accessibilityText: 'AXWindow LIVE_APP_A',
       screenshotPath: '/private/tmp/qwen-live-harness-appshot/test.png',
@@ -1174,9 +1202,58 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'Google Chrome',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       windowTitle: 'LIVE_APP_A',
       accessibilityText: 'AXWindow LIVE_APP_A',
       screenshotPath: '/private/tmp/qwen-live-harness-appshot/test.png',
+    });
+    value.stop();
+  });
+
+  it('captures Screen On Demand without Accessibility and without imposing Live Feed dimensions', async () => {
+    const value = coordinator();
+    const hello = readyHello();
+    hello.permissions.accessibility = 'denied';
+    const socket = connectReady(value, hello);
+    expect(value.getStatus().available).toBe(true);
+    expect(value.getStatus().requirements).not.toHaveProperty('accessibility');
+    const call = value.start('resume');
+    value.setCoordinator(call.epoch, {
+      workspaceCwd: '/fixture',
+      sessionId: 'coordinator',
+    });
+    const capture = value.captureVisualContext('coordinator');
+    const request = socket
+      .messages()
+      .findLast((message) => message.type === 'host.capture_visual');
+    expect(request).toMatchObject({
+      source: 'screen',
+      screenScope: 'display',
+      screenDisplayId: 'primary',
+    });
+    expect(request).not.toHaveProperty('snapshotWidth');
+    expect(request).not.toHaveProperty('snapshotHeight');
+    if (!request || request.type !== 'host.capture_visual')
+      throw new Error('Missing capture');
+    socket.receive({
+      type: 'host.visual_capture_result',
+      requestId: request.requestId,
+      success: true,
+      source: 'screen',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
+      image: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      width: 1920,
+      height: 1080,
+      appName: 'Display',
+      accessibilityText: '',
+      screenshotPath: '/private/tmp/qwen-live-harness-appshot/full-display.png',
+    });
+    await expect(capture).resolves.toMatchObject({
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
+      accessibilityText: '',
     });
     value.stop();
   });
@@ -1215,6 +1292,8 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'Google Chrome',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       accessibilityText: '',
     });
 
@@ -1224,6 +1303,8 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'Google Chrome',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       accessibilityText: '',
     });
     value.stop();
@@ -1256,6 +1337,8 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'Google Chrome',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       accessibilityText: '',
     });
 
@@ -1518,7 +1601,6 @@ describe('LiveHostCoordinator', () => {
       available: true,
       callId: call.callId,
       requirements: {
-        accessibility: 'ready',
         screenRecording: 'ready',
         appshot: 'ready',
       },
@@ -1620,6 +1702,8 @@ describe('LiveHostCoordinator', () => {
       width: 1280,
       height: 720,
       appName: 'TextEdit',
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       accessibilityText: 'APPSHOT-MARKER-AMBER-4827',
       screenshotPath: '/private/tmp/qwen-live-harness-appshot/test.png',
     });
@@ -1810,7 +1894,6 @@ describe('LiveHostCoordinator', () => {
       requirements: {
         host: 'ready',
         microphone: 'ready',
-        accessibility: 'ready',
         screenRecording: 'ready',
         audioInput: 'ready',
         audioOutput: 'ready',
@@ -2577,6 +2660,8 @@ describe('LiveHostCoordinator', () => {
       width: Number.MAX_SAFE_INTEGER,
       height: Number.MAX_SAFE_INTEGER,
       appName: '\ud800'.repeat(512),
+      screenScope: 'display',
+      displayId: FIXTURE_DISPLAY_ID,
       windowTitle: '\ud800'.repeat(2_048),
       accessibilityText,
       screenshotPath: '\ud800'.repeat(4_096),

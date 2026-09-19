@@ -29,6 +29,33 @@ const PROACTIVE_NAMES = [
 ];
 
 describe('live session permission tools', () => {
+  it('requires explicit newly created tasks to be submitted with handoff without changing visual analysis', () => {
+    const create = LIVE_SESSION_TOOLS.find(
+      (tool) => tool.function.name === 'session_create',
+    )!;
+    const handoff = LIVE_SESSION_TOOLS.find(
+      (tool) => tool.function.name === 'handoff',
+    )!;
+    const appshot = LIVE_SESSION_TOOLS.find(
+      (tool) => tool.function.name === 'appshot',
+    )!;
+    expect(create.function.description).toContain(
+      'does not submit or start a task',
+    );
+    expect(create.function.description).toContain(
+      'hand off to each returned handle in the same turn',
+    );
+    expect(handoff.function.description).toContain(
+      'explicitly requesting delegated visual work, a new task',
+    );
+    expect(appshot.function.description).toContain(
+      'asynchronous read-only visual analysis',
+    );
+    expect(appshot.function.description).not.toContain(
+      'deliver the image directly',
+    );
+  });
+
   it('distinguishes explicit persistent approval from one-shot and local fallback grants', () => {
     const permission = LIVE_SESSION_TOOLS.find(
       (tool) => tool.function.name === RESPOND_PERMISSION_TOOL_NAME,
@@ -89,12 +116,12 @@ describe('live session Proactive tools', () => {
     );
   });
 
-  it('defines a bounded asynchronous search receipt without an automatic continuation', () => {
+  it('defines a bounded asynchronous search receipt with a separate protocol continuation', () => {
     const tools = buildLiveSessionTools(true, false, true);
     const search = tools.find(
       (tool) => tool.function.name === WEB_SEARCH_TOOL_NAME,
     )!;
-    expect(search.continuesResponse).toBe(false);
+    expect(search.continuesResponse).toBe(true);
     expect(search.capturesTranscript).toBe(false);
     expect(search.function.parameters).toEqual({
       type: 'object',
@@ -124,7 +151,7 @@ describe('live session Proactive tools', () => {
       'accepted task receipt immediately, not an answer',
     );
     expect(search.function.description).toContain(
-      'results arrive later as [SEARCH_RESULT]',
+      'Results arrive later as [SEARCH_RESULT]',
     );
     expect(search.function.description).toContain(
       'Independent searches can run in parallel',
@@ -160,7 +187,7 @@ describe('live session Proactive tools', () => {
       const search = buildLiveSessionTools(true, backend, true).find(
         (tool) => tool.function.name === WEB_SEARCH_TOOL_NAME,
       )!;
-      expect(search.continuesResponse).toBe(false);
+      expect(search.continuesResponse).toBe(true);
       expect(search.capturesTranscript).toBe(false);
       expect(search.function.description).toContain(
         'Prefer this for simple lookups even when a background Harness is configured',
@@ -172,13 +199,13 @@ describe('live session Proactive tools', () => {
         'one brief natural preamble without promising a result',
       );
       expect(search.function.description).toContain(
-        'Do not read the receipt aloud or repeat the preamble',
+        'receipt continuation must only briefly acknowledge acceptance',
       );
     }
     const handoff = LIVE_SESSION_TOOLS.find(
       (tool) => tool.function.name === 'handoff',
     )!;
-    expect(Boolean(handoff.continuesResponse)).toBe(false);
+    expect(Boolean(handoff.continuesResponse)).toBe(true);
     expect(handoff.function.description).toContain(
       'For simple lookups without an explicit request to create a task, use web_search first',
     );
@@ -240,8 +267,15 @@ describe('live session Proactive tools', () => {
       'title',
       'modalities',
       'narration_focus',
-      'narration_style',
     ]);
+    expect(Object.keys(schemas['create_live_narration'].properties!)).toEqual([
+      'title',
+      'modalities',
+      'narration_focus',
+    ]);
+    expect(schemas['update_proactive_task'].properties).toHaveProperty(
+      'narration_style',
+    );
     expect(schemas['create_proactive_timer'].required).toEqual([
       'title',
       'duration_sec',
@@ -307,7 +341,7 @@ describe('live session Proactive tools', () => {
     expect(
       LIVE_SESSION_TOOLS.find((tool) => tool.function.name === 'handoff')
         ?.continuesResponse,
-    ).toBeUndefined();
+    ).toBe(true);
     expect(buildLiveSessionTools(false, false)).toHaveLength(
       LIVE_SESSION_TOOLS.length,
     );

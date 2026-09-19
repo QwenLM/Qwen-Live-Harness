@@ -29,8 +29,8 @@ import type {
   SubagentsControlResult,
 } from '../packages/qwen-live-harness/src/subagents/types.js';
 import {
-  contextTextOf,
   functionCallOutputOf,
+  notificationOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import { fakeToolCall } from './fake-openai-server.js';
@@ -109,14 +109,19 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       { cwd: homeDir, env: cliEnv() },
     );
   const records = () => readLiveSessionRecords(sessionRegistryDir(qwenHome));
-  const reportRequests = () =>
+  const reportNotifications = () =>
     stack.fakeDash.inbox.filter(
-      (message) =>
-        message['type'] === 'response.create' &&
-        strings(message['response']).startsWith(
-          'Briefly relay the text in the external terminal report below',
-        ),
+      (message) => notificationOf(message)?.kind === 'peer_report',
     );
+  const reportRequests = () => {
+    let pendingReport = false;
+    return stack.fakeDash.inbox.filter((message) => {
+      if (notificationOf(message)?.kind === 'peer_report') pendingReport = true;
+      if (message['type'] !== 'response.create' || !pendingReport) return false;
+      pendingReport = false;
+      return true;
+    });
+  };
 
   beforeAll(async () => {
     await exec('python3', ['--version']);
@@ -450,11 +455,15 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       .poll(() => reportRequests().length, { timeout: 5_000 })
       .toBe(1);
     const request = reportRequests()[0]['response'] as Record<string, unknown>;
-    expect(Object.keys(request).sort()).toEqual(['instructions', 'modalities']);
-    expect(String(request['instructions'])).toContain(PROGRESS);
+    expect(Object.keys(request).sort()).toEqual(['modalities']);
+    expect(notificationOf(reportNotifications()[0])?.payload).toContain(
+      PROGRESS,
+    );
     expect(
-      stack.fakeDash.inbox.some((m) => contextTextOf(m)?.includes(PROGRESS)),
-    ).toBe(false);
+      reportNotifications().filter((m) =>
+        notificationOf(m)?.payload.includes(PROGRESS),
+      ),
+    ).toHaveLength(1);
     const reportHostFrom = stack.host.messages.length;
     conn.respondWithAudio(Buffer.alloc(480, 2));
     await reportWith(PROGRESS, 'speaking');
@@ -524,8 +533,10 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       .poll(() => terminalOutput.includes(DONE), { timeout: 10_000 })
       .toBe(true);
     expect(
-      stack.fakeDash.inbox.some((m) => contextTextOf(m)?.includes(RESULT)),
-    ).toBe(false);
+      reportNotifications().filter((m) =>
+        notificationOf(m)?.payload.includes(RESULT),
+      ),
+    ).toHaveLength(1);
     await noTasks();
     evidence['realTuiResult'] = {
       sourceStatus: resultReport.sourceStatus,

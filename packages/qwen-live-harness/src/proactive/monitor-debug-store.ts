@@ -318,7 +318,10 @@ export class MonitorDebugRecorder {
   ): void {
     if (this.closed) return;
     if (this.disabled) {
-      if (body['type'] === 'input_audio_buffer.commit')
+      if (
+        body['type'] === 'input_audio_buffer.commit' ||
+        body['type'] === 'conversation.item.create'
+      )
         this.emit('proactive.monitor_request_skipped', {
           reason: this.disabledReason,
           retained: false,
@@ -337,7 +340,48 @@ export class MonitorDebugRecorder {
     metadata?: MonitorDebugSendMetadata,
   ): void {
     const type = body['type'];
-    if (type === 'session.update' || type === 'conversation.item.create') {
+    const item = body['item'];
+    if (
+      type === 'conversation.item.create' &&
+      item !== null &&
+      typeof item === 'object' &&
+      'content' in item &&
+      Array.isArray(item.content) &&
+      item.content.some(
+        (part: unknown) =>
+          part !== null &&
+          typeof part === 'object' &&
+          'type' in part &&
+          part.type === 'input_audio',
+      )
+    ) {
+      for (const part of item.content as Array<Record<string, unknown>>) {
+        if (part['type'] !== 'input_audio' || typeof part['audio'] !== 'string')
+          continue;
+        const bytes = Buffer.from(part['audio'], 'base64');
+        if (
+          this.pendingBytes + this.queuedBytes + bytes.length >
+          MAX_PENDING_BYTES
+        ) {
+          this.fail('pending_byte_limit');
+          return;
+        }
+        this.pending.push({
+          type: 'input_audio_buffer.append',
+          bytes,
+          sentAt: Date.now(),
+          ...(metadata?.origin ? { origin: metadata.origin } : {}),
+          ...(typeof body['event_id'] === 'string'
+            ? { eventId: body['event_id'] }
+            : {}),
+        });
+        this.pendingBytes += bytes.length;
+      }
+      this.commit(this.clean(body), true);
+    } else if (
+      type === 'session.update' ||
+      type === 'conversation.item.create'
+    ) {
       this.session.push(this.clean(body));
     } else if (type === 'input_audio_buffer.clear') {
       this.pending = [];
@@ -431,7 +475,7 @@ export class MonitorDebugRecorder {
     void this.tail.then(this.release);
   }
 
-  private commit(event: Record<string, unknown>): void {
+  private commit(event: Record<string, unknown>, audioItem = false): void {
     const media = this.pending;
     const byteCost = this.pendingBytes;
     this.pending = [];
@@ -484,7 +528,26 @@ export class MonitorDebugRecorder {
         audioOffset += input.bytes.length;
       }
     }
-    events.push(event);
+    if (audioItem) {
+      const item = event['item'] as Record<string, unknown>;
+      let audioIndex = 0;
+      const content = (item['content'] as Array<Record<string, unknown>>).map(
+        (part) => {
+          if (part['type'] !== 'input_audio') return part;
+          const saved = events[audioIndex++]!;
+          return {
+            ...part,
+            audio: saved['audio'],
+            byteOffset: saved['byteOffset'],
+            bytes: saved['bytes'],
+            origin: saved['origin'],
+          };
+        },
+      );
+      events.splice(0, events.length, { ...event, item: { ...item, content } });
+    } else {
+      events.push(event);
+    }
     const record = {
       format: FORMAT,
       recordingStatus: 'writing',

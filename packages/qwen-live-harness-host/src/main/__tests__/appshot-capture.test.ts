@@ -135,6 +135,44 @@ describe('AppshotCaptureService', () => {
     service.dispose();
   });
 
+  it('requests and verifies native-resolution display assets without changing feed limits', async () => {
+    const native = fakeNative(async () => {
+      throw new Error('No window capture');
+    });
+    const highResolution = Buffer.from(DISPLAY_PNG);
+    highResolution.writeUInt32BE(3840, 16);
+    highResolution.writeUInt32BE(2160, 20);
+    const calls: unknown[][] = [];
+    native.captureDisplay = async (...args) => {
+      calls.push(args);
+      return {
+        displayId: DISPLAY_ID,
+        screenshot: highResolution,
+        nativeResolution: true,
+      };
+    };
+    const service = new AppshotCaptureService(undefined, () => native);
+    const result = await service.captureDisplayFrame(DISPLAY_ID, {
+      nativeResolution: true,
+    });
+    assert.deepEqual(calls, [[DISPLAY_ID, true]]);
+    assert.equal(result.nativeResolution, true);
+    assert.equal(result.screenshot, highResolution);
+    await assert.rejects(
+      service.captureDisplayFrame(DISPLAY_ID),
+      /host.error.displayCapture/u,
+    );
+    native.captureDisplay = async () => ({
+      displayId: DISPLAY_ID,
+      screenshot: DISPLAY_PNG,
+    });
+    await assert.rejects(
+      service.captureDisplayFrame(DISPLAY_ID, { nativeResolution: true }),
+      /host.error.displayCapture/u,
+    );
+    service.dispose();
+  });
+
   it('shares one capture queue between display frames and original Appshot, including rejection', async () => {
     let finish!: () => void;
     const order: string[] = [];

@@ -178,6 +178,7 @@ export interface LiveHostCoordinatorOptions {
   visualInput?: LiveVisualInput;
   logger?: LiveLogger;
   onFailure?: RuntimeFailureSink;
+  onDebug?: (event: string, details: Record<string, unknown>) => void;
   getMemoryState?: () => LiveMemoryState;
   onMemoryAction?: (
     action: LiveMemoryAction,
@@ -914,10 +915,6 @@ export class LiveHostCoordinator {
       if (this.visualInput.source === 'camera') {
         requirements.camera = permissionRequirement(hello.permissions.camera);
       } else {
-        if (this.visualInput.mode === 'on-demand')
-          requirements.accessibility = permissionRequirement(
-            hello.permissions.accessibility,
-          );
         requirements.screenRecording = permissionRequirement(
           hello.permissions.screenRecording,
         );
@@ -1244,8 +1241,7 @@ export class LiveHostCoordinator {
   ): Promise<LiveVisualCapture> {
     const call = this.call;
     const host = this.host;
-    const display =
-      this.visualInput.source === 'screen' && options.screenScope === 'display';
+    const display = this.visualInput.source === 'screen';
     if (display && !host?.hello?.displayCaptureV1)
       return Promise.reject(
         new Error(this.uiText('runtime.displayCaptureUnsupported')),
@@ -1253,11 +1249,7 @@ export class LiveHostCoordinator {
     const sourceReady =
       this.visualInput.source === 'camera'
         ? host?.hello?.permissions.camera === 'granted'
-        : display
-          ? host?.hello?.permissions.screenRecording === 'granted'
-          : host?.hello?.permissions.accessibility === 'granted' &&
-            host.hello.permissions.screenRecording === 'granted' &&
-            host.hello.selfChecks.appshot;
+        : host?.hello?.permissions.screenRecording === 'granted';
     if (
       !call ||
       call.coordinator?.sessionId !== callerSessionId ||
@@ -1277,12 +1269,15 @@ export class LiveHostCoordinator {
     const screenDisplayId = display
       ? (this.visualInput.screenDisplayId ?? 'primary')
       : undefined;
-    const snapshotWidth = display
+    // Background Monitor/Memory callers explicitly request the bounded
+    // display feed size. The Appshot tool keeps its own snapshot resolution.
+    const backgroundDisplay = display && options.screenScope === 'display';
+    const snapshotWidth = backgroundDisplay
       ? this.visualInput.liveWidth
       : source === 'camera'
         ? this.visualInput.cameraSnapshotWidth
         : this.visualInput.snapshotWidth;
-    const snapshotHeight = display
+    const snapshotHeight = backgroundDisplay
       ? this.visualInput.liveHeight
       : source === 'camera'
         ? this.visualInput.cameraSnapshotHeight
@@ -1560,18 +1555,8 @@ export class LiveHostCoordinator {
       hello.permissions.camera !== 'granted'
     )
       return 'camera_permission';
-    if (
-      this.visualInput.source === 'screen' &&
-      this.visualInput.mode === 'live-feed' &&
-      !hello.displayCaptureV1
-    )
+    if (this.visualInput.source === 'screen' && !hello.displayCaptureV1)
       return 'host_version';
-    if (
-      this.visualInput.source === 'screen' &&
-      this.visualInput.mode === 'on-demand' &&
-      hello.permissions.accessibility !== 'granted'
-    )
-      return 'accessibility_permission';
     if (
       this.visualInput.source === 'screen' &&
       hello.permissions.screenRecording !== 'granted'
@@ -1676,6 +1661,11 @@ export class LiveHostCoordinator {
       return;
     }
     if (message.type === 'host.hello') {
+      try {
+        this.options.onDebug?.('host.hello', { ...message });
+      } catch {
+        // Diagnostic observation must not affect Host readiness.
+      }
       this.handleHello(lease, message);
       return;
     }

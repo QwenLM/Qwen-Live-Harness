@@ -29,6 +29,11 @@ export interface ProactiveTaskSnapshot {
   modalities?: string[];
   user_intent_text?: string;
   intervention_text?: string;
+  narration_preferences?: {
+    source_request: string;
+    fallback_language: 'en' | 'zh-CN';
+    style_override?: string;
+  };
   duration_sec?: number;
   reminder_text?: string;
   remaining_sec?: number;
@@ -94,8 +99,14 @@ export const PROACTIVE_ARGUMENT_RULES = {
     'An adjacent selector-less cancel must have no arguments.',
   selectorlessCancelNoAdjacent:
     'Selector-less cancel has no adjacent active task.',
+  narrationSourceUnavailable:
+    'The original user request for narration is unavailable. No narration task was created; please repeat the request and any language or style preferences.',
 } as const;
 const INVALID_ARGUMENT_FACTS = new Map<string, string>([
+  [
+    PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+    '持续解说任务未创建：未能取得本次请求的完整转写。请重说一次，并说明需要的语言和表达风格。',
+  ],
   [
     PROACTIVE_ARGUMENT_RULES.invalidJson,
     '提醒任务未创建或修改，工具参数必须是有效的 JSON。',
@@ -142,6 +153,17 @@ export function snapshotProactiveTask(
       modalities: [...task.modalities],
       user_intent_text: task.taskDescription,
       intervention_text: task.interventionText,
+      ...(task.narrationPreferences
+        ? {
+            narration_preferences: {
+              source_request: task.narrationPreferences.sourceRequest,
+              fallback_language: task.narrationPreferences.fallbackLanguage,
+              ...(task.narrationPreferences.styleOverride
+                ? { style_override: task.narrationPreferences.styleOverride }
+                : {}),
+            },
+          }
+        : {}),
     };
   }
   return {
@@ -351,7 +373,14 @@ function renderCreatedTask(result: Record<string, unknown>): string {
     const media = spokenMedia(result['modalities']);
     const intent = safePhrase(result['user_intent_text'], title, 100);
     if (result['monitor_mode'] === 'always') {
-      return `${media}持续解说“${title}”${state}，关注“${intent}”，只在出现新事件或明显变化时更新。`;
+      const preferences = result['narration_preferences'];
+      const retained =
+        isRecord(preferences) &&
+        typeof preferences['source_request'] === 'string' &&
+        preferences['source_request'].trim()
+          ? '已记录本次请求中的语言和表达偏好。'
+          : '';
+      return `${media}持续解说“${title}”${state}，关注“${intent}”，只在出现新事件或明显变化时更新。${retained}`;
     }
     const guidance = safePhrase(
       result['intervention_text'],

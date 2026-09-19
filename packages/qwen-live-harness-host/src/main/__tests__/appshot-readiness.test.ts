@@ -23,6 +23,51 @@ function fakeNative(overrides: Partial<NativeAppshot> = {}): NativeAppshot {
 }
 
 describe('AppshotReadinessMonitor', () => {
+  it('treats full-display capture as ready with Screen Recording alone', () => {
+    const states: unknown[] = [];
+    const native = fakeNative({
+      getPermissionState: () => ({
+        accessibility: false,
+        screenRecording: true,
+      }),
+      requestAccessibility: () => {
+        throw new Error('AX must not be requested');
+      },
+    });
+    const monitor = new AppshotReadinessMonitor(
+      (state) => states.push(state),
+      () => native,
+    );
+    monitor.start();
+    assert.deepEqual(states, [
+      {
+        accessibility: 'denied',
+        screenRecording: 'granted',
+        appshot: true,
+      },
+    ]);
+    monitor.stop();
+  });
+  it('does not report ready when an old native module lacks full-display capture', () => {
+    const states: unknown[] = [];
+    const native = fakeNative({
+      getPermissionState: () => ({
+        accessibility: true,
+        screenRecording: true,
+      }),
+    });
+    Object.defineProperty(native, 'captureDisplay', { value: undefined });
+    const monitor = new AppshotReadinessMonitor(
+      (state) => states.push(state),
+      () => native,
+    );
+    monitor.start();
+    assert.deepEqual(states, [
+      { accessibility: 'granted', screenRecording: 'granted', appshot: false },
+    ]);
+    monitor.stop();
+  });
+
   it('checks the in-process native module once without polling', async () => {
     let checks = 0;
     const states: unknown[] = [];

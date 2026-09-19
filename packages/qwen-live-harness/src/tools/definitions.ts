@@ -58,22 +58,34 @@ const APPSHOT_TOOL: RealtimeToolDefinition = {
     name: APPSHOT_TOOL_NAME,
     description:
       'Capture one current frame from the visual source selected in the ' +
-      'Qwen Live Harness orb and deliver the image directly to your Realtime context. ' +
-      'After success, answer directly from the newest image without a backend, ' +
-      'for both Screen and Camera. Returns source metadata and an optional asset ' +
-      'for work the user explicitly delegates via handoff input_refs; Screen may ' +
-      'also return window and accessibility text. On failure or an unreadable image, ' +
-      'say you cannot read it; do not guess, retry automatically, or delegate. ' +
-      'Use this once per visual question, only in On Demand mode when the answer ' +
+      'Qwen Live Harness UI and start an asynchronous read-only visual analysis. ' +
+      'Returns an accepted task receipt with source metadata and an asset reference, not the image contents. ' +
+      'The visual result arrives separately; wait for it before describing the image or claiming a blank desktop. ' +
+      'Do not repeat an accepted request. An asset can be attached to a later user-authorized handoff via input_refs. ' +
+      'Use this only in On Demand mode when the answer ' +
       'requires current visual information. Never substitute the unselected ' +
       'Screen or Camera source.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 4096,
+          description:
+            'The current visual question. Include details needed to inspect this snapshot; exclude unrelated conversation or Memory. Omit for a general description.',
+        },
+      },
+      additionalProperties: false,
+    },
   },
 };
 
 const WEB_SEARCH_TOOL: RealtimeToolDefinition = {
   type: 'function',
-  continuesResponse: false,
+  // Consume the receipt response before a later result notification; only its
+  // duplicate admission audio may be suppressed by the runtime.
+  continuesResponse: true,
   capturesTranscript: false,
   function: {
     name: WEB_SEARCH_TOOL_NAME,
@@ -83,7 +95,7 @@ const WEB_SEARCH_TOOL: RealtimeToolDefinition = {
       'use Harness for file/command work, webpage interaction, artifacts, long or complex work, ' +
       'or a user explicitly requesting a new task or a particular coding agent. ' +
       'Returns an accepted task receipt immediately, not an answer or proof of search. ' +
-      'Do not read the receipt aloud or repeat the preamble; results arrive later as [SEARCH_RESULT]. ' +
+      'The immediate receipt continuation must only briefly acknowledge acceptance, not repeat the preamble or answer the query; the runtime may suppress this duplicate confirmation audio. Results arrive later as [SEARCH_RESULT]. ' +
       'Do not poll or duplicate an accepted query. Independent searches can run in parallel while conversation continues. ' +
       'Send only the question and details needed for this lookup; do not include ' +
       'credentials or unrelated conversation, Memory, or visual content. ' +
@@ -164,6 +176,7 @@ const SESSION_CREATE_TOOL: RealtimeToolDefinition = {
 
 const HANDOFF_TOOL: RealtimeToolDefinition = {
   type: 'function',
+  continuesResponse: true,
   function: {
     name: HANDOFF_TOOL_NAME,
     description:
@@ -177,7 +190,7 @@ const HANDOFF_TOOL: RealtimeToolDefinition = {
       'not a job; delivery never proves execution, steering or completion. ' +
       'Do not attach input_refs to terminals or resend uncertain deliveries. ' +
       'For managed sessions, returns a receipt immediately — the result arrives later as a ' +
-      '[COMPLETE] context message. Targeting a busy session appends the ' +
+      '[COMPLETE] context message. The immediate receipt continuation should only briefly acknowledge admission, never invent findings or claim the task completed. Targeting a busy session appends the ' +
       'instruction to its running task or queues it within that session ' +
       '(the receipt says how it landed). Use separate sessions for independent parallel work.',
     parameters: {
@@ -369,7 +382,9 @@ const CREATE_LIVE_NARRATION_TOOL: RealtimeToolDefinition = {
       'user explicitly asks for continuing descriptions. Qwen Live Harness keeps it ' +
       'active until cancelled and publishes only genuinely new observable ' +
       'events or meaningful changes, never every polling window or a ' +
-      'condition-based reminder.',
+      'condition-based reminder. Supply only title, modalities and narration_focus. ' +
+      'The runtime preserves language, tone and detail preferences from this real user turn; ' +
+      'do not add a separate style field or move unrelated user tasks into the focus.',
     parameters: {
       type: 'object',
       properties: {
@@ -387,16 +402,8 @@ const CREATE_LIVE_NARRATION_TOOL: RealtimeToolDefinition = {
             'or meaningful changes should be described. It is not a trigger ' +
             'condition.',
         },
-        narration_style: {
-          type: 'string',
-          minLength: 1,
-          description:
-            'Requested narration language, tone, and level of detail. Use a ' +
-            'brief natural style when the user supplied no special ' +
-            'preference. Style never changes what counts as new evidence.',
-        },
       },
-      required: ['title', 'modalities', 'narration_focus', 'narration_style'],
+      required: ['title', 'modalities', 'narration_focus'],
       additionalProperties: false,
     },
   },
@@ -572,8 +579,7 @@ export function buildLiveSessionTools(
   nativeWebSearchAvailable = false,
 ): readonly RealtimeToolDefinition[] {
   // Keep explicit unavailable receipts for stale or attempted backend calls.
-  // In particular, handoff must continue the response so Omni can explain why
-  // no job was started; ordinary asynchronous handoffs do not continue it.
+  // Unavailable handoffs must continue so Omni can explain why no job started.
   const base = backendConfigured
     ? LIVE_SESSION_TOOLS
     : LIVE_SESSION_TOOLS.map((tool) =>

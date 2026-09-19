@@ -204,7 +204,10 @@ export class Injector {
     if (authority === 'peer_report' && this.peerReportCycle) {
       this.peerReportCycle.responseStarted = true;
     }
-    if (authority === 'search_result' && this.searchResultCycle) {
+    if (
+      (authority === 'search_result' || authority === 'visual_result') &&
+      this.searchResultCycle
+    ) {
       this.searchResultCycle.responseStarted = true;
     }
   }
@@ -225,7 +228,7 @@ export class Injector {
         this.finishPeerReportCycleIfComplete();
       }
     }
-    if (authority === 'search_result') {
+    if (authority === 'search_result' || authority === 'visual_result') {
       this.responseRequestPending = false;
       if (this.searchResultCycle) {
         this.searchResultCycle.responseDone = true;

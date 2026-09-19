@@ -64,12 +64,11 @@ async function harness(sessionRecycleEvals = 60) {
       contextWindowSec: { audio: 60, vision: 60 },
       sessionRecycleEvals,
       representationCompact: 'normal',
-      chunkDurationSec: 1,
-      visionFps: 2,
     },
     callbacks,
     {
       now: () => now,
+      mediaCadenceForTesting: { chunkDurationSec: 1, visionFps: 2 },
       createWebSocket: () => {
         const socket = new ReviewSocket();
         sockets.push(socket);

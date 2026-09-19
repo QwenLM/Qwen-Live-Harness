@@ -15,7 +15,7 @@ describe('PR #11369 round 2 vision continuity reproduction', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-10T00:00:00Z'));
     const config = structuredClone(DEFAULT_PROACTIVE_CONFIG);
-    config.vision = { fps: 5, windowSizeSec: 10, minEvalDurationSec: 2 };
+    config.vision = { windowSizeSec: 10, minEvalDurationSec: 2 };
     config.scheduler.evalIntervalSec = 12;
     const requestEvaluation = vi.fn(() => true);
     const gates: Array<Record<string, unknown>> = [];

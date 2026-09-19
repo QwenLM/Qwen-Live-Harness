@@ -7,14 +7,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PROACTIVE_CONFIG } from '../config.js';
 import { ProactiveScheduler } from './scheduler.js';
+import { PROACTIVE_MONITOR_FPS } from './media-cadence.js';
 
 afterEach(() => vi.useRealTimers());
 
-async function slowCaptureArm(fps: number, minEvalDurationSec: number) {
+async function slowCaptureArm(
+  captureDelayMs: number,
+  minEvalDurationSec: number,
+) {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
   const config = structuredClone(DEFAULT_PROACTIVE_CONFIG);
-  config.vision = { fps, minEvalDurationSec, windowSizeSec: 2 };
+  config.vision = { minEvalDurationSec, windowSizeSec: 4 };
   const captures: number[] = [];
   const requestEvaluation = vi.fn(() => true);
   const onTaskFailed = vi.fn();
@@ -25,7 +29,7 @@ async function slowCaptureArm(fps: number, minEvalDurationSec: number) {
     onEvent: () => true,
     onTaskFailed,
     captureVision: async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      await new Promise<void>((resolve) => setTimeout(resolve, captureDelayMs));
       captures.push(Date.now());
       return '/9j/2Q==';
     },
@@ -53,9 +57,9 @@ async function slowCaptureArm(fps: number, minEvalDurationSec: number) {
       repeat: false,
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    const retained = captures.filter((at) => at >= Date.now() - 2_000);
+    const retained = captures.filter((at) => at >= Date.now() - 4_000);
     return {
-      fps,
+      fps: PROACTIVE_MONITOR_FPS,
       minEvalDurationSec,
       captures: captures.length,
       evaluations: requestEvaluation.mock.calls.length,
@@ -74,10 +78,10 @@ async function slowCaptureArm(fps: number, minEvalDurationSec: number) {
 
 describe('PR #11369 vision warm-up review reproduction', () => {
   it('R1-28: eventually evaluates slow successful captures with an allowed positive warm-up', async () => {
-    const observed = await slowCaptureArm(5, 2);
-    const noWarmup = await slowCaptureArm(5, 0);
-    const achievableRate = await slowCaptureArm(1, 2);
-    expect(observed.captures).toBeGreaterThan(20);
+    const observed = await slowCaptureArm(1500, 4);
+    const noWarmup = await slowCaptureArm(1500, 0);
+    const achievableRate = await slowCaptureArm(300, 4);
+    expect(observed.captures).toBeGreaterThan(3);
     expect(observed.retainedFrames).toBeLessThan(
       Math.ceil(observed.fps * observed.minEvalDurationSec),
     );

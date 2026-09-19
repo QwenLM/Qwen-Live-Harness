@@ -386,13 +386,25 @@ export class FakeHost {
           requestId: message['requestId'],
           success: true,
           source: 'screen',
+          ...(message['screenScope'] === 'display'
+            ? {
+                screenScope: 'display',
+                displayId:
+                  message['screenDisplayId'] &&
+                  message['screenDisplayId'] !== 'primary'
+                    ? message['screenDisplayId']
+                    : 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+              }
+            : {}),
           image: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
           width: 1280,
           height: 720,
           appName: 'FakeApp',
           windowTitle: 'Fake Window',
           accessibilityText: 'fake accessibility text',
-          screenshotPath: this.fakeScreenshotPath(),
+          ...(message['persistAsset'] !== false
+            ? { screenshotPath: this.fakeScreenshotPath() }
+            : {}),
         });
       } else if (
         message['type'] === 'host.welcome' ||
@@ -426,6 +438,7 @@ export class FakeHost {
       type: 'host.hello',
       protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
       hostVersion: '1.0.0-e2e',
+      displayCaptureV1: true,
       bundleId: LIVE_HOST_BUNDLE_ID,
       instanceNonce: this.hostInstanceNonce,
       capabilities: { outputAudioEndMarkerV1: true },
@@ -661,7 +674,8 @@ export async function waitForLiveLogEvents(
  * For a tool continuation, SPEAK_TO_USER item or permission context, wait for its next
  * response request to complete in Live, not just be sent by the fake provider.
  * The anchor must be from the current connection's inbox with no intervening
- * user turn. Handoff receipts do not themselves request a continuation.
+ * user turn. Handoff receipts consume a separate tool continuation before a
+ * later task-result response, even when duplicate confirmation audio is muted.
  */
 export async function waitForLiveResponseAfter(
   stack: Pick<LiveStack, 'fakeDash' | 'dataDir'>,

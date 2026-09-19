@@ -4,7 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
 import type { Socket } from 'node:net';
@@ -312,7 +319,13 @@ describe('LiveDaemon', () => {
       const logger = new LiveLogger(level);
       vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
       vi.spyOn(logger, 'info').mockImplementation(() => undefined);
-      const daemon = new LiveDaemon(await testConfig(), {
+      const config = await testConfig();
+      if (config.backends[0]?.kind === 'qwen-code')
+        config.backends[0].peerDiscovery = {
+          qwenHome: config.dataDir,
+          controllerToken: `qpc_${'a'.repeat(64)}`,
+        };
+      const daemon = new LiveDaemon(config, {
         registry: new BackendRegistry([
           { adaptor: fakeAdaptor(), isDefault: true },
         ]),
@@ -347,6 +360,27 @@ describe('LiveDaemon', () => {
       }
       await daemon.stop();
       expect(flush).toHaveBeenCalledTimes(level === 'debug' ? 1 : 0);
+      if (level === 'debug') {
+        const runs = await readdir(join(config.dataDir, 'debug'));
+        expect(runs.filter((name) => name.startsWith('run-'))).toHaveLength(1);
+        const run = join(
+          config.dataDir,
+          'debug',
+          runs.find((name) => name.startsWith('run-'))!,
+        );
+        const events = await readFile(join(run, 'events.jsonl'), 'utf8');
+        expect(events).toContain('archive.run_metadata');
+        expect(events).toContain('effectiveConfig');
+        expect(events).toContain('test-model');
+        expect(events).not.toContain(config.realtime.apiKey);
+        expect(events).not.toContain(`qpc_${'a'.repeat(64)}`);
+        expect(events).toContain('session.log');
+        expect(events).toContain('proactive.monitor_request_saved');
+      } else {
+        await expect(
+          readdir(join(config.dataDir, 'debug')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      }
     },
   );
 
@@ -737,6 +771,7 @@ describe('LiveDaemon', () => {
         type: 'host.hello',
         protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
         hostVersion: '1.0.0',
+        displayCaptureV1: true,
         bundleId: 'com.alibaba.qwen-live-harness.host',
         instanceNonce: 'host_instance_nonce_0001',
         permissions: {

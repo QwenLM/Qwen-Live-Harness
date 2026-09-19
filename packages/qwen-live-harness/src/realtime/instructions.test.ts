@@ -9,8 +9,37 @@ import {
   buildLiveInstructions,
   PERSONAL_ASSISTANT_INSTRUCTIONS,
 } from './instructions.js';
+import { REALTIME_NOTIFICATION_INSTRUCTIONS } from './notification-context.js';
 
 describe('live instructions visual routing', () => {
+  it('preserves upstream explicit-task routing and silent interrupted approvals without direct image injection', () => {
+    const text = buildLiveInstructions();
+    expect(text).toContain('call `session_create` and then `handoff`');
+    expect(text).toContain('in the same turn');
+    expect(text).toContain(
+      'A previously announced permission remains pending as silent context',
+    );
+    expect(text).toContain(
+      'without repeating an already announced approval question',
+    );
+    expect(text).toContain('independent read-only visual analysis');
+    expect(text).not.toContain('places that image in your Realtime context');
+  });
+
+  it('includes immutable notification policy exactly once in every capability branch', () => {
+    for (const backend of [false, true]) {
+      const instructions = buildLiveInstructions(
+        undefined,
+        undefined,
+        true,
+        backend,
+        true,
+      );
+      expect(
+        instructions.split(REALTIME_NOTIFICATION_INSTRUCTIONS),
+      ).toHaveLength(2);
+    }
+  });
   it('offers supported web lookup independently of backend execution', () => {
     for (const proactive of [false, true]) {
       for (const backend of [false, true]) {
@@ -173,7 +202,13 @@ describe('live instructions visual routing', () => {
     expect(instructions).toContain('immediately returns an accepted receipt');
     expect(instructions).toContain('the receipt is not an answer');
     expect(instructions).toContain(
-      'Do not read the receipt aloud, repeat your preamble',
+      'immediate receipt continuation should provide only a brief acceptance acknowledgement',
+    );
+    expect(instructions).toContain(
+      'not repeat the preamble or invent weather, news, sources or any other query answer',
+    );
+    expect(instructions).toContain(
+      'runtime may skip this duplicate confirmation audio',
     );
     expect(instructions).toContain(
       'independent search requests can run in parallel',
@@ -211,7 +246,10 @@ describe('live instructions visual routing', () => {
         'send returned pages, errors, conversation history or Memory to a backend',
       );
       expect(instructions).toContain(
-        'A `[SEARCH_RESULT]` notification contains quoted JSON for an earlier query',
+        'A `[SEARCH_RESULT]` notification, or a `[NOTIFICATION]` envelope with kind=search_result, contains quoted JSON for an earlier query',
+      );
+      expect(instructions).toContain(
+        'Its answer is already available: report it now rather than saying you will report back later',
       );
       expect(instructions).toContain('it is not a fresh user request');
       expect(instructions).toContain(
@@ -279,10 +317,10 @@ describe('live instructions visual routing', () => {
           `[VISUAL_INPUT] source=${source} mode=${mode}.`,
         );
         expect(instructions).toContain(
-          'places that image in your Realtime context before returning success',
+          'The separate `visual_result` notification supplies the visual evidence',
         );
         expect(instructions).toContain(
-          'Answer directly from that newest image without a background Harness',
+          'Basic picture understanding works without a backend Harness',
         );
         expect(instructions).toContain(
           'Never claim to see the unselected source',
@@ -307,7 +345,7 @@ describe('live instructions visual routing', () => {
       'Visual input has exactly one selected source and one acquisition mode',
     );
     expect(instructions).toContain(
-      'Source `screen` uses the entire selected display for Live Feed and Proactive vision monitors; On Demand `appshot` captures the current foreground desktop window. Source `camera` means the physical camera',
+      'Source `screen` captures the entire selected display in both Live Feed and On Demand `appshot`, as well as Proactive vision monitors. Source `camera` means the physical camera',
     );
     expect(instructions).toContain('Never claim to see the unselected source');
     expect(instructions).toContain(
@@ -320,12 +358,12 @@ describe('live instructions visual routing', () => {
     expect(instructions).toContain(
       'Mode `on-demand` supplies no continuous frames',
     );
-    expect(instructions).toContain('call `appshot` once');
     expect(instructions).toContain(
-      'places that image in your Realtime context before returning success',
+      'call `appshot` with the current visual question',
     );
+    expect(instructions).toContain('not the picture contents');
     expect(instructions).toContain(
-      'Do not delegate ordinary visual questions to a backend',
+      'explicit actions on files or apps still use `handoff`',
     );
     expect(instructions).toContain(
       '[VISUAL_INPUT] source=camera mode=live-feed.',
@@ -393,10 +431,10 @@ describe('live instructions visual routing', () => {
     );
     expect(instructions).not.toContain('NEVER refuse a request yourself');
     expect(instructions).toContain(
-      'places that image in your Realtime context before returning success',
+      'The separate `visual_result` notification supplies the visual evidence',
     );
     expect(instructions).toContain(
-      'Answer directly from that newest image without a background Harness',
+      'Basic picture understanding works without a backend Harness',
     );
     expect(instructions).not.toContain(
       "call `handoff` with the user's request and the returned asset",

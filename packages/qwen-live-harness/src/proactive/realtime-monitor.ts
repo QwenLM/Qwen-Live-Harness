@@ -15,6 +15,12 @@ import {
   QWEN_REALTIME_LIMITS,
 } from '../realtime/realtime-session.js';
 import type { SocketLike } from '../realtime/socket.js';
+import type { DebugArchive } from '../log/debug-archive.js';
+import { createDebugSocket } from '../log/debug-socket.js';
+import {
+  PROACTIVE_MONITOR_CHUNK_DURATION_SEC,
+  PROACTIVE_MONITOR_FPS,
+} from './media-cadence.js';
 import type {
   MonitorAudioOrigin,
   MonitorDebugRecorder,
@@ -77,9 +83,9 @@ export interface DashScopeRealtimeMonitorOptions {
   contextWindowSec: Record<MonitorModality, number>;
   sessionRecycleEvals: number;
   representationCompact: 'none' | 'normal';
-  chunkDurationSec: number;
-  visionFps: number;
   monitorDebug?: MonitorDebugStore;
+  debugArchive?: DebugArchive;
+  debugContext?: Record<string, unknown>;
 }
 
 export interface DashScopeRealtimeMonitorCallbacks {
@@ -90,6 +96,11 @@ export interface DashScopeRealtimeMonitorCallbacks {
 }
 
 export interface DashScopeRealtimeMonitorDeps {
+  /** Deterministic test fixture only; never supplied from product config/options. */
+  mediaCadenceForTesting?: Readonly<{
+    chunkDurationSec: number;
+    visionFps: number;
+  }>;
   createWebSocket?: (
     url: string,
     options: {
@@ -229,6 +240,8 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   private readonly maxQueuedInputs: number;
   private readonly modalities: ReadonlySet<MonitorModality>;
   private readonly representationCompact: 'none' | 'normal';
+  private readonly chunkDurationSec: number;
+  private readonly visionFps: number;
   private readonly chunkAudioBytes: number;
   private readonly chunkImageFrames: number;
   private socket: SocketLike | undefined;
@@ -240,6 +253,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
   private needsRecycle = false;
   private evaluationPhase:
     'idle' | 'commit_pending' | 'response_requested' | 'responding' = 'idle';
+  private initialTaskPending = true;
   private activeResponseId: string | undefined;
   private providerSessionId: string | undefined;
   private responseEventId: string | undefined;
@@ -286,15 +300,29 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     this.modalities = new Set(options.modalities);
     // Provider video settings are fixed for the monitor, including recycles.
     this.representationCompact = options.representationCompact;
+    this.chunkDurationSec =
+      deps.mediaCadenceForTesting?.chunkDurationSec ??
+      PROACTIVE_MONITOR_CHUNK_DURATION_SEC;
+    this.visionFps =
+      deps.mediaCadenceForTesting?.visionFps ?? PROACTIVE_MONITOR_FPS;
+    if (
+      !Number.isFinite(this.chunkDurationSec) ||
+      !Number.isFinite(this.visionFps) ||
+      this.chunkDurationSec <= 0 ||
+      this.chunkDurationSec > 60 ||
+      this.visionFps <= 0 ||
+      this.visionFps > 60
+    ) {
+      throw new Error('Invalid injected test media cadence.');
+    }
     this.chunkAudioBytes = Math.max(
       2,
-      Math.round(options.chunkDurationSec * QWEN_REALTIME_INPUT_SAMPLE_RATE) *
-        2,
+      Math.round(this.chunkDurationSec * QWEN_REALTIME_INPUT_SAMPLE_RATE) * 2,
     );
     // A video grid requires at least two actual frames, never duplicated images.
     this.chunkImageFrames = Math.max(
       2,
-      Math.ceil(options.chunkDurationSec * options.visionFps),
+      Math.ceil(this.chunkDurationSec * this.visionFps),
     );
     this.now = deps.now ?? Date.now;
     this.connectTimeoutMs = deps.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
@@ -387,7 +415,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       this.debug('proactive.monitor_chunk_prepared', {
         chunkStartAt: chunk.startAt,
         chunkEndAt: chunk.endAt,
-        chunkDurationSec: this.options.chunkDurationSec,
+        chunkDurationSec: this.chunkDurationSec,
         imageFrames: chunk.inputs.filter((input) => input.modality === 'vision')
           .length,
         audioBytes: this.chunkAudioBytes,
@@ -489,6 +517,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     this.recentInputs = [];
     this.writerQueue = [];
     this.pendingChunk = undefined;
+    this.initialTaskPending = true;
     this.resetInputDiagnostics();
     pendingConnect?.finish(
       monitorError(
@@ -513,6 +542,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     this.resetInputDiagnostics();
     this.writerQueue = [];
     this.pendingChunk = undefined;
+    this.initialTaskPending = true;
     const generation = ++this.transportGeneration;
     this.debugRecorder?.beginTransport(generation);
     this.providerSessionId = undefined;
@@ -542,15 +572,33 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       };
       this.pendingConnect = { generation, finish: finishConnect };
       try {
-        socket = this.createWebSocket(
-          deriveQwenOmniRealtimeUrl(this.options.endpoint, this.options.model),
+        socket = createDebugSocket(
+          () =>
+            this.createWebSocket(
+              deriveQwenOmniRealtimeUrl(
+                this.options.endpoint,
+                this.options.model,
+              ),
+              {
+                headers: this.options.apiKey
+                  ? { Authorization: `Bearer ${this.options.apiKey}` }
+                  : {},
+                maxPayload: QWEN_REALTIME_LIMITS.maxIncomingMessageBytes,
+                perMessageDeflate: false,
+                handshakeTimeout: this.connectTimeoutMs,
+              },
+            ),
           {
-            headers: this.options.apiKey
-              ? { Authorization: `Bearer ${this.options.apiKey}` }
-              : {},
-            maxPayload: QWEN_REALTIME_LIMITS.maxIncomingMessageBytes,
-            perMessageDeflate: false,
-            handshakeTimeout: this.connectTimeoutMs,
+            debugArchive: this.options.debugArchive,
+            info: {
+              ...this.options.debugContext,
+              kind: 'monitor',
+              model: this.options.model,
+              endpoint: this.options.endpoint,
+              taskId: this.options.taskId,
+              taskGeneration: this.options.taskGeneration,
+              transportGeneration: generation,
+            },
           },
         );
       } catch {
@@ -671,7 +719,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           // An unsolicited update cannot authorize media before our initial
           // session settings (including video compression) have been sent.
           if (!sessionUpdateSent) return;
-          if (!this.initializeConversation()) {
+          if (!this.options.instruction.trim()) {
             failConnection(
               monitorError(
                 'Monitor initialization was rejected.',
@@ -688,18 +736,40 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           this.debug('proactive.monitor_ready', {
             generation,
             model: providerMetadata(this.options.model, this.options.apiKey),
+            inputTransport: 'streaming_buffers',
+            chunkDurationSec: this.chunkDurationSec,
+            ...(this.modalities.has('vision')
+              ? { visionFps: this.visionFps }
+              : {}),
           });
           finishConnect();
           this.callbacks.onReady?.(this.options.taskGeneration);
           return;
         }
-        if (type === 'input_audio_buffer.committed') {
-          if (this.evaluationPhase !== 'commit_pending') return;
+        if (
+          type === 'input_audio_buffer.committed' &&
+          this.evaluationPhase === 'commit_pending'
+        ) {
           this.debug('proactive.monitor_committed', {
             evaluation: this.evaluationSequence,
+            inputItemId: providerMetadata(
+              message['item_id'],
+              this.options.apiKey,
+            ),
           });
           this.evaluationPhase = 'response_requested';
-          if (!this.send({ type: 'response.create' })) {
+          // In DashScope manual mode this per-response field adds text to the
+          // committed multimodal user turn; it is not the session system
+          // prompt. Supply the task only with the first clip of each transport.
+          const taskText = this.initialTaskPending
+            ? this.options.instruction.trim()
+            : undefined;
+          if (
+            !this.send({
+              type: 'response.create',
+              ...(taskText ? { response: { instructions: taskText } } : {}),
+            })
+          ) {
             const error = monitorError(
               'Monitor response request was rejected.',
               'monitor_response_request_failed',
@@ -714,6 +784,13 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
               },
               error,
             );
+          } else {
+            this.initialTaskPending = false;
+            this.debug('proactive.monitor_response_requested', {
+              evaluation: this.evaluationSequence,
+              taskTextIncluded: taskText !== undefined,
+              taskTextChars: taskText?.length ?? 0,
+            });
           }
           return;
         }
@@ -865,20 +942,6 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
     });
   }
 
-  private initializeConversation(): boolean {
-    if (!this.options.instruction.trim()) return false;
-    return this.send({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          { type: 'input_text', text: this.options.instruction.trim() },
-        ],
-      },
-    });
-  }
-
   private prepareChunk(): CaptureChunk | undefined {
     this.pruneRecentInputs();
     const consumedAudio = new Map<number, number>();
@@ -953,7 +1016,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
           // An image captured in the next second must not be paired with old
           // audio merely to reach the grid size. Allow one capture period for
           // arrival ordering, then discard the incomplete multimodal clip.
-          if (this.now() > endAt + 1_000 / this.options.visionFps) {
+          if (this.now() > endAt + 1_000 / this.visionFps) {
             const chunk = {
               inputs: [],
               consumedAudio,
@@ -998,7 +1061,7 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
         if (images.length < this.chunkImageFrames) return undefined;
         images = images.slice(0, this.chunkImageFrames);
         endAt = images.at(-1)!.capturedAt;
-        startAt = images[0]!.capturedAt - 1_000 / this.options.visionFps;
+        startAt = images[0]!.capturedAt - 1_000 / this.visionFps;
         for (const input of images) consumedImages.add(input.sequence);
       }
     }
@@ -1022,10 +1085,10 @@ export class DashScopeRealtimeMonitor implements ProactiveRealtimeMonitor {
       }
     };
     for (const [index, image] of images.entries()) {
-      const fraction =
-        hasAudio && endAt > startAt
-          ? (image.capturedAt - startAt) / (endAt - startAt)
-          : (index + 1) / images.length;
+      // Put images on an even clip timeline instead of encoding capture
+      // callback jitter into the wire format. At the default 2 s / 1 fps this
+      // is exactly 1 s PCM, image, 1 s PCM, image for vision and audiovisual.
+      const fraction = (index + 1) / images.length;
       const through = Math.max(
         2,
         Math.min(

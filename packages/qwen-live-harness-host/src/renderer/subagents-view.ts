@@ -48,6 +48,7 @@ const TASK_KIND_KEYS = {
   harness: 'subagents.harness',
   proactive: 'subagents.proactive',
   search: 'subagents.kind.search',
+  visual: 'subagents.kind.visual',
 } as const satisfies Record<SubagentTask['kind'], LiveMessageKey>;
 
 const DELIVERY_STATUS_KEYS = {
@@ -80,8 +81,10 @@ const REPORT_ANNOUNCEMENT_KEYS = {
 
 const NOTIFICATION_KEYS = {
   queued: 'subagents.notificationQueued',
+  preparing: 'subagents.notificationPreparing',
   speaking: 'subagents.notificationSpeaking',
   delivered: 'subagents.notificationDelivered',
+  undelivered: 'subagents.notificationUndelivered',
 } as const satisfies Record<
   NonNullable<SubagentTask['notification']>,
   LiveMessageKey
@@ -721,7 +724,9 @@ export class SubagentsView {
       const status = liveText(state.language, STATUS_KEYS[task.status]);
       const kind = liveText(state.language, TASK_KIND_KEYS[task.kind]);
       const statusLabel =
-        task.kind === 'search' ? `${kind} · ${status}` : status;
+        task.kind === 'search' || task.kind === 'visual'
+          ? `${kind} · ${status}`
+          : status;
       text(row.status, statusLabel);
       row.status.title = statusLabel;
       row.title.title = task.title;
@@ -738,7 +743,7 @@ export class SubagentsView {
       this.renderStop(row.stop, task, state);
       row.button.setAttribute(
         'aria-label',
-        `${task.kind === 'search' ? `${kind} · ` : ''}${liveText(state.language, 'subagents.openTask', { title: task.title })}`,
+        `${task.kind === 'search' || task.kind === 'visual' ? `${kind} · ` : ''}${liveText(state.language, 'subagents.openTask', { title: task.title })}`,
       );
     }
     const permissions = state.page?.unassignedPermissions ?? [];

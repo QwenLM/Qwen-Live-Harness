@@ -47,6 +47,8 @@ export interface FakeDashScopeFunctionCall {
   /** Raw JSON string handed to the client as `item.arguments`. */
   argumentsJson: string;
   callId: string;
+  /** Optional spoken preamble in the same response, before the tool item. */
+  preamble?: { audio: Uint8Array; transcript: string };
 }
 
 export interface FakeDashScopeConnection {
@@ -64,7 +66,7 @@ export interface FakeDashScopeConnection {
   send(message: JsonObject): void;
   /**
    * Simulate one finished user utterance:
-   * speech_started → speech_stopped → conversation.item.created →
+   * speech_started → conversation.item.created → speech_stopped → committed →
    * conversation.item.input_audio_transcription.completed.
    * Returns the item id.
    */
@@ -82,7 +84,7 @@ export interface FakeDashScopeConnection {
    * response.audio.delta (base64) → response.audio.done → response.done.
    * Returns the response id.
    */
-  respondWithAudio(pcm16: Uint8Array): string;
+  respondWithAudio(pcm16: Uint8Array, transcript?: string): string;
   /** Open a response and leave it in flight. Returns the response id. */
   beginResponse(): string;
   /** Settle a response previously opened with beginResponse(). */
@@ -105,6 +107,8 @@ export interface FakeDashScopeServer {
   inbox: JsonObject[];
   /** Answer client `response.create` with created+done automatically. */
   autoAckResponses: boolean;
+  /** Confirm accepted function_call_output items before any continuation. */
+  autoAckToolOutputs: boolean;
   /** Response id automatically sent for this exact inbox request. */
   autoResponseIdFor(request: JsonObject): string | undefined;
   waitForConnection(timeoutMs?: number): Promise<FakeDashScopeConnection>;
@@ -151,6 +155,49 @@ export function contextTextOf(message: JsonObject): string | undefined {
   return typeof first['text'] === 'string' ? first['text'] : undefined;
 }
 
+/** Typed runtime data carried in a user item, never response instructions. */
+export function notificationOf(message: JsonObject):
+  | {
+      kind: string;
+      payload: string;
+      output_language?: 'en' | 'zh-CN';
+      fallback_language?: 'en' | 'zh-CN';
+      language_samples?: string[];
+    }
+  | undefined {
+  const body = contextTextOf(message)?.match(
+    /^(?:\[(?:BACKEND|MERGE_WITH_USER)\] )?\[NOTIFICATION\]\s+([\s\S]+)$/u,
+  )?.[1];
+  if (!body) return undefined;
+  try {
+    const value: unknown = JSON.parse(body);
+    if (
+      !isRecord(value) ||
+      typeof value['kind'] !== 'string' ||
+      typeof value['payload'] !== 'string'
+    )
+      return undefined;
+    return {
+      kind: value['kind'],
+      payload: value['payload'],
+      ...(value['output_language'] === 'en' ||
+      value['output_language'] === 'zh-CN'
+        ? { output_language: value['output_language'] }
+        : {}),
+      ...(value['fallback_language'] === 'en' ||
+      value['fallback_language'] === 'zh-CN'
+        ? { fallback_language: value['fallback_language'] }
+        : {}),
+      ...(Array.isArray(value['language_samples']) &&
+      value['language_samples'].every((sample) => typeof sample === 'string')
+        ? { language_samples: value['language_samples'] as string[] }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** The daemon's quoted pending-approval facts, never a verbatim speech item. */
 export function permissionPayloadOf(message: JsonObject):
   | {
@@ -160,9 +207,13 @@ export function permissionPayloadOf(message: JsonObject):
       fallback_language: 'en' | 'zh-CN';
     }
   | undefined {
-  const text = contextTextOf(message);
+  const notification = notificationOf(message);
+  const text =
+    notification?.kind === 'permission'
+      ? notification.payload
+      : contextTextOf(message);
   const body = text?.match(
-    /^\[(?:BACKEND|MERGE_WITH_USER)\] \[PERMISSION\]\s+([\s\S]+)$/u,
+    /^(?:\[(?:BACKEND|MERGE_WITH_USER)\] )?\[PERMISSION\]\s+([\s\S]+)$/u,
   )?.[1];
   if (!body) return undefined;
   try {
@@ -190,22 +241,29 @@ export function permissionPayloadOf(message: JsonObject):
 /** Runtime-confirmed managed task outcome, distinct from an external report. */
 export function taskResultPayloadOf(message: JsonObject):
   | {
-      status: 'completed' | 'failed';
+      status: 'completed' | 'failed' | 'cancelled';
       session: string;
       summary: string;
       job?: string;
       task?: string;
     }
   | undefined {
-  const body = contextTextOf(message)?.match(
-    /^\[(?:BACKEND|MERGE_WITH_USER)\] \[(?:COMPLETE|ERROR) [^\]]+\]\s+([\s\S]+)$/u,
+  const notification = notificationOf(message);
+  const text =
+    notification?.kind === 'task_result'
+      ? notification.payload
+      : contextTextOf(message);
+  const body = text?.match(
+    /^(?:\[(?:BACKEND|MERGE_WITH_USER)\] )?\[(?:COMPLETE|ERROR|CANCELLED) [^\]]+\]\s+([\s\S]+)$/u,
   )?.[1];
   if (!body) return undefined;
   try {
     const value: unknown = JSON.parse(body);
     if (
       !isRecord(value) ||
-      (value['status'] !== 'completed' && value['status'] !== 'failed') ||
+      (value['status'] !== 'completed' &&
+        value['status'] !== 'failed' &&
+        value['status'] !== 'cancelled') ||
       typeof value['session'] !== 'string' ||
       typeof value['summary'] !== 'string'
     )
@@ -225,6 +283,9 @@ export function taskResultPayloadOf(message: JsonObject):
 export async function startFakeDashScopeServer(
   options: {
     nativeSearchReply?: { answer: string; searchCount: number };
+    /** Opt-in for tests of manual media workers; existing scripted commits stay manual. */
+    autoAckAudioCommits?: boolean;
+    visualAnalysisReply?: string;
   } = {},
 ): Promise<FakeDashScopeServer> {
   const httpServer = createServer((_req, res) => {
@@ -248,6 +309,7 @@ export async function startFakeDashScopeServer(
     connections,
     inbox,
     autoAckResponses: true,
+    autoAckToolOutputs: true,
     autoResponseIdFor: (request) => autoResponseIds.get(request),
     waitForConnection: (timeoutMs = 15_000) => {
       if (connections.length > 0) return Promise.resolve(connections[0]);
@@ -325,8 +387,25 @@ export async function startFakeDashScopeServer(
         ? req.headers['authorization']
         : undefined;
 
+    const responseOutputs = new Map<string, Map<string, JsonObject>>();
     const sendJson = (body: JsonObject) => {
       if (socket.readyState !== socket.OPEN) return;
+      if (
+        body['type'] === 'response.output_item.done' &&
+        typeof body['response_id'] === 'string' &&
+        isRecord(body['item']) &&
+        body['item']['type'] === 'function_call' &&
+        typeof body['item']['call_id'] === 'string'
+      ) {
+        const items =
+          responseOutputs.get(body['response_id']) ??
+          new Map<string, JsonObject>();
+        items.set(body['item']['call_id'], {
+          status: 'completed',
+          ...body['item'],
+        });
+        responseOutputs.set(body['response_id'], items);
+      }
       socket.send(JSON.stringify({ event_id: `evt-${++eventSeq}`, ...body }));
     };
 
@@ -341,11 +420,41 @@ export async function startFakeDashScopeServer(
     const finishResponse = (responseId: string, status = 'completed') => {
       sendJson({
         type: 'response.done',
-        response: { id: responseId, status },
+        response: {
+          id: responseId,
+          status,
+          output: [...(responseOutputs.get(responseId)?.values() ?? [])],
+        },
       });
+      responseOutputs.delete(responseId);
+    };
+    const sendAudio = (
+      responseId: string,
+      pcm16: Uint8Array,
+      transcript?: string,
+    ): void => {
+      if (pcm16.byteLength === 0 || pcm16.byteLength % 2 !== 0)
+        throw new Error('Audio needs a non-empty PCM16 buffer');
+      const itemId = `item-audio-${responseSeq}`;
+      sendJson({
+        type: 'response.audio.delta',
+        response_id: responseId,
+        item_id: itemId,
+        delta: Buffer.from(pcm16).toString('base64'),
+      });
+      if (transcript !== undefined) {
+        sendJson({
+          type: 'response.audio_transcript.done',
+          response_id: responseId,
+          item_id: itemId,
+          transcript,
+        });
+      }
+      sendJson({ type: 'response.audio.done', response_id: responseId });
     };
     let queuedFunctionCall: FakeDashScopeFunctionCall | undefined;
     let nativeSearch = false;
+    let visualAnalysis = false;
     const connectionInbox: JsonObject[] = [];
 
     const connection: FakeDashScopeConnection = {
@@ -364,11 +473,6 @@ export async function startFakeDashScopeServer(
           audio_start_ms: 0,
         });
         sendJson({
-          type: 'input_audio_buffer.speech_stopped',
-          item_id: itemId,
-          audio_end_ms: 400,
-        });
-        sendJson({
           type: 'conversation.item.created',
           item: {
             id: itemId,
@@ -376,6 +480,15 @@ export async function startFakeDashScopeServer(
             role: 'user',
             content: [{ type: 'input_audio' }],
           },
+        });
+        sendJson({
+          type: 'input_audio_buffer.speech_stopped',
+          item_id: itemId,
+          audio_end_ms: 400,
+        });
+        sendJson({
+          type: 'input_audio_buffer.committed',
+          item_id: itemId,
         });
         sendJson({
           type: 'conversation.item.input_audio_transcription.completed',
@@ -386,12 +499,15 @@ export async function startFakeDashScopeServer(
       },
       functionCall: (call) => {
         const responseId = beginResponse();
+        if (call.preamble)
+          sendAudio(responseId, call.preamble.audio, call.preamble.transcript);
         sendJson({
           type: 'response.output_item.done',
           response_id: responseId,
           item: {
             id: `item-${call.callId}`,
             type: 'function_call',
+            status: 'completed',
             name: call.name,
             call_id: call.callId,
             arguments: call.argumentsJson,
@@ -405,18 +521,9 @@ export async function startFakeDashScopeServer(
           throw new Error('A function call is already queued');
         queuedFunctionCall = call;
       },
-      respondWithAudio: (pcm16) => {
-        if (pcm16.byteLength === 0 || pcm16.byteLength % 2 !== 0) {
-          throw new Error('respondWithAudio needs a non-empty PCM16 buffer');
-        }
+      respondWithAudio: (pcm16, transcript) => {
         const responseId = beginResponse();
-        sendJson({
-          type: 'response.audio.delta',
-          response_id: responseId,
-          item_id: `item-audio-${responseSeq}`,
-          delta: Buffer.from(pcm16).toString('base64'),
-        });
-        sendJson({ type: 'response.audio.done', response_id: responseId });
+        sendAudio(responseId, pcm16, transcript);
         finishResponse(responseId);
         return responseId;
       },
@@ -440,6 +547,12 @@ export async function startFakeDashScopeServer(
         const session = isRecord(parsed['session']) ? parsed['session'] : {};
         if (typeof session['enable_search'] === 'boolean')
           nativeSearch = session['enable_search'];
+        if (Array.isArray(session['modalities']))
+          visualAnalysis =
+            session['modalities'].length === 1 &&
+            session['modalities'][0] === 'text' &&
+            session['enable_search'] === false &&
+            isRecord(session['video']);
         if (
           nativeSearch &&
           Array.isArray(session['tools']) &&
@@ -461,8 +574,38 @@ export async function startFakeDashScopeServer(
             ...(nativeSearch ? { enable_search: true } : {}),
           },
         });
+      } else if (
+        handle.autoAckToolOutputs &&
+        parsed['type'] === 'conversation.item.create' &&
+        isRecord(parsed['item']) &&
+        parsed['item']['type'] === 'function_call_output'
+      ) {
+        sendJson({
+          type: 'conversation.item.created',
+          item: {
+            ...parsed['item'],
+            id: `item-${++itemSeq}`,
+            status: 'completed',
+          },
+        });
+      } else if (
+        parsed['type'] === 'input_audio_buffer.commit' &&
+        options.autoAckAudioCommits
+      ) {
+        sendJson({
+          type: 'input_audio_buffer.committed',
+          item_id: `item-${++itemSeq}`,
+        });
       } else if (parsed['type'] === 'response.create') {
-        if (nativeSearch && options.nativeSearchReply) {
+        if (visualAnalysis && options.visualAnalysisReply !== undefined) {
+          const responseId = beginResponse();
+          sendJson({
+            type: 'response.text.done',
+            response_id: responseId,
+            text: options.visualAnalysisReply,
+          });
+          finishResponse(responseId);
+        } else if (nativeSearch && options.nativeSearchReply) {
           const responseId = beginResponse();
           sendJson({
             type: 'response.text.delta',

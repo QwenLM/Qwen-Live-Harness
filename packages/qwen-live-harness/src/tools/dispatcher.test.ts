@@ -53,19 +53,46 @@ describe('ToolDispatcher', () => {
     ['whitespace only', '   '],
     ['a JSON array', '[1, 2, 3]'],
     ['a JSON scalar', '"hello"'],
-  ])('degrades %s arguments to an empty object', async (_label, raw) => {
-    const seen: Array<Record<string, unknown>> = [];
-    const dispatcher = makeDispatcher({
-      echo: (args) => {
-        seen.push(args);
-        return { status: 'ok' };
-      },
+    ['JSON null', 'null'],
+    ['a JSON number', '123'],
+    ['a JSON boolean', 'true'],
+    ['a string-encoded object', '"{}"'],
+  ])(
+    'rejects %s arguments without executing the handler',
+    async (_label, raw) => {
+      vi.useFakeTimers();
+      const seen: Array<Record<string, unknown>> = [];
+      const dispatcher = makeDispatcher({
+        echo: (args) => {
+          seen.push(args);
+          return { status: 'ok' };
+        },
+      });
+
+      const result = await dispatcher.dispatch('echo', raw, makeContext());
+
+      expect(result).toEqual({
+        ok: false,
+        receipt: JSON.stringify({
+          status: 'error',
+          code: 'invalid_arguments',
+          note: 'Tool arguments must be a valid JSON object. No action was executed.',
+        }),
+      });
+      expect(seen).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('still dispatches an explicit empty JSON object for argument-free tools', async () => {
+    const handler = vi.fn<ToolHandler>(() => ({ status: 'ok' }));
+    const ctx = makeContext();
+    const dispatcher = makeDispatcher({ appshot: handler });
+    expect(await dispatcher.dispatch('appshot', ' \n {} \t', ctx)).toEqual({
+      ok: true,
+      receipt: '{"status":"ok"}',
     });
-
-    const result = await dispatcher.dispatch('echo', raw, makeContext());
-
-    expect(result.ok).toBe(true);
-    expect(seen).toEqual([{}]);
+    expect(handler).toHaveBeenCalledExactlyOnceWith({}, ctx);
   });
 
   it('passes well-formed JSON object arguments through to the handler', async () => {
@@ -255,6 +282,8 @@ describe('ToolDispatcher', () => {
   });
 
   it.each([
+    ['', 'tool_arguments_invalid'],
+    ['   ', 'tool_arguments_invalid'],
     ['{"secret":"PRIVATE-ARGUMENT"', 'tool_arguments_invalid'],
     ['["PRIVATE-ARGUMENT"]', 'tool_arguments_shape'],
     ['"PRIVATE-ARGUMENT"', 'tool_arguments_shape'],
@@ -262,7 +291,7 @@ describe('ToolDispatcher', () => {
     ['false', 'tool_arguments_shape'],
     ['123', 'tool_arguments_shape'],
   ])(
-    'reports %s as %s while still executing the existing empty-object fallback',
+    'reports %s as %s and refuses execution without exposing arguments',
     async (raw, code) => {
       const onFailure = vi.fn<RuntimeFailureSink>();
       const handler = vi.fn<ToolHandler>(() => ({ status: 'accepted' }));
@@ -273,10 +302,14 @@ describe('ToolDispatcher', () => {
       );
       const ctx = makeContext();
       expect(await dispatcher.dispatch('echo', raw, ctx)).toEqual({
-        ok: true,
-        receipt: '{"status":"accepted"}',
+        ok: false,
+        receipt: JSON.stringify({
+          status: 'error',
+          code: 'invalid_arguments',
+          note: 'Tool arguments must be a valid JSON object. No action was executed.',
+        }),
       });
-      expect(handler).toHaveBeenCalledExactlyOnceWith({}, ctx);
+      expect(handler).not.toHaveBeenCalled();
       expect(onFailure).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           source: 'tool',
@@ -292,8 +325,8 @@ describe('ToolDispatcher', () => {
     },
   );
 
-  it.each(['', '   ', '{"private":"PRIVATE-ARGUMENT"}'])(
-    'does not report a failure for valid or deliberately empty arguments: %s',
+  it.each(['{}', '  {}  ', '{"private":"PRIVATE-ARGUMENT"}'])(
+    'does not report a failure for valid object arguments: %s',
     async (raw) => {
       const onFailure = vi.fn<RuntimeFailureSink>();
       const dispatcher = makeDispatcher(
@@ -483,13 +516,14 @@ describe('ToolDispatcher', () => {
       undefined,
       onFailure,
     );
-    expect(await dispatcher.dispatch('echo', '{broken', makeContext())).toEqual(
-      { ok: true, receipt: '{"status":"accepted"}' },
-    );
-    expect(await dispatcher.dispatch('echo', '[]', makeContext())).toEqual({
-      ok: true,
-      receipt: '{"status":"accepted"}',
-    });
+    for (const raw of ['{broken', '[]']) {
+      const result = await dispatcher.dispatch('echo', raw, makeContext());
+      expect(result.ok).toBe(false);
+      expect(JSON.parse(result.receipt)).toMatchObject({
+        status: 'error',
+        code: 'invalid_arguments',
+      });
+    }
     expect((await dispatcher.dispatch('broken', '{}', makeContext())).ok).toBe(
       false,
     );
@@ -503,7 +537,7 @@ describe('ToolDispatcher', () => {
       ok: true,
       receipt: '{"status":"error"}',
     });
-    expect(echo).toHaveBeenCalledTimes(2);
+    expect(echo).not.toHaveBeenCalled();
     expect(onFailure).toHaveBeenCalledTimes(6);
   });
 

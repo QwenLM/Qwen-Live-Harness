@@ -16,6 +16,7 @@ class Socket extends EventEmitter {
   readonly OPEN = 1;
   readyState = 1;
   readonly sent: Record<string, unknown>[] = [];
+  private readonly tools = new Map<string, Record<string, unknown>[]>();
   send(data: string | Uint8Array): void {
     this.sent.push(JSON.parse(String(data)) as Record<string, unknown>);
   }
@@ -43,18 +44,25 @@ class Socket extends EventEmitter {
     this.message({ type: 'response.created', response: { id } });
   }
   done(id: string, status = 'completed'): void {
-    this.message({ type: 'response.done', response: { id, status } });
+    this.message({
+      type: 'response.done',
+      response: { id, status, output: this.tools.get(id) ?? [] },
+    });
   }
   tool(responseId: string, callId: string): void {
+    const item = {
+      id: 'item-' + callId,
+      type: 'function_call',
+      status: 'completed',
+      name: 'handoff',
+      call_id: callId,
+      arguments: '{"task":"synthetic only"}',
+    };
+    this.tools.set(responseId, [...(this.tools.get(responseId) ?? []), item]);
     this.message({
       type: 'response.output_item.done',
       response_id: responseId,
-      item: {
-        type: 'function_call',
-        name: 'handoff',
-        call_id: callId,
-        arguments: '{"task":"synthetic only"}',
-      },
+      item,
     });
   }
   count(type: string): number {
@@ -111,88 +119,6 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}) {
 }
 
 describe('response state recovery', () => {
-  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
-  const imageRef = { callEpoch: 1, callId: 'capture' };
-
-  it('forwards tool images and recovers only the microphone audio buffered after media silence', async () => {
-    const onInputTranscriptDone = vi.fn();
-    const r = await rig({ onInputTranscriptDone });
-    const first = r.sockets[0]!;
-    first.user('question', 'Read this image.');
-    first.response('capture-response');
-    first.tool('capture-response', imageRef.callId);
-    first.done('capture-response');
-    const delivery = r.session.submitToolImage(imageRef, image);
-    const audio = new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]);
-    expect(r.session.pushAudio(audio)).toBe(true);
-    expect(first.count('input_image_buffer.append')).toBe(1);
-    first.message({ type: 'input_audio_buffer.committed', item_id: 'media' });
-    first.message({
-      type: 'conversation.item.input_audio_transcription.completed',
-      item_id: 'media',
-      transcript: '',
-    });
-    expect(await delivery).toBe(true);
-    expect(onInputTranscriptDone).toHaveBeenCalledTimes(1);
-    expect(r.session.submitFunctionOutput(imageRef, '{}')).toBe(true);
-    first.response('image-answer');
-    first.done('image-answer');
-    r.session.speakToUser('A pending notification.');
-    first.message({
-      type: 'input_audio_buffer.speech_started',
-      item_id: 'next-question',
-      audio_start_ms: 1000,
-    });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(r.sockets).toHaveLength(2);
-    const second = r.sockets[1]!;
-    second.ready();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(second.count('input_image_buffer.append')).toBe(0);
-    expect(
-      second.sent.filter(
-        (event) => event['type'] === 'input_audio_buffer.append',
-      ),
-    ).toEqual([
-      expect.objectContaining({ audio: Buffer.from(audio).toString('base64') }),
-    ]);
-  });
-
-  it.each([false, true])(
-    'rejects a retired tool image across recovery (already sent: %s)',
-    async (sent) => {
-      const r = await rig();
-      const first = r.sockets[0]!;
-      first.user('question', 'Read this image.');
-      first.response('capture-response');
-      first.tool('capture-response', imageRef.callId);
-      const delivery = sent
-        ? r.session.submitToolImage(imageRef, image)
-        : undefined;
-      r.session.cancelResponse();
-      await vi.advanceTimersByTimeAsync(20);
-      expect(r.sockets).toHaveLength(2);
-      if (delivery) expect(await delivery).toBe(false);
-      expect(await r.session.submitToolImage(imageRef, image)).toBe(false);
-      const second = r.sockets[1]!;
-      second.ready();
-      await vi.advanceTimersByTimeAsync(0);
-      first.message({
-        type: 'input_audio_buffer.committed',
-        item_id: 'late-media',
-      });
-      first.message({
-        type: 'conversation.item.input_audio_transcription.completed',
-        item_id: 'late-media',
-        transcript: '',
-      });
-      expect(await r.session.submitToolImage(imageRef, image)).toBe(false);
-      expect(second.count('input_image_buffer.append')).toBe(0);
-      expect(second.count('response.create')).toBe(0);
-      expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
-    },
-  );
-
   it.each(['respondToSearchResult', 'speakPeerReport'] as const)(
     'retains explicit notification language through the recovering %s facade',
     async (route) => {
@@ -213,14 +139,59 @@ describe('response state recovery', () => {
           outputLanguage: 'zh-CN',
         }),
       ).toBe(true);
-      const request = second.sent.at(-1)?.['response'] as {
-        instructions: string;
-      };
-      expect(request.instructions).toContain(
-        'The entire user-facing response MUST be in Simplified Chinese (zh-CN).',
+      const context = second.sent.findLast(
+        (event) => event['type'] === 'conversation.item.create',
+      );
+      const item = context?.['item'] as { content: [{ text: string }] };
+      expect(item.content[0].text).toContain('"output_language":"zh-CN"');
+      expect(item.content[0].text).toContain('English untrusted result');
+      expect(second.sent.at(-1)?.['response']).not.toHaveProperty(
+        'instructions',
       );
     },
   );
+
+  it('keeps the original system prompt on recovery while applying the latest tool surface', async () => {
+    const r = await rig();
+    const first = r.sockets[0]!;
+    first.user('input-before-recovery', '请继续');
+    // Extra fields from JavaScript callers must not change the logical call's
+    // system prompt, even though configure's TypeScript API only takes tools.
+    const settings = { tools: [], instructions: 'Do not use this prompt' };
+    expect(r.session.configure(settings)).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    const second = r.sockets[1]!;
+    const tools = [
+      {
+        type: 'function' as const,
+        function: {
+          name: 'appshot',
+          description: 'Synthetic screenshot',
+          parameters: { type: 'object' },
+        },
+      },
+    ];
+    // A settings change during the replacement handshake must survive it.
+    expect(r.session.configure({ tools })).toBe(true);
+    second.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    const updates = second.sent.filter(
+      (event) => event['type'] === 'session.update',
+    );
+    expect(updates[0]?.['session']).toMatchObject({
+      instructions: expect.stringContaining('Synthetic test only'),
+      tools: [],
+    });
+    expect(updates.at(-1)?.['session']).toMatchObject({ tools });
+    expect(
+      updates
+        .slice(1)
+        .every(
+          (event) => !Object.hasOwn(event['session'] as object, 'instructions'),
+        ),
+    ).toBe(true);
+    expect(JSON.stringify(second.sent)).not.toContain('Do not use this prompt');
+  });
 
   it('fences an unacknowledged permission and resumes the new stop request, never old tools', async () => {
     const r = await rig();
@@ -250,6 +221,7 @@ describe('response state recovery', () => {
     expect(r.onFunctionCall).not.toHaveBeenCalled();
     second.response('new-user-answer');
     second.tool('new-user-answer', 'new-tool');
+    second.done('new-user-answer');
     expect(r.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ callId: 'new-tool' }),
     );
@@ -297,6 +269,7 @@ describe('response state recovery', () => {
     expect(r.onFunctionCall).not.toHaveBeenCalled();
     socket.response('new-answer');
     socket.tool('new-answer', 'valid-tool');
+    socket.done('new-answer');
     expect(r.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ callId: 'valid-tool' }),
     );
@@ -309,8 +282,9 @@ describe('response state recovery', () => {
     first.user('clone-input', '克隆仓库');
     first.response('clone-response');
     first.tool('clone-response', 'clone-call');
+    first.done('clone-response');
     first.user('stop-input', '停止');
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(100);
     r.sockets[1]!.ready();
     await vi.advanceTimersByTimeAsync(0);
     expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
@@ -416,6 +390,51 @@ describe('response state recovery', () => {
     );
   });
 
+  it('replays only the freshest memory snapshot without dropping other queued context', async () => {
+    const holder: { session?: QwenRealtimeSession } = {};
+    const latest = '[MEMORY_CONTEXT] {"enabled":false,"revision":3}';
+    const r = await rig({
+      onTransportRecovery(event) {
+        if (event.phase === 'restoring')
+          holder.session!.sendBackendContext(latest);
+      },
+    });
+    holder.session = r.session;
+    r.sockets[0]!.user('input', '请继续');
+    await vi.advanceTimersByTimeAsync(100);
+    r.session.sendBackendContext(
+      '[MEMORY_CONTEXT] {"enabled":true,"revision":1}',
+    );
+    r.session.sendBackendContext('[PERMISSION] req_9 is still pending');
+    r.session.sendBackendContext(
+      '[MEMORY_CONTEXT] {"enabled":true,"revision":2}',
+    );
+    const second = r.sockets[1]!;
+    second.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    const contexts = second.sent.filter(
+      (event) => event['type'] === 'conversation.item.create',
+    );
+    const wire = contexts
+      .map((event) => {
+        const item = event['item'] as { content: [{ text: string }] };
+        return item.content[0].text;
+      })
+      .join('\n');
+    expect(wire).toContain('req_9 is still pending');
+    expect(wire).not.toContain('"revision":1');
+    expect(wire).not.toContain('"revision":2');
+    expect(
+      contexts.filter((event) =>
+        JSON.stringify(event).includes('[MEMORY_CONTEXT]'),
+      ),
+    ).toHaveLength(1);
+    expect(wire).toContain(latest);
+    expect(wire.indexOf('[MEMORY_CONTEXT]')).toBeLessThan(
+      wire.indexOf('请继续'),
+    );
+  });
+
   it('replays a complete microphone prefix once, then protocol silence and separately queued new audio', async () => {
     const onTransportRecovery = vi.fn();
     const r = await rig({ onTransportRecovery });
@@ -509,13 +528,15 @@ describe('response state recovery', () => {
     first.user('clone-input', '克隆仓库');
     first.response('old');
     first.tool('old', 'collision');
+    first.done('old');
     first.user('stop-input', '停止');
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(100);
     const second = r.sockets[1]!;
     second.ready();
     await vi.advanceTimersByTimeAsync(0);
     second.response('new');
     second.tool('new', 'collision');
+    second.done('new');
     expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
     expect(r.onError).toHaveBeenCalledWith(
       expect.objectContaining({

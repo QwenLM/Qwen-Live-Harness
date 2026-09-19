@@ -51,11 +51,14 @@ export class AppshotReadinessMonitor {
     if (!this.started) return;
     let state = EMPTY_READINESS;
     try {
-      const permissions = this.native().getPermissionState();
+      const native = this.native();
+      const permissions = native.getPermissionState();
       state = {
         accessibility: permission(permissions.accessibility),
         screenRecording: permission(permissions.screenRecording),
-        appshot: permissions.accessibility && permissions.screenRecording,
+        appshot:
+          permissions.screenRecording &&
+          typeof native.captureDisplay === 'function',
       };
     } catch {
       state = EMPTY_READINESS;

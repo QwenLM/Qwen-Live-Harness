@@ -7,6 +7,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { buildLiveInstructions } from './instructions.js';
+import { REALTIME_NOTIFICATION_INSTRUCTIONS } from './notification-context.js';
 import {
   openQwenRealtimeSession,
   type QwenRealtimeCallbacks,
@@ -18,7 +19,17 @@ class Socket extends EventEmitter {
   bufferedAmount = 0;
   sent: Record<string, unknown>[] = [];
   send(data: string | Uint8Array): void {
-    this.sent.push(JSON.parse(String(data)));
+    const event = JSON.parse(String(data)) as Record<string, unknown>;
+    this.sent.push(event);
+    const item = event['item'] as Record<string, unknown> | undefined;
+    if (item?.['type'] === 'function_call_output') {
+      queueMicrotask(() =>
+        this.message({
+          type: 'conversation.item.created',
+          item: { ...item, status: 'completed' },
+        }),
+      );
+    }
   }
   close(): void {
     this.readyState = 3;
@@ -64,9 +75,26 @@ function payload(language = 'zh-CN', action = 'Run command'): string {
   return `[PERMISSION] ${JSON.stringify({ request_id: 'req_1', session: 'session_1', action, fallback_language: language })}`;
 }
 
+function envelope(event: Record<string, unknown>, merged = false) {
+  const item = event['item'] as {
+    type: string;
+    role: string;
+    content: [{ type: string; text: string }];
+  };
+  expect(item.type).toBe('message');
+  expect(item.role).toBe('user');
+  expect(item.content[0].type).toBe('input_text');
+  const prefix = `${merged ? '[MERGE_WITH_USER] ' : ''}[NOTIFICATION] `;
+  expect(item.content[0].text.startsWith(prefix)).toBe(true);
+  return JSON.parse(item.content[0].text.slice(prefix.length)) as Record<
+    string,
+    unknown
+  >;
+}
+
 describe('permission response language and authority', () => {
   it.each(['zh-CN', 'en'] as const)(
-    'requires explicit %s output with no real user context, without verbatim speech',
+    'carries the %s fallback separately from the quoted action without replacing system instructions',
     async (language) => {
       const callbacks = { onResponseCreated: vi.fn() };
       const { socket, session } = await connect(callbacks);
@@ -83,28 +111,20 @@ describe('permission response language and authority', () => {
           'conversation.item.create',
           'response.create',
         ]);
-        expect(socket.sent[1]).toMatchObject({
-          item: { content: [{ text: `[BACKEND] ${text}` }] },
+        expect(envelope(socket.sent[1]!)).toEqual({
+          kind: 'permission',
+          fallback_language: language,
+          payload: text,
         });
         expect(JSON.stringify(socket.sent.slice(1))).not.toContain(
           '[SPEAK_TO_USER]',
         );
         const instructions = (
-          socket.sent[2]?.['response'] as { instructions: string }
+          socket.sent[0]?.['session'] as { instructions: string }
         ).instructions;
-        expect(instructions).toContain(
-          language === 'zh-CN'
-            ? 'Output language: Simplified Chinese (zh-CN)'
-            : 'Output language: English (en)',
-        );
-        expect(instructions).toContain(
-          'There is no established real-user language context',
-        );
-        expect(instructions).toContain(
-          'Do not translate or alter literal commands',
-        );
-        expect(instructions).toContain(JSON.stringify(text));
-        expect(instructions).toContain('not a progress update');
+        expect(instructions).toContain(REALTIME_NOTIFICATION_INSTRUCTIONS);
+        expect(instructions).not.toContain(text);
+        expect(socket.sent[2]?.['response']).not.toHaveProperty('instructions');
         socket.message({
           type: 'response.created',
           response: { id: 'permission-1' },
@@ -125,21 +145,18 @@ describe('permission response language and authority', () => {
         fallbackLanguage: 'en',
         userLanguageSamples: ['请你把这个仓库克隆到下载目录。', '好的。'],
       });
-      const instructions = (
-        socket.sent.at(-1)?.['response'] as { instructions: string }
-      ).instructions;
-      expect(instructions).toContain(
-        "real user's current conversational language",
+      expect(envelope(socket.sent[1]!)).toEqual({
+        kind: 'permission',
+        fallback_language: 'en',
+        language_samples: ['请你把这个仓库克隆到下载目录。', '好的。'],
+        payload: payload('en'),
+      });
+      expect(socket.sent.at(-1)?.['response']).not.toHaveProperty(
+        'instructions',
       );
-      expect(instructions).toContain('请你把这个仓库克隆到下载目录。');
-      expect(instructions).toContain('UI language must not override it');
-      expect(instructions).toContain(
-        'never copy their destinations, names, facts',
-      );
-      expect(instructions).toContain(
-        'Do not infer its command, purpose or target from language samples',
-      );
-      expect(instructions).not.toContain('Output language: English (en)');
+      expect(
+        socket.sent.filter((event) => event['type'] === 'session.update'),
+      ).toHaveLength(1);
     } finally {
       session.close({ discardPendingInput: true });
     }
@@ -156,20 +173,26 @@ describe('permission response language and authority', () => {
         type: 'response.created',
         response: { id: 'permission-untrusted' },
       });
+      const call = {
+        type: 'function_call',
+        status: 'completed',
+        id: 'item-permission',
+        call_id: 'call-permission',
+        name: 'respond_permission',
+        arguments: '{"request_id":"req_1","decision":"allow"}',
+      };
       socket.message({
         type: 'response.output_item.done',
         response_id: 'permission-untrusted',
-        item: {
-          type: 'function_call',
-          id: 'item-permission',
-          call_id: 'call-permission',
-          name: 'respond_permission',
-          arguments: '{"request_id":"req_1","decision":"allow"}',
-        },
+        item: call,
       });
       socket.message({
         type: 'response.done',
-        response: { id: 'permission-untrusted', status: 'completed' },
+        response: {
+          id: 'permission-untrusted',
+          status: 'completed',
+          output: [call],
+        },
       });
       await Promise.resolve();
       expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
@@ -207,10 +230,15 @@ describe('permission response language and authority', () => {
       expect(
         socket.sent.filter((event) => event['type'] === 'response.create'),
       ).toHaveLength(1);
-      session.askPermission?.(payload());
-      expect(socket.sent.at(-1)).toMatchObject({
-        type: 'conversation.item.create',
-        item: { content: [{ text: `[MERGE_WITH_USER] ${payload()}` }] },
+      session.askPermission?.(payload(), {
+        fallbackLanguage: 'en',
+        outputLanguage: 'zh-CN',
+      });
+      expect(envelope(socket.sent.at(-1)!, true)).toEqual({
+        kind: 'permission',
+        output_language: 'zh-CN',
+        fallback_language: 'en',
+        payload: payload(),
       });
       expect(
         socket.sent.filter((event) => event['type'] === 'response.create'),
@@ -253,16 +281,23 @@ describe('permission response language and authority', () => {
         type: 'response.created',
         response: { id: 'real-answer' },
       });
+      const call = {
+        type: 'function_call',
+        status: 'completed',
+        id: 'real-vote-item',
+        call_id: 'real-vote',
+        name: 'respond_permission',
+        arguments: '{"request_id":"req_1","decision":"allow"}',
+      };
       socket.message({
         type: 'response.output_item.done',
         response_id: 'real-answer',
-        item: {
-          type: 'function_call',
-          id: 'real-vote-item',
-          call_id: 'real-vote',
-          name: 'respond_permission',
-          arguments: '{"request_id":"req_1","decision":"allow"}',
-        },
+        item: call,
+      });
+      expect(callbacks.onFunctionCall).not.toHaveBeenCalled();
+      socket.message({
+        type: 'response.done',
+        response: { id: 'real-answer', status: 'completed', output: [call] },
       });
       expect(callbacks.onFunctionCall).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
@@ -274,9 +309,7 @@ describe('permission response language and authority', () => {
       const response = socket.sent
         .filter((event) => event['type'] === 'response.create')
         .at(-1);
-      expect(JSON.stringify(response)).not.toContain(
-        'Pending permission (quoted JSON string)',
-      );
+      expect(response?.['response']).not.toHaveProperty('instructions');
     } finally {
       session.close({ discardPendingInput: true });
     }

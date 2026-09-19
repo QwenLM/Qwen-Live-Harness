@@ -41,7 +41,7 @@ export const SUBAGENT_STOP_REASONS = [
 ] as const;
 export type SubagentTask = {
   id: string;
-  kind: 'harness' | 'proactive' | 'search';
+  kind: 'harness' | 'proactive' | 'search' | 'visual';
   title: string;
   status: SubagentStatus;
   createdAt: number;
@@ -56,7 +56,8 @@ export type SubagentTask = {
   events: SubagentActivity[];
   triggerCount?: number;
   pendingNotifications?: number;
-  notification?: 'queued' | 'speaking' | 'delivered';
+  notification?:
+    'queued' | 'preparing' | 'speaking' | 'delivered' | 'undelivered';
   remainingSec?: number;
   canStop?: boolean;
   stopReason?: (typeof SUBAGENT_STOP_REASONS)[number];
@@ -367,7 +368,7 @@ function validTask(task: unknown): task is SubagentTask {
     !record(task) ||
     !identifier(task['id']) ||
     typeof task['kind'] !== 'string' ||
-    !['harness', 'proactive', 'search'].includes(task['kind']) ||
+    !['harness', 'proactive', 'search', 'visual'].includes(task['kind']) ||
     !text(task['title'], 240) ||
     !SUBAGENT_STATUSES.includes(task['status'] as SubagentStatus) ||
     !number(task['createdAt']) ||
@@ -406,7 +407,9 @@ function validTask(task: unknown): task is SubagentTask {
   if (
     task['notification'] !== undefined &&
     (typeof task['notification'] !== 'string' ||
-      !['queued', 'speaking', 'delivered'].includes(task['notification']))
+      !['queued', 'preparing', 'speaking', 'delivered', 'undelivered'].includes(
+        task['notification'],
+      ))
   )
     return false;
   return task['events'].every(

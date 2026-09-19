@@ -20,7 +20,11 @@ import {
   type DashScopeRealtimeMonitorOptions,
   type ProactiveRealtimeMonitor,
 } from './realtime-monitor.js';
-import { ProactiveScheduler, type ProactiveDelivery } from './scheduler.js';
+import {
+  ProactiveScheduler,
+  type ProactiveDelivery,
+  type ProactiveNotificationState,
+} from './scheduler.js';
 import type { ProactiveTask } from './task-manager.js';
 
 class FakeMonitor implements ProactiveRealtimeMonitor {
@@ -127,12 +131,10 @@ const activeSchedulers: ProactiveScheduler[] = [];
 
 function config(): ProactiveConfig {
   // These scheduler timing fixtures intentionally exercise configurable 2s
-  // polling / 1fps capture. The product's 1s / 2fps defaults have their own
-  // propagation test below; fixed media chunk behavior is tested on the real
+  // polling with fixed 1fps capture. Fixed media chunk behavior is tested on the real
   // DashScopeRealtimeMonitor rather than this permissive fake.
   const fixture = structuredClone(DEFAULT_PROACTIVE_CONFIG);
   fixture.scheduler.evalIntervalSec = 2;
-  fixture.vision.fps = 1;
   return fixture;
 }
 
@@ -149,7 +151,7 @@ function createHarness(
     onTaskFailed?: (task: ProactiveTask, error: string) => void;
     onTaskChanged?: (
       task: ProactiveTask,
-      notification?: 'queued' | 'speaking' | 'delivered',
+      notification?: ProactiveNotificationState,
     ) => void;
     debug?: (event: string, details: Record<string, unknown>) => void;
     monitorDebug?: MonitorDebugStore;
@@ -429,7 +431,123 @@ afterEach(() => {
 });
 
 describe('ProactiveScheduler', () => {
-  it('retains two-fps capture under completion jitter and aligns it with real one-second audio clips', async () => {
+  it('preserves bound narration preferences through Monitor initialization, style updates and foreground events', () => {
+    const { scheduler, monitors, deliveries } = createHarness();
+    const sourceRequest = '请用英语持续描述画面，给初学者讲解。';
+    scheduler.createLiveNarration({
+      title: 'Screen narration',
+      modalities: ['vision'],
+      narrationFocus: 'New windows and meaningful changes',
+      narrationPreferences: { sourceRequest, fallbackLanguage: 'zh-CN' },
+    });
+    const firstInstruction = monitors[0]!.options.instruction;
+    const first = JSON.parse(firstInstruction.split('\n').at(-1)!);
+    expect(first).toMatchObject({
+      source_request: sourceRequest,
+      narration_focus: 'New windows and meaningful changes',
+      defaults: { fallback_language: 'zh-CN' },
+    });
+    scheduler.updateTask({
+      targetTitle: 'Screen narration',
+      narrationStyle: 'Use a lighter tone.',
+    });
+    expect(monitors[0]!.closed).toBe(true);
+    const updated = JSON.parse(
+      monitors[1]!.options.instruction.split('\n').at(-1)!,
+    );
+    expect(updated).toMatchObject({
+      source_request: sourceRequest,
+      style_override: 'Use a lighter tone.',
+    });
+    monitors[1]!.result(true, 'A new window opened.');
+    const data = JSON.parse(
+      deliveries[0]!.event
+        .replace('[PROACTIVE_EVENT]', '')
+        .replace('[/PROACTIVE_EVENT]', '')
+        .trim(),
+    );
+    expect(data).toMatchObject({
+      summary: 'A new window opened.',
+      narration_preferences: {
+        source_request: sourceRequest,
+        fallback_language: 'zh-CN',
+        style_override: 'Use a lighter tone.',
+        narration_focus: 'New windows and meaningful changes',
+      },
+    });
+  });
+
+  it.each([false, true])(
+    'retires an undelivered notification without recreating or failing its monitor (repeat=%s)',
+    (repeat) => {
+      const changed = vi.fn();
+      const { scheduler, monitors, deliveries, failures } = createHarness(
+        config(),
+        { onTaskChanged: changed },
+      );
+      const task = scheduler.createPerceptionMonitor({
+        title: 'Knocking',
+        modalities: ['audio'],
+        condition: 'Knocking is heard',
+        triggerResponse: 'Notify',
+        repeat,
+      });
+      monitors[0]!.result(true, 'A knocking sound was heard');
+      const delivery = deliveries[0]!;
+      scheduler.announcementStarted(delivery);
+      expect(changed.mock.lastCall?.[1]).toBe('preparing');
+      scheduler.undeliverDelivery(
+        delivery,
+        'Notification speech was interrupted.',
+      );
+      expect(changed.mock.lastCall?.[0]).toMatchObject({
+        taskId: task.taskId,
+        status: repeat ? 'running' : 'completed',
+        triggerCount: 1,
+        pendingDeliveryCount: 0,
+      });
+      expect(changed.mock.lastCall?.[1]).toBe('undelivered');
+      expect(scheduler.listTasks()).toHaveLength(repeat ? 1 : 0);
+      expect(failures).toEqual([]);
+      expect(monitors).toHaveLength(1);
+      expect(deliveries).toHaveLength(1);
+      scheduler.acknowledgeDelivery(delivery);
+      scheduler.playbackStarted(delivery);
+      expect(changed.mock.lastCall?.[1]).toBe('undelivered');
+      vi.advanceTimersByTime(31_000);
+      expect(failures).toEqual([]);
+    },
+  );
+
+  it('times out a fallback delivery without failing the repeating monitor and invalidates its late output', () => {
+    const changed = vi.fn();
+    const { scheduler, monitors, deliveries, failures, invalidated } =
+      createHarness(config(), { onTaskChanged: changed });
+    const task = scheduler.createPerceptionMonitor({
+      title: 'Knocking',
+      modalities: ['audio'],
+      condition: 'Knocking',
+      triggerResponse: 'Notify',
+      repeat: true,
+    });
+    monitors[0]!.result(true);
+    const delivery = deliveries[0]!;
+    scheduler.announcementStarted(delivery, { fallback: true });
+    vi.advanceTimersByTime(31_000);
+    expect(failures).toEqual([]);
+    expect(invalidated).toContainEqual(delivery);
+    expect(changed.mock.lastCall?.[1]).toBe('undelivered');
+    expect(scheduler.listTasks()[0]).toMatchObject({
+      taskId: task.taskId,
+      status: 'running',
+      triggerCount: 1,
+      pendingDeliveryCount: 0,
+    });
+    scheduler.acknowledgeDelivery(delivery);
+    expect(changed.mock.lastCall?.[1]).toBe('undelivered');
+  });
+
+  it('retains fixed one-fps capture under completion jitter and aligns it with real two-second audio clips', async () => {
     class Socket extends EventEmitter {
       readonly OPEN = 1;
       readyState = 1;
@@ -454,8 +572,9 @@ describe('ProactiveScheduler', () => {
       );
       return '/9j/2Q==';
     });
+    const proactive = structuredClone(DEFAULT_PROACTIVE_CONFIG);
     const scheduler = new ProactiveScheduler({
-      config: structuredClone(DEFAULT_PROACTIVE_CONFIG),
+      config: proactive,
       realtime: {
         endpoint: 'https://test.example',
         model: 'qwen3.8-omni-flash-realtime',
@@ -483,7 +602,7 @@ describe('ProactiveScheduler', () => {
       20,
     );
     try {
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(3_000);
       expect(
         socket.sent.filter(
           (event) => event['type'] === 'input_audio_buffer.commit',
@@ -500,7 +619,7 @@ describe('ProactiveScheduler', () => {
             .filter((event) => event['type'] === 'input_audio_buffer.append')
             .map((event) => Buffer.from(String(event['audio']), 'base64')),
         ),
-      ).toEqual(Buffer.alloc(32_000, 7));
+      ).toEqual(Buffer.alloc(64_000, 7));
       socket.message({ type: 'input_audio_buffer.committed' });
       socket.message({
         type: 'response.text.done',
@@ -511,7 +630,7 @@ describe('ProactiveScheduler', () => {
         type: 'response.done',
         response: { id: 'first', status: 'completed' },
       });
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
       expect(
         socket.sent.filter(
           (event) => event['type'] === 'input_audio_buffer.commit',
@@ -531,12 +650,13 @@ describe('ProactiveScheduler', () => {
     }
   });
 
-  it('passes the default one-second clip and two-fps capture contract to monitors', async () => {
+  it('uses fixed one-fps capture without forwarding configurable media cadence to monitors', async () => {
     const captureVision = vi.fn(async () => 'test-frame');
-    const { scheduler, monitors } = createHarness(
-      structuredClone(DEFAULT_PROACTIVE_CONFIG),
-      { captureVision },
-    );
+    const proactive = structuredClone(DEFAULT_PROACTIVE_CONFIG);
+    // Programmatic callers cannot revive removed config fields either.
+    Object.assign(proactive.vision, { fps: 60 });
+    Object.assign(proactive.monitor, { chunkDurationSec: 0.25 });
+    const { scheduler, monitors } = createHarness(proactive, { captureVision });
     scheduler.createPerceptionMonitor({
       title: 'Screen watch',
       modalities: ['vision'],
@@ -544,11 +664,9 @@ describe('ProactiveScheduler', () => {
       triggerResponse: 'Tell me',
       repeat: false,
     });
-    expect(monitors[0]!.options).toMatchObject({
-      chunkDurationSec: 1,
-      visionFps: 2,
-    });
-    await vi.advanceTimersByTimeAsync(1_000);
+    expect(monitors[0]!.options).not.toHaveProperty('chunkDurationSec');
+    expect(monitors[0]!.options).not.toHaveProperty('visionFps');
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(captureVision).toHaveBeenCalledTimes(2);
   });
   it('diagnoses ignored function calls without triggering or failing a task', () => {
@@ -686,6 +804,7 @@ describe('ProactiveScheduler', () => {
       generation: 1,
     });
     scheduler.announcementStarted(delivery);
+    scheduler.playbackStarted(delivery);
     vi.advanceTimersByTime(15);
     expect(scheduler.deferDelivery(delivery)).toBe(true);
     vi.advanceTimersByTime(31_000);
@@ -695,6 +814,7 @@ describe('ProactiveScheduler', () => {
       pendingDeliveryCount: 1,
     });
     scheduler.announcementStarted(delivery);
+    scheduler.playbackStarted(delivery);
     scheduler.acknowledgeDelivery(delivery);
     const stateLogs = debug.mock.calls
       .filter(([event]) => event === 'proactive.task_state')
@@ -709,8 +829,10 @@ describe('ProactiveScheduler', () => {
       ['none', 0],
       ['none', 0],
       ['queued', 1],
+      ['preparing', 1],
       ['speaking', 1],
       ['queued', 1],
+      ['preparing', 1],
       ['speaking', 1],
       ['delivered', 0],
     ]);
@@ -1230,6 +1352,8 @@ describe('ProactiveScheduler', () => {
     monitors[0]!.result(true, 'A cat appeared');
     const delivery = deliveries[0]!;
     scheduler.announcementStarted(delivery);
+    expect(observed.at(-1)?.notification).toBe('preparing');
+    scheduler.playbackStarted(delivery);
     expect(observed.at(-1)?.notification).toBe('speaking');
     scheduler.acknowledgeDelivery(delivery);
     expect(observed.at(-1)).toMatchObject({
@@ -1292,7 +1416,7 @@ describe('ProactiveScheduler', () => {
 
   it('does not warm a single frame by waiting or carry warm-up across a capture gap', () => {
     const proactive = config();
-    proactive.vision = { fps: 5, windowSizeSec: 2, minEvalDurationSec: 2 };
+    proactive.vision = { windowSizeSec: 2, minEvalDurationSec: 2 };
     const { scheduler, monitors } = createHarness(proactive);
     scheduler.createPerceptionMonitor({
       title: 'Watch',
@@ -1322,7 +1446,7 @@ describe('ProactiveScheduler', () => {
 
   it('requires fresh warm-up after resetting the visual source', () => {
     const proactive = config();
-    proactive.vision = { fps: 5, windowSizeSec: 2, minEvalDurationSec: 2 };
+    proactive.vision = { windowSizeSec: 2, minEvalDurationSec: 2 };
     const { scheduler, monitors } = createHarness(proactive);
     scheduler.createPerceptionMonitor({
       title: 'Watch',

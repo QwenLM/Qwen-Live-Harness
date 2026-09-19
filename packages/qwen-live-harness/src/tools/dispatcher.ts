@@ -27,11 +27,15 @@ const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
 const TIMEOUT_NOTE =
   'The action is still running in the background and may yet finish. Do ' +
   'not retry the call; check on it with session_monitor.';
+const INVALID_ARGUMENTS_NOTE =
+  'Tool arguments must be a valid JSON object. No action was executed.';
 
 /** Per-call context threaded through from the realtime function-call event. */
 export interface ToolContext {
   /** Transcript tail captured at call time (capturesTranscript tools). */
   activeTranscript: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>;
+  /** Current real user's request, not a synthetic notification or earlier turn. */
+  userRequest?: string;
 }
 
 export type ToolHandler = (
@@ -68,8 +72,7 @@ function parseArguments(
   raw: string,
   name: string,
   onFailure: RuntimeFailureSink | undefined,
-): Record<string, unknown> {
-  if (!raw.trim()) return {};
+): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
@@ -80,8 +83,7 @@ function parseArguments(
       stage: 'arguments',
       impact: 'operation',
       toolName: name,
-      message:
-        'Tool arguments were not an object; the handler receives an empty object.',
+      message: 'Tool arguments were not an object; the tool was not executed.',
     });
   } catch (error) {
     emitRuntimeFailure(onFailure, {
@@ -91,11 +93,10 @@ function parseArguments(
       impact: 'operation',
       toolName: name,
       errorName: errorName(error),
-      message:
-        'Tool arguments were not valid JSON; the handler receives an empty object.',
+      message: 'Tool arguments were not valid JSON; the tool was not executed.',
     });
   }
-  return {};
+  return undefined;
 }
 
 class ToolTimeoutError extends Error {
@@ -139,6 +140,16 @@ export class ToolDispatcher {
       };
     }
     const args = parseArguments(rawArguments, name, this.onFailure);
+    if (args === undefined) {
+      return {
+        ok: false,
+        receipt: JSON.stringify({
+          status: 'error',
+          code: 'invalid_arguments',
+          note: INVALID_ARGUMENTS_NOTE,
+        }),
+      };
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stage: 'handler' | 'serialization' = 'handler';
     try {

@@ -58,6 +58,7 @@ struct AsyncDisplayCaptureWork {
   napi_async_work work = nullptr;
   std::string selection;
   std::string display_id;
+  bool native_resolution = false;
   std::vector<uint8_t> screenshot;
   std::string error;
 };
@@ -494,13 +495,15 @@ std::vector<uint8_t> CapturePng(const WindowTarget& target) {
   return EncodePng(image);
 }
 
-CGSize DisplayImageSize(CGFloat width, CGFloat height) {
+CGSize DisplayImageSize(CGFloat width, CGFloat height, bool native_resolution) {
+  if (native_resolution) return CGSizeMake(width, height);
   const CGFloat scale = std::min({1.0, 1920.0 / width, 1080.0 / height});
   return CGSizeMake(std::max<CGFloat>(1, std::floor(width * scale)),
                     std::max<CGFloat>(1, std::floor(height * scale)));
 }
 
-CGImageRef CaptureDisplayWithScreenCaptureKit(const DisplayTarget& target) {
+CGImageRef CaptureDisplayWithScreenCaptureKit(const DisplayTarget& target,
+                                            bool native_resolution) {
   if (@available(macOS 14.0, *)) {
     dispatch_semaphore_t content_semaphore = dispatch_semaphore_create(0);
     __block SCShareableContent* shareable_content = nil;
@@ -540,8 +543,22 @@ CGImageRef CaptureDisplayWithScreenCaptureKit(const DisplayTarget& target) {
     if (@available(macOS 14.2, *)) filter.includeMenuBar = YES;
     SCStreamConfiguration* configuration = [[SCStreamConfiguration alloc] init];
     const CGFloat pixel_scale = std::max<CGFloat>(1, filter.pointPixelScale);
-    const CGSize size = DisplayImageSize(selected_display.width * pixel_scale,
-                                        selected_display.height * pixel_scale);
+    CGFloat pixel_width = selected_display.width * pixel_scale;
+    CGFloat pixel_height = selected_display.height * pixel_scale;
+    if (native_resolution) {
+      CGDisplayModeRef mode = CGDisplayCopyDisplayMode(target.display_id);
+      if (mode == nullptr) return nullptr;
+      pixel_width = CGDisplayModeGetPixelWidth(mode);
+      pixel_height = CGDisplayModeGetPixelHeight(mode);
+      CGDisplayModeRelease(mode);
+    }
+    if (native_resolution &&
+        (pixel_width < 1 || pixel_height < 1 ||
+         pixel_width > 16384 || pixel_height > 16384 ||
+         pixel_width * pixel_height > 64 * 1024 * 1024))
+      return nullptr;
+    const CGSize size = DisplayImageSize(pixel_width, pixel_height,
+                                        native_resolution);
     configuration.width = static_cast<size_t>(size.width);
     configuration.height = static_cast<size_t>(size.height);
     configuration.preservesAspectRatio = YES;
@@ -577,11 +594,12 @@ CGImageRef CaptureDisplayWithScreenCaptureKit(const DisplayTarget& target) {
   return nullptr;
 }
 
-std::vector<uint8_t> CaptureDisplayPng(const DisplayTarget& target) {
+std::vector<uint8_t> CaptureDisplayPng(const DisplayTarget& target,
+                                     bool native_resolution) {
   if (DisplayUuid(target.display_id) != target.uuid) return {};
   CGImageRef image = nullptr;
   if (@available(macOS 14.0, *)) {
-    image = CaptureDisplayWithScreenCaptureKit(target);
+    image = CaptureDisplayWithScreenCaptureKit(target, native_resolution);
   } else {
     CFArrayRef info = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
@@ -602,8 +620,15 @@ std::vector<uint8_t> CaptureDisplayPng(const DisplayTarget& target) {
     CFRelease(ids);
   }
   if (image == nullptr) return {};
+  if (native_resolution &&
+      (CGImageGetWidth(image) > 16384 || CGImageGetHeight(image) > 16384 ||
+       CGImageGetWidth(image) * CGImageGetHeight(image) > 64 * 1024 * 1024)) {
+    CGImageRelease(image);
+    return {};
+  }
   const CGSize size =
-      DisplayImageSize(CGImageGetWidth(image), CGImageGetHeight(image));
+      DisplayImageSize(CGImageGetWidth(image), CGImageGetHeight(image),
+                       native_resolution);
   if (size.width != CGImageGetWidth(image) ||
       size.height != CGImageGetHeight(image)) {
     CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
@@ -712,7 +737,7 @@ void ExecuteDisplayCapture(napi_env, void* data) {
       work->error = "DISPLAY_UNAVAILABLE";
       return;
     }
-    work->screenshot = CaptureDisplayPng(*target);
+    work->screenshot = CaptureDisplayPng(*target, work->native_resolution);
     const auto current = ResolveDisplay(work->selection);
     if (!current.has_value() || current->uuid != target->uuid ||
         current->display_id != target->display_id ||
@@ -740,6 +765,8 @@ void CompleteDisplayCapture(napi_env env, napi_status status, void* data) {
     napi_value result = nullptr;
     napi_create_object(env, &result);
     Set(env, result, "displayId", String(env, work->display_id));
+    if (work->native_resolution)
+      Set(env, result, "nativeResolution", Boolean(env, true));
     napi_value screenshot = nullptr;
     napi_create_buffer_copy(env, work->screenshot.size(), work->screenshot.data(),
                             nullptr, &screenshot);
@@ -751,21 +778,24 @@ void CompleteDisplayCapture(napi_env env, napi_status status, void* data) {
 }
 
 napi_value CaptureDisplay(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argument = nullptr;
-  napi_get_cb_info(env, info, &argc, &argument, nullptr, nullptr);
+  size_t argc = 2;
+  napi_value arguments[2] = {};
+  napi_get_cb_info(env, info, &argc, arguments, nullptr, nullptr);
   char selection[37] = {};
   size_t length = 0;
-  if (argc != 1 ||
-      napi_get_value_string_utf8(env, argument, nullptr, 0, &length) != napi_ok ||
+  bool native_resolution = false;
+  if (argc < 1 ||
+      (argc == 2 && napi_get_value_bool(env, arguments[1], &native_resolution) != napi_ok) ||
+      napi_get_value_string_utf8(env, arguments[0], nullptr, 0, &length) != napi_ok ||
       (length != 36 && length != 7) ||
-      napi_get_value_string_utf8(env, argument, selection, sizeof(selection),
+      napi_get_value_string_utf8(env, arguments[0], selection, sizeof(selection),
                                  &length) != napi_ok) {
     napi_throw_error(env, "DISPLAY_UNAVAILABLE", "DISPLAY_UNAVAILABLE");
     return nullptr;
   }
   AsyncDisplayCaptureWork* work = new AsyncDisplayCaptureWork{};
   work->selection = std::string(selection, length);
+  work->native_resolution = native_resolution;
   napi_value promise = nullptr;
   if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
     delete work;

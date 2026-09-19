@@ -209,12 +209,6 @@ describe('recoverable Host audio failures', () => {
       ],
       ['camera', 'camera', 'camera_permission', 'runtime.cameraPermission'],
       [
-        'accessibility',
-        'screen',
-        'accessibility_permission',
-        'runtime.accessibilityPermission',
-      ],
-      [
         'screenRecording',
         'screen',
         'screen_recording_permission',
@@ -261,7 +255,7 @@ describe('recoverable Host audio failures', () => {
     const f = fixture();
     f.controls.failRecoverableAudio('audio_capture_start_timeout');
     f.context.selfChecks.audioInput = false;
-    f.context.visualInput.mode = 'live-feed';
+    f.context.visualInput.mode = 'on-demand';
     f.context.permissions.camera = 'denied';
     f.context.permissions.accessibility = 'denied';
     const state = f.controls.publicState();

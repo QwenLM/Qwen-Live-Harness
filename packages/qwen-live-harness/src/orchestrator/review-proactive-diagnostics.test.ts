@@ -51,7 +51,6 @@ function harness(openOverride?: typeof openQwenRealtimeSession) {
     pushAudio: vi.fn(() => true),
     setInputMuted: vi.fn(),
     pushImage: vi.fn(() => true),
-    submitToolImage: vi.fn(async () => true),
     commitInputAudio: vi.fn(() => true),
     clearInputAudio: vi.fn(() => true),
     cancelResponse: vi.fn(() => true),
@@ -257,7 +256,7 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
     expect(failureReceipt).toContain('repeat=true');
   });
 
-  it('R1-23 location 2: accepts all 26 current schema keys and rejects extra keys', async () => {
+  it('R1-23 location 2: accepts all 25 current schema keys and rejects extra keys', async () => {
     const observed = harness();
     await observed.start();
     let properties = 0;
@@ -282,6 +281,6 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
         'Unknown Proactive argument: extra_review_key.',
       );
     }
-    expect(properties).toBe(26);
+    expect(properties).toBe(25);
   });
 });

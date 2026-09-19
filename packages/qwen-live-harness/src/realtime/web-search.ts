@@ -12,6 +12,8 @@ import {
   type QwenRealtimeDeps,
 } from './realtime-session.js';
 import type { SocketLike } from './socket.js';
+import type { DebugArchive } from '../log/debug-archive.js';
+import { createDebugSocket } from '../log/debug-socket.js';
 
 const MAX_QUERY_CHARS = 4_096;
 const MAX_ANSWER_CHARS = 16_000;
@@ -33,6 +35,8 @@ export interface QwenRealtimeSearchOptions {
   model: string;
   query: string;
   signal?: AbortSignal;
+  debugArchive?: DebugArchive;
+  debugContext?: Record<string, unknown>;
 }
 
 export interface QwenRealtimeSearchDeps {
@@ -224,14 +228,26 @@ export function searchQwenRealtime(
     };
 
     try {
-      socket = createWebSocket(url, {
-        headers: options.apiKey
-          ? { Authorization: `Bearer ${options.apiKey}` }
-          : {},
-        maxPayload: QWEN_REALTIME_LIMITS.maxIncomingMessageBytes,
-        perMessageDeflate: false,
-        handshakeTimeout: Math.min(HANDSHAKE_TIMEOUT_MS, timeoutMs),
-      });
+      socket = createDebugSocket(
+        () =>
+          createWebSocket(url, {
+            headers: options.apiKey
+              ? { Authorization: `Bearer ${options.apiKey}` }
+              : {},
+            maxPayload: QWEN_REALTIME_LIMITS.maxIncomingMessageBytes,
+            perMessageDeflate: false,
+            handshakeTimeout: Math.min(HANDSHAKE_TIMEOUT_MS, timeoutMs),
+          }),
+        {
+          debugArchive: options.debugArchive,
+          info: {
+            ...options.debugContext,
+            kind: 'search',
+            model: options.model,
+            endpoint: options.endpoint,
+          },
+        },
+      );
       socket.on('error', () =>
         finish(undefined, searchError('web_search_failed')),
       );

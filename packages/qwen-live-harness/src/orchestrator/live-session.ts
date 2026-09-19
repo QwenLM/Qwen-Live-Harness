@@ -44,6 +44,7 @@ import type { MemoryService } from '../memory/service.js';
 import { renderWmReceipt, type MemorySession } from '../memory/session.js';
 import { MemoryDialogueCollector } from '../memory/dialogue.js';
 import {
+  memoryContextMessage,
   MEMORY_SYSTEM_PROMPT,
   MEMORY_TOOLS,
   MEMORY_TOOL_NAMES,
@@ -56,12 +57,18 @@ import type {
 } from '../host/types.js';
 import { buildLiveInstructions } from '../realtime/instructions.js';
 import { searchQwenRealtime } from '../realtime/web-search.js';
+import {
+  synthesizeNotificationSpeech,
+  type NotificationNarrationPreferences,
+} from '../realtime/notification-speech.js';
+import { analyzeQwenRealtimeImage } from '../realtime/visual-analysis.js';
 import { openRecoveringQwenRealtimeSession } from '../realtime/recovering-session.js';
 import {
   openQwenRealtimeSession,
   MAX_REALTIME_INSTRUCTIONS_CHARS,
   QwenRealtimeError,
   QWEN_REALTIME_LIMITS,
+  QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
   type QwenRealtimeSession,
   type RealtimeEventContext,
   type RealtimeCloseInfo,
@@ -74,6 +81,12 @@ import {
   type RealtimeTranscriptEntry,
 } from '../realtime/realtime-session.js';
 import type { SessionLog } from '../log/session-log.js';
+import type { DebugArchive } from '../log/debug-archive.js';
+import {
+  observeDebugControl,
+  DEBUG_HOST_METHODS,
+  DEBUG_BACKEND_METHODS,
+} from '../log/debug-control.js';
 import {
   emitRuntimeFailure,
   runtimeFailureRecord,
@@ -90,8 +103,14 @@ import {
   type ProactiveDelivery,
   type ProactiveSchedulerControl,
   type ProactiveSchedulerOptions,
+  type ProactiveNotificationState,
 } from '../proactive/scheduler.js';
 import type { ProactiveTask } from '../proactive/task-manager.js';
+import {
+  DEFAULT_NARRATION_STYLE,
+  MAX_NARRATION_SOURCE_CHARS,
+  type NarrationPreferences,
+} from '../proactive/monitor-protocol.js';
 import {
   buildProactiveCancelReceipt,
   buildProactiveCreateReceipt,
@@ -195,6 +214,11 @@ const PERSISTED_PROACTIVE_DEBUG_EVENTS = new Set([
   'proactive.cooldown_started',
   'proactive.cooldown_resumed',
   'proactive.cooldown_audio_dropped',
+  'proactive.fallback_queued',
+  'proactive.fallback_started',
+  'proactive.fallback_audio_ready',
+  'proactive.fallback_delivered',
+  'proactive.fallback_undelivered',
   'proactive.buffer_reset',
   'proactive.event_queued',
   'proactive.delivery_acknowledged',
@@ -215,6 +239,7 @@ interface ProactiveTaskContext {
 
 interface PendingProactiveRepair {
   kind: ProactiveRepairKind;
+  inputItemId?: string;
   adjacentTask?: ProactiveTaskContext;
 }
 
@@ -262,7 +287,7 @@ function parseProactiveArguments(
     toolName === CREATE_PROACTIVE_MONITOR_TOOL_NAME
       ? ['title', 'modalities', 'condition', 'trigger_response', 'repeat']
       : toolName === CREATE_LIVE_NARRATION_TOOL_NAME
-        ? ['title', 'modalities', 'narration_focus', 'narration_style']
+        ? ['title', 'modalities', 'narration_focus']
         : toolName === CREATE_PROACTIVE_TIMER_TOOL_NAME
           ? ['title', 'duration_sec', 'reminder_text']
           : toolName === UPDATE_PROACTIVE_TASK_TOOL_NAME
@@ -344,8 +369,11 @@ export interface LiveSessionOptions {
   failureSecrets?: readonly string[];
   openRealtime?: typeof openQwenRealtimeSession;
   searchRealtime?: typeof searchQwenRealtime;
+  notificationSpeech?: typeof synthesizeNotificationSpeech;
+  analyzeRealtimeImage?: typeof analyzeQwenRealtimeImage;
   proactive?: ProactiveConfig;
   monitorDebug?: MonitorDebugStore;
+  debugArchive?: DebugArchive;
   memory?: MemoryService;
   createProactiveScheduler?: (
     options: ProactiveSchedulerOptions,
@@ -364,6 +392,17 @@ interface ActiveProactiveDelivery {
   outputSuppressed: boolean;
   responseDone: boolean;
   cancellationGraceTimer?: ReturnType<typeof setTimeout>;
+  fallback?: boolean;
+}
+
+interface ProactiveSpeechFallback {
+  delivery: ProactiveDelivery;
+  controller: AbortController;
+  phase: 'queued' | 'generating' | 'playing';
+  responseId: string;
+  transcript?: string;
+  providerSessionId?: string;
+  providerResponseId?: string;
 }
 
 interface ActivePeerReport {
@@ -377,7 +416,9 @@ interface ActivePeerReport {
 
 interface CallSearchTask {
   id: string;
+  kind: 'search' | 'visual';
   query: string;
+  visual?: { source: LiveVisualSource; metadata: Record<string, unknown> };
   controller: AbortController;
   outcome: 'completed' | 'failed';
   answer?: string;
@@ -405,6 +446,8 @@ interface CallContext {
   realtime?: QwenRealtimeSession;
   memory?: MemorySession;
   memoryDialogue?: MemoryDialogueCollector;
+  publishedMemoryContext?: string;
+  memoryContextRevision?: number;
   stopping: boolean;
   discoveryCleanup?: Promise<void>;
   searches: Map<string, CallSearchTask>;
@@ -446,6 +489,9 @@ interface CallContext {
   proactiveTaskContextByResponse: Map<string, ProactiveTaskContext>;
   proactiveMutationResponses: Set<string>;
   proactiveCommittedMutationResponses: Set<string>;
+  narrationInputSources: Map<string, string | null>;
+  narrationInputWaiters: Map<string, Set<(source: string | undefined) => void>>;
+  narrationRepairInputs: Map<string, string>;
   directAssistantTranscripts: Map<string, string>;
   pendingProactiveRepair?: PendingProactiveRepair;
   proactiveRepairAwaitingResponse?: PendingProactiveRepair;
@@ -554,6 +600,12 @@ export class LiveSession {
   private readonly logger: LiveLogger;
   private readonly openRealtime: typeof openQwenRealtimeSession;
   private readonly searchRealtime: typeof searchQwenRealtime;
+  private readonly notificationSpeech: typeof synthesizeNotificationSpeech;
+  private readonly proactiveFallbacks = new WeakMap<
+    CallContext,
+    Map<string, ProactiveSpeechFallback>
+  >();
+  private readonly analyzeRealtimeImage: typeof analyzeQwenRealtimeImage;
   private readonly createProactiveScheduler: (
     options: ProactiveSchedulerOptions,
   ) => ProactiveSchedulerControl;
@@ -593,9 +645,18 @@ export class LiveSession {
   private active?: CallContext;
   private readonly reportSubscriptions: Array<() => void> = [];
   private readonly reports: SessionReports;
+  private readonly debugAdaptors = new WeakMap<
+    BackendAdaptor,
+    BackendAdaptor
+  >();
 
   constructor(private readonly options: LiveSessionOptions) {
-    this.host = options.host;
+    this.host = observeDebugControl(
+      options.host,
+      options.debugArchive,
+      'host',
+      DEBUG_HOST_METHODS,
+    );
     this.registry = options.registry;
     this.log = options.log;
     this.reports = new SessionReports((report) => {
@@ -610,6 +671,10 @@ export class LiveSession {
     this.openRealtime =
       options.openRealtime ?? openRecoveringQwenRealtimeSession;
     this.searchRealtime = options.searchRealtime ?? searchQwenRealtime;
+    this.notificationSpeech =
+      options.notificationSpeech ?? synthesizeNotificationSpeech;
+    this.analyzeRealtimeImage =
+      options.analyzeRealtimeImage ?? analyzeQwenRealtimeImage;
     this.createProactiveScheduler =
       options.createProactiveScheduler ??
       ((schedulerOptions) => new ProactiveScheduler(schedulerOptions));
@@ -658,7 +723,22 @@ export class LiveSession {
 
   /** The adaptor that owns a backend handle (registry routing). */
   private adaptorFor(handle: BackendHandle): BackendAdaptor {
-    return this.registry.adaptorFor(handle);
+    return this.observedAdaptor(this.registry.adaptorFor(handle));
+  }
+
+  private observedAdaptor(adaptor: BackendAdaptor): BackendAdaptor {
+    if (!this.options.debugArchive) return adaptor;
+    let observed = this.debugAdaptors.get(adaptor);
+    if (!observed) {
+      observed = observeDebugControl(
+        adaptor,
+        this.options.debugArchive,
+        `backend:${adaptor.name}`,
+        DEBUG_BACKEND_METHODS,
+      );
+      this.debugAdaptors.set(adaptor, observed);
+    }
+    return observed;
   }
 
   /** LiveCallHandlers.onStart */
@@ -700,6 +780,9 @@ export class LiveSession {
       proactiveTaskContextByResponse: new Map(),
       proactiveMutationResponses: new Set(),
       proactiveCommittedMutationResponses: new Set(),
+      narrationInputSources: new Map(),
+      narrationInputWaiters: new Map(),
+      narrationRepairInputs: new Map(),
       directAssistantTranscripts: new Map(),
       proactiveRepairReceiptPending: false,
       reportContexts: new Map(),
@@ -765,6 +848,7 @@ export class LiveSession {
       backends: this.registry.names().join(','),
       model: this.options.realtime.model,
       voice: this.options.realtime.voice,
+      outputSampleRate: QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
     });
     this.log.write('audio.input_mute_changed', {
       epoch: context.epoch,
@@ -814,6 +898,10 @@ export class LiveSession {
             : {}),
           model: this.options.realtime.model,
           callEpoch: call.epoch,
+          ...this.realtimeDebugContext({
+            callId: context.callId,
+            epoch: context.epoch,
+          }),
           ...(this.options.realtime.voice
             ? { voice: this.options.realtime.voice }
             : {}),
@@ -833,6 +921,10 @@ export class LiveSession {
         context.proactive = this.createProactiveScheduler({
           config: this.options.proactive,
           monitorDebug: this.options.monitorDebug,
+          ...this.realtimeDebugContext({
+            callId: context.callId,
+            epoch: context.epoch,
+          }),
           realtime: {
             endpoint: this.options.realtime.endpoint,
             ...(this.options.realtime.apiKey
@@ -955,6 +1047,10 @@ export class LiveSession {
       });
     }
     context.stopping = true;
+    this.abortProactiveFallbacks(
+      context,
+      'The call ended before the notification was delivered.',
+    );
     context.realtime?.setInputMuted(false);
     this.stopDiscovery(context);
     this.cancelCallSearches(context);
@@ -1094,14 +1190,21 @@ export class LiveSession {
     const search = context.activeSearchResult;
     if (search?.audioForwarded) {
       search.playbackStarted = true;
+      const task = context.searches.get(search.taskId);
       this.subagents.update(search.taskId, {
         notification: 'speaking',
-        activity: liveMessage('search.answering'),
+        activity: liveMessage(
+          task
+            ? this.lookupMessageKey(task, 'search.answering')
+            : 'search.answering',
+        ),
       });
     }
     const active = context.activeProactiveDelivery;
-    if (active && !active.playbackStarted) {
+    if (active?.audioForwarded && !active.playbackStarted) {
       active.playbackStarted = true;
+      context.proactive?.playbackStarted?.(active.delivery);
+      if (active.fallback) this.host.setCallState(context.epoch, 'speaking');
     }
     this.debug('playback.started', { epoch: call.epoch });
   }
@@ -1131,6 +1234,7 @@ export class LiveSession {
     if (active?.playbackStarted && !active.playbackCompleted) {
       active.playbackCompleted = true;
       if (active.responseDone) {
+        this.completeProactiveSpeechFallback(context, active.delivery);
         context.proactive?.acknowledgeDelivery(active.delivery);
         context.proactiveDeliveries.delete(active.delivery.deliveryId);
         context.activeProactiveDelivery = undefined;
@@ -1147,6 +1251,10 @@ export class LiveSession {
     const context = this.active;
     if (!context || context.epoch !== call.epoch || context.stopping) return;
     context.playbackSuppressed = true;
+    this.abortProactiveFallbacks(
+      context,
+      'Audio output was muted before the notification was delivered.',
+    );
     this.endPeerReport(
       context,
       'unspoken',
@@ -1639,7 +1747,7 @@ export class LiveSession {
   }
 
   private decorateSubagent(task: SubagentTask): SubagentTask {
-    if (task.kind === 'search') {
+    if (task.kind === 'search' || task.kind === 'visual') {
       const tracked = Boolean(this.active?.searches.has(task.id));
       return {
         ...task,
@@ -1686,7 +1794,7 @@ export class LiveSession {
 
   private async stopSubagent(taskId: string): Promise<SubagentsControlResult> {
     const task = this.subagents.get(taskId);
-    if (task?.kind === 'search') {
+    if (task?.kind === 'search' || task?.kind === 'visual') {
       const context = this.active;
       const search = context?.searches.get(taskId);
       if (!context || !search)
@@ -1694,9 +1802,11 @@ export class LiveSession {
       this.cancelSearchTask(context, search);
       this.queueControlReceipt(
         taskId,
-        search.fallbackBackend
-          ? 'The native search was cancelled. A stop was requested for its isolated background lookup; backend cancellation is not yet confirmed.'
-          : 'The search was cancelled by the user; no result will be announced and no new fallback will be started.',
+        search.kind === 'visual'
+          ? 'The snapshot analysis was cancelled by the user. No result will be announced; no background Harness task was started.'
+          : search.fallbackBackend
+            ? 'The native search was cancelled. A stop was requested for its isolated background lookup; backend cancellation is not yet confirmed.'
+            : 'The search was cancelled by the user; no result will be announced and no new fallback will be started.',
       );
       return {
         type: 'outcome',
@@ -1929,7 +2039,7 @@ export class LiveSession {
   private observeProactive(
     context: CallContext,
     task: ProactiveTask,
-    notification?: 'queued' | 'speaking' | 'delivered',
+    notification?: ProactiveNotificationState,
   ): void {
     const statuses: Record<ProactiveTask['status'], SubagentStatus> = {
       provisioning: 'starting',
@@ -1962,7 +2072,9 @@ export class LiveSession {
       activity:
         task.status === 'cancelled' && context.stopping
           ? liveMessage('subagents.callEnded')
-          : (task.error ?? task.lastSummary ?? ''),
+          : notification === 'undelivered'
+            ? liveMessage('subagents.notificationUndelivered')
+            : (task.error ?? task.lastSummary ?? ''),
       ...(task.lastSummary ? { output: task.lastSummary } : {}),
       triggerCount: task.triggerCount,
       pendingNotifications: task.pendingDeliveryCount ?? 0,
@@ -1990,7 +2102,8 @@ export class LiveSession {
     else if (!context.memory && !context.stopping) this.attachMemory(context);
     context.memory?.setObserverEnabled(service.settings.observer.enabled);
     if (context.realtime) {
-      this.publishSessionConfiguration(context);
+      context.realtime.configure({ tools: this.sessionTools(context) });
+      this.publishMemoryContext(context);
       if (!context.stopping) context.memory?.startObserver();
     }
   }
@@ -2003,12 +2116,11 @@ export class LiveSession {
       this.registry.hasBackends,
       true,
     );
-    return context.memory
+    return this.options.memory
       ? [
           base,
           MEMORY_SYSTEM_PROMPT,
           'For omnibio and omniretrieve, follow their tool-specific timing: call before answering without surrounding text.',
-          context.memory.promptBlocks(),
         ].join('\n\n')
       : base;
   }
@@ -2022,12 +2134,26 @@ export class LiveSession {
     return context.memory ? [...tools, ...MEMORY_TOOLS] : tools;
   }
 
-  private publishSessionConfiguration(context: CallContext): void {
-    if (this.active !== context || !context.realtime) return;
-    context.realtime.configure({
-      instructions: this.instructions(context),
-      tools: this.sessionTools(context),
-    });
+  private publishMemoryContext(context: CallContext, force = false): boolean {
+    if (this.active !== context || !context.realtime) return false;
+    // Restoration publishes the latest state once. Never queue intermediate
+    // snapshots that could re-enable or overwrite newer Memory after recovery.
+    if (context.transportRecovering && !force) return true;
+    const sections = context.memory?.promptBlocks();
+    const state = memoryContextMessage(0, sections);
+    if (!force && context.publishedMemoryContext === state) return true;
+    const revision =
+      (context.memoryContextRevision ?? 0) +
+      (context.publishedMemoryContext === state ? 0 : 1);
+    if (
+      !context.realtime.sendBackendContext(
+        memoryContextMessage(revision, sections),
+      )
+    )
+      return false;
+    context.publishedMemoryContext = state;
+    context.memoryContextRevision = revision;
+    return true;
   }
 
   private attachMemory(context: CallContext): void {
@@ -2104,6 +2230,8 @@ export class LiveSession {
         source?: 'normal' | 'filler';
         interrupted?: boolean;
       }) => {
+        if (current() && event.role === 'user')
+          this.rememberNarrationInput(context, event.inputItemId, event.text);
         if (current()) context.memoryDialogue?.accept(event);
       },
       onReady: (event: RealtimeEventContext) => {
@@ -2137,6 +2265,7 @@ export class LiveSession {
           if (context.transportRecovering) return;
           context.transportRecovering = true;
           context.realtimeGeneration += 1;
+          this.clearNarrationInputs(context);
           context.recoveryNeedsRepeat = false;
           context.recoveryPermissionTargets = new Set(
             context.latestPermissionTargets ??
@@ -2203,7 +2332,10 @@ export class LiveSession {
           this.log.write('realtime.protocol', {
             ...details,
             epoch: context.epoch,
-            callId: context.callId,
+            localCallId: context.callId,
+            ...(typeof details['callId'] === 'string'
+              ? { toolCallId: details['callId'] }
+              : {}),
             providerSessionId: details['sessionId'],
           });
         }
@@ -2253,6 +2385,10 @@ export class LiveSession {
           );
         }
         const outputWasPlaying = context.injector.noteSpeechStarted();
+        this.abortProactiveFallbacks(
+          context,
+          'The user started speaking before the notification was delivered.',
+        );
         if (context.proactiveRepairReceiptPending) {
           context.proactiveRepairReceiptPending = false;
           context.responseInFlight = false;
@@ -2270,6 +2406,7 @@ export class LiveSession {
         }
         if (
           activeProactive &&
+          context.activeProactiveDelivery === activeProactive &&
           (activeProactive.responseDone ||
             activeProactive.cancellationGraceTimer !== undefined) &&
           !activeProactive.playbackCompleted
@@ -2302,8 +2439,30 @@ export class LiveSession {
         context.injector.noteInputCommitted(event.responsePending);
         this.log.write('vad.speech_stopped', { phase: 'input_committed' });
       },
+      onInputRejected: (
+        event: {
+          itemId: string;
+          reason: 'semantic_vad';
+        } & RealtimeEventContext,
+      ) => {
+        if (!current()) return;
+        context.speechInProgress = false;
+        context.permissionTargetsByInput.delete(event.itemId);
+        this.rememberNarrationInput(context, event.itemId, '');
+        context.loggedInputTranscripts.delete(event.itemId);
+        context.injector.noteInputCommitted(false);
+        this.log.write('vad.speech_stopped', {
+          ...correlation(event),
+          phase: 'input_rejected',
+          itemId: event.itemId,
+          reason: event.reason,
+        });
+        if (!context.stopping && !context.responseInFlight)
+          this.host.setCallState(context.epoch, 'listening');
+      },
       onInputTranscriptDone: (event: { itemId?: string; text: string }) => {
         if (!current()) return;
+        this.rememberNarrationInput(context, event.itemId, event.text);
         this.conversationLanguage.observeUserTranscript(event.text);
         const sample = event.text.trim().slice(0, 512);
         if (sample && this.notificationLanguageSamples.at(-1) !== sample) {
@@ -2330,6 +2489,7 @@ export class LiveSession {
           text: string;
           source?: string;
           itemId?: string;
+          audioSuppressed?: boolean;
         } & RealtimeEventContext,
       ) => {
         if (!current()) return;
@@ -2339,9 +2499,18 @@ export class LiveSession {
           responseId: event.responseId,
           ...(event.itemId ? { itemId: event.itemId } : {}),
           ...(event.source ? { source: event.source } : {}),
+          ...(event.audioSuppressed ? { audioSuppressed: true } : {}),
           text: event.text,
         });
         context.loggedResponseTranscripts.set(event.responseId, event.text);
+        const search = context.activeSearchResult;
+        if (search?.responseId === event.responseId) {
+          this.logSearchDelivery(context, search.taskId, 'transcript', {
+            responseId: event.responseId,
+            textChars: event.text.length,
+            source: event.source,
+          });
+        }
       },
       onOutputAudioDelta: (event: {
         responseId: string;
@@ -2375,7 +2544,12 @@ export class LiveSession {
         context.playbackSuppressed = false;
         if (proactive) proactive.audioForwarded = true;
         if (report) report.audioForwarded = true;
-        if (search) search.audioForwarded = true;
+        if (search && !search.audioForwarded) {
+          search.audioForwarded = true;
+          this.logSearchDelivery(context, search.taskId, 'audio_started', {
+            responseId: event.responseId,
+          });
+        }
         // Mark playback optimistically until the Host's playback receipt
         // arrives, so an early backend event cannot interrupt queued audio.
         context.injector.notePlaybackStarted();
@@ -2397,13 +2571,28 @@ export class LiveSession {
         let cancelledInvalidatedProactive = false;
         context.responseInFlight = true;
         context.injector.noteResponseCreated(event.authority);
+        if (event.authority !== 'proactive') {
+          this.abortProactiveFallbacks(
+            context,
+            'A newer foreground response superseded the notification.',
+            true,
+            false,
+          );
+        }
         context.responseAuthorities.set(event.responseId, event.authority);
         if (event.authority === 'peer_report' && context.activePeerReport) {
           context.activePeerReport.responseId = event.responseId;
         }
-        if (event.authority === 'search_result' && context.activeSearchResult) {
+        if (
+          (event.authority === 'search_result' ||
+            event.authority === 'visual_result') &&
+          context.activeSearchResult
+        ) {
           const search = context.activeSearchResult;
           search.responseId = event.responseId;
+          this.logSearchDelivery(context, search.taskId, 'response_started', {
+            responseId: event.responseId,
+          });
           if (search.cancelled || !context.searches.has(search.taskId)) {
             context.realtime?.cancelResponse();
             return;
@@ -2438,6 +2627,11 @@ export class LiveSession {
         } else if (event.authority === 'proactive_repair') {
           const repair = context.proactiveRepairAwaitingResponse;
           context.proactiveRepairAwaitingResponse = undefined;
+          if (repair?.inputItemId)
+            context.narrationRepairInputs.set(
+              event.responseId,
+              repair.inputItemId,
+            );
           if (repair?.adjacentTask) {
             context.proactiveTaskContextByResponse.set(
               event.responseId,
@@ -2560,18 +2754,42 @@ export class LiveSession {
             } else this.finishPeerReport(context);
           }
         }
-        if (authority === 'search_result') {
+        if (authority === 'search_result' || authority === 'visual_result') {
           const search = context.activeSearchResult;
           if (
             search &&
             (!search.responseId || search.responseId === event.responseId)
           ) {
             search.responseDone = true;
+            this.logSearchDelivery(context, search.taskId, 'response_done', {
+              responseId: event.responseId,
+              status: event.status,
+              audioForwarded: search.audioForwarded,
+              playbackStarted: search.playbackStarted,
+              playbackCompleted: search.playbackCompleted,
+            });
             if (event.status !== 'completed') {
               this.endSearchResult(context, 'search.answerInterrupted');
               context.injector.noteOutputSuppressed();
             } else if (!search.audioForwarded) {
-              this.endSearchResult(context, 'search.completed');
+              this.recordFailure(context, {
+                source: 'realtime',
+                code:
+                  authority === 'visual_result'
+                    ? 'visual_answer_unspoken'
+                    : 'search_answer_unspoken',
+                stage:
+                  authority === 'visual_result'
+                    ? 'visual_result_delivery'
+                    : 'search_result_delivery',
+                impact: 'response',
+                message:
+                  'The lookup completed, but its result response produced no playable audio. The result remains available in Subagents.',
+                taskId: search.taskId,
+                responseId: event.responseId,
+                fatal: false,
+              });
+              this.endSearchResult(context, 'search.answerUnspoken');
               context.injector.noteOutputSuppressed();
             } else this.finishSearchResult(context);
           }
@@ -2590,6 +2808,7 @@ export class LiveSession {
         context.proactiveTaskContextByResponse.delete(event.responseId);
         context.proactiveMutationResponses.delete(event.responseId);
         context.proactiveCommittedMutationResponses.delete(event.responseId);
+        context.narrationRepairInputs.delete(event.responseId);
         context.directAssistantTranscripts.delete(event.responseId);
         if (!repair) this.retryPendingProactiveRepair(context);
         if (!context.stopping && !awaitingRepairReceipt) {
@@ -2646,6 +2865,7 @@ export class LiveSession {
           [
             'peer_report',
             'search_result',
+            'visual_result',
             'permission',
             'task_result',
           ].includes(context.responseAuthorities.get(event.responseId) ?? '')
@@ -2892,6 +3112,10 @@ export class LiveSession {
     const generation = context.realtimeGeneration;
     const call = { responseId: event.responseId, responseFailed: false };
     context.pendingToolCalls.add(call);
+    this.options.debugArchive?.recordRuntime('tool.dispatch', {
+      epoch: context.epoch,
+      ...event,
+    });
     if (!context.stopping) {
       this.host.setCallState(context.epoch, 'thinking');
     }
@@ -2940,6 +3164,7 @@ export class LiveSession {
         'task_result',
         'peer_report',
         'search_result',
+        'visual_result',
       ].includes(context.responseAuthorities.get(event.responseId) ?? '')
     ) {
       result = {
@@ -2953,25 +3178,45 @@ export class LiveSession {
     } else if (MEMORY_TOOL_NAMES.has(event.name)) {
       result = await this.dispatchMemoryTool(context, event);
     } else if (operation) {
-      result = this.dispatchProactiveTool(context, event, operation);
+      let preferences: NarrationPreferences | undefined;
+      let narrationError: Error | undefined;
+      if (event.name === CREATE_LIVE_NARRATION_TOOL_NAME) {
+        try {
+          parseProactiveArguments(event.name, event.arguments);
+          const language = this.notificationLanguage();
+          const source = this.narrationInput(context, event);
+          const sourceRequest =
+            typeof source === 'string' ? source : await source;
+          if (
+            this.active !== context ||
+            context.stopping ||
+            context.transportRecovering
+          )
+            throw new ProactiveArgumentsError(
+              PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+            );
+          preferences = {
+            sourceRequest,
+            fallbackLanguage:
+              language.outputLanguage ?? language.fallbackLanguage,
+          };
+        } catch (error) {
+          narrationError =
+            error instanceof Error
+              ? error
+              : new Error('Narration request is unavailable.');
+        }
+      }
+      result = this.dispatchProactiveTool(
+        context,
+        event,
+        operation,
+        preferences,
+        narrationError,
+      );
     } else {
       const dispatcher = new ToolDispatcher({
-        handlers: this.toolHandlers(context, async (capture, visualInput) => {
-          const isCurrent = () =>
-            this.active === context &&
-            !context.stopping &&
-            context.realtimeGeneration === generation &&
-            context.visualInput === visualInput &&
-            context.pendingToolCalls.has(call) &&
-            !call.responseFailed;
-          if (!isCurrent() || !context.realtime) return false;
-          const delivered = await context.realtime.submitToolImage(
-            { callEpoch: context.epoch, callId: event.callId },
-            capture.image,
-            isCurrent,
-          );
-          return delivered && isCurrent();
-        }),
+        handlers: this.toolHandlers(context),
         onFailure: (failure) =>
           this.recordFailure(context, {
             ...failure,
@@ -2983,7 +3228,13 @@ export class LiveSession {
           ? { timeoutNote: liveText('en', 'runtime.noBackendToolTimeout') }
           : {}),
       });
-      const ctx: ToolContext = { activeTranscript: event.activeTranscript };
+      const userRequest = event.inputItemId
+        ? context.loggedInputTranscripts.get(event.inputItemId)
+        : undefined;
+      const ctx: ToolContext = {
+        activeTranscript: event.activeTranscript,
+        ...(userRequest ? { userRequest } : {}),
+      };
       result = await dispatcher.dispatch(event.name, event.arguments, ctx);
     }
     // The realtime session rejects empty or oversized outputs; a stranded
@@ -3041,6 +3292,16 @@ export class LiveSession {
         ? { receiptChars: receipt.length }
         : { receipt: receipt.slice(0, 2_000) }),
     });
+    this.options.debugArchive?.recordRuntime('tool.dispatch_result', {
+      epoch: context.epoch,
+      name: event.name,
+      callId: event.callId,
+      responseId: event.responseId,
+      ok: result.ok,
+      originalReceipt: result.receipt,
+      submittedReceipt: receipt,
+      callResponseFailed: call.responseFailed,
+    });
     context.pendingToolCalls.delete(call);
     if (
       this.active !== context ||
@@ -3052,6 +3313,12 @@ export class LiveSession {
       const submitted = context.realtime.submitFunctionOutput(
         { callEpoch: context.epoch, callId: event.callId },
         receipt,
+        ...(result.ok &&
+        receipt === result.receipt &&
+        (event.name === CREATE_PROACTIVE_MONITOR_TOOL_NAME ||
+          event.name === CREATE_LIVE_NARRATION_TOOL_NAME)
+          ? [{ taskAdmission: true }]
+          : []),
       );
       if (!submitted) {
         // A failed response has already retired its pending tool calls; the
@@ -3139,7 +3406,7 @@ export class LiveSession {
         };
       }
       if (context.memory !== memory || memory.closed) return failed;
-      this.publishSessionConfiguration(context);
+      if (!this.publishMemoryContext(context)) return failed;
       return result;
     } catch (error) {
       this.recordFailure(context, {
@@ -3164,15 +3431,106 @@ export class LiveSession {
     }
   }
 
+  private rememberNarrationInput(
+    context: CallContext,
+    itemId: string | undefined,
+    text: string,
+  ): void {
+    if (!itemId || context.narrationInputSources.get(itemId) === null) return;
+    const source =
+      text.trim() && text.length <= MAX_NARRATION_SOURCE_CHARS
+        ? text.trim()
+        : null;
+    const previous = context.narrationInputSources.get(itemId);
+    const accepted =
+      previous !== undefined && previous !== source ? null : source;
+    context.narrationInputSources.set(itemId, accepted);
+    for (const finish of [...(context.narrationInputWaiters.get(itemId) ?? [])])
+      finish(accepted ?? undefined);
+    while (context.narrationInputSources.size > 64) {
+      const oldest = context.narrationInputSources.keys().next().value!;
+      context.narrationInputSources.delete(oldest);
+      for (const finish of [
+        ...(context.narrationInputWaiters.get(oldest) ?? []),
+      ])
+        finish(undefined);
+    }
+  }
+
+  private narrationInput(
+    context: CallContext,
+    event: RealtimeFunctionCall,
+  ): string | Promise<string> {
+    const inputId =
+      event.inputItemId ?? context.narrationRepairInputs.get(event.responseId);
+    if (
+      !inputId ||
+      this.active !== context ||
+      context.stopping ||
+      context.transportRecovering
+    ) {
+      throw new ProactiveArgumentsError(
+        PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+      );
+    }
+    // This optional field comes from the transport's bound, final real-user
+    // input; never infer preferences from assistant text or a transcript tail.
+    if (event.inputItemId && event.inputTranscript !== undefined)
+      this.rememberNarrationInput(context, inputId, event.inputTranscript);
+    const source = context.narrationInputSources.get(inputId);
+    if (source === null)
+      throw new ProactiveArgumentsError(
+        PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+      );
+    if (source !== undefined) return source;
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const finish = (text: string | undefined) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const waiters = context.narrationInputWaiters.get(inputId);
+        waiters?.delete(finish);
+        if (waiters?.size === 0) context.narrationInputWaiters.delete(inputId);
+        if (text !== undefined) resolve(text);
+        else
+          reject(
+            new ProactiveArgumentsError(
+              PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+            ),
+          );
+      };
+      const waiters =
+        context.narrationInputWaiters.get(inputId) ??
+        new Set<(source: string | undefined) => void>();
+      waiters.add(finish);
+      context.narrationInputWaiters.set(inputId, waiters);
+      const timer = setTimeout(() => finish(undefined), 2000);
+      timer.unref?.();
+    });
+  }
+
+  private clearNarrationInputs(context: CallContext): void {
+    for (const waiters of [...context.narrationInputWaiters.values()]) {
+      for (const finish of [...waiters]) finish(undefined);
+    }
+    context.narrationInputWaiters.clear();
+    context.narrationInputSources.clear();
+    context.narrationRepairInputs.clear();
+  }
+
   private dispatchProactiveTool(
     context: CallContext,
     event: RealtimeFunctionCall,
     operation: ProactiveReceiptOperation,
+    narrationPreferences?: NarrationPreferences,
+    narrationError?: Error,
   ): ToolDispatchResult {
     const proactive = context.proactive;
     let receipt: ProactiveToolReceipt;
     try {
       if (!proactive) throw new Error('Proactive is disabled.');
+      if (narrationError) throw narrationError;
       const args = parseProactiveArguments(event.name, event.arguments);
       switch (event.name) {
         case CREATE_PROACTIVE_MONITOR_TOOL_NAME: {
@@ -3193,11 +3551,16 @@ export class LiveSession {
           break;
         }
         case CREATE_LIVE_NARRATION_TOOL_NAME: {
+          if (!narrationPreferences)
+            throw new ProactiveArgumentsError(
+              PROACTIVE_ARGUMENT_RULES.narrationSourceUnavailable,
+            );
           const task = proactive.createLiveNarration({
             title: args['title'],
             modalities: args['modalities'],
             narrationFocus: args['narration_focus'],
-            narrationStyle: args['narration_style'],
+            narrationStyle: DEFAULT_NARRATION_STYLE,
+            narrationPreferences,
           });
           this.assertProactiveMutationSucceeded(task);
           receipt = buildProactiveCreateReceipt(task, proactive.listTasks());
@@ -3354,35 +3717,43 @@ export class LiveSession {
     };
   }
 
-  private toolHandlers(
-    context: CallContext,
-    submitImage: (
-      capture: LiveVisualCapture,
-      visualInput: LiveVisualInput,
-    ) => Promise<boolean>,
-  ): ReadonlyMap<string, ToolHandler> {
+  private toolHandlers(context: CallContext): ReadonlyMap<string, ToolHandler> {
     const handlers = new Map<string, ToolHandler>();
 
     handlers.set(WEB_SEARCH_TOOL_NAME, (args) => this.webSearch(context, args));
 
-    handlers.set(APPSHOT_TOOL_NAME, async () => {
+    handlers.set(APPSHOT_TOOL_NAME, async (args, toolContext) => {
       if (context.visualInput.mode !== 'on-demand') {
         throw new Error(
           'Appshot is disabled while visual input uses Live Feed mode.',
         );
       }
+      if (
+        Object.keys(args).some((key) => key !== 'query') ||
+        (args['query'] !== undefined &&
+          (typeof args['query'] !== 'string' ||
+            !args['query'].trim() ||
+            args['query'].length > 4096))
+      ) {
+        return {
+          status: 'error',
+          note: 'Appshot query must be a nonempty string of at most 4096 characters. No capture was started.',
+        };
+      }
       const visualInput = context.visualInput;
+      const query =
+        (typeof args['query'] === 'string'
+          ? args['query'].trim()
+          : toolContext.userRequest?.trim()) ||
+        'Describe the main visible contents of the current snapshot. Do not guess small or illegible details.';
       const capture = await this.captureVisualContext(context, true);
       if (
+        this.active !== context ||
+        context.stopping ||
         context.visualInput !== visualInput ||
         capture.source !== visualInput.source
       ) {
         throw new Error('The visual source changed while Appshot was running.');
-      }
-      if (!(await submitImage(capture, visualInput))) {
-        throw new Error(
-          'The captured image could not be delivered to Realtime. Do not describe the image or delegate automatically; ask the user to try again.',
-        );
       }
       const asset = capture.screenshotPath
         ? this.handles.registerAsset({
@@ -3397,16 +3768,13 @@ export class LiveSession {
         height: capture.height,
         bytes: Buffer.byteLength(capture.image, 'base64'),
       });
-      return {
-        status: 'ok',
+      const metadata = {
         source: capture.source,
         width: capture.width,
         height: capture.height,
-        image_delivery: 'realtime',
-        note:
-          'The captured image is now in your Realtime context. Answer directly from this newest image. ' +
-          'If you cannot read it, say so; do not guess from metadata or an older frame. ' +
-          'Only use the asset for work the user explicitly delegates to a background Harness.',
+        ...(capture.screenScope === 'display'
+          ? { screen_scope: 'display', display_id: capture.displayId }
+          : {}),
         ...(capture.appName ? { app: capture.appName } : {}),
         ...(capture.windowTitle ? { window: capture.windowTitle } : {}),
         ...(capture.accessibilityText
@@ -3419,6 +3787,16 @@ export class LiveSession {
           : {}),
         ...(asset ? { asset: asset.assetHandle } : {}),
       };
+      const task = this.createSearchTask(
+        context,
+        query.slice(0, 4096),
+        'visual',
+      );
+      task.visual = { source: capture.source, metadata };
+      const row = this.subagents.get(task.id);
+      if (row) this.subagents.upsert({ ...row, source: capture.source });
+      void this.runVisualAnalysis(context, task, capture.image);
+      return { status: 'accepted', taskId: task.id, ...metadata };
     });
 
     if (!this.registry.hasBackends) {
@@ -3517,7 +3895,7 @@ export class LiveSession {
         }
         adaptor = named.adaptor;
       }
-      const backend = await adaptor.createSession({
+      const backend = await this.observedAdaptor(adaptor).createSession({
         ...(typeof args['cwd'] === 'string' ? { cwd: args['cwd'] } : {}),
         ...(typeof args['label'] === 'string' ? { label: args['label'] } : {}),
       });
@@ -3882,12 +4260,8 @@ export class LiveSession {
       args['input_refs'],
     );
     if (!blocks) {
-      context.injector.enqueue({
-        kind: 'error',
-        context:
-          'A requested image is unavailable or expired. No task was submitted.',
-        spoken: liveText('en', 'runtime.imageUnavailable'),
-      });
+      // The failed tool receipt is answered in the current conversation's
+      // language. Do not queue a second, hard-coded English announcement.
       return {
         status: 'error',
         code: 'image_unavailable',
@@ -4051,7 +4425,9 @@ export class LiveSession {
         return { handle: context.defaultSessionHandle, backend };
       }
     }
-    const backend = await this.registry.defaultAdaptor.createSession({
+    const backend = await this.observedAdaptor(
+      this.registry.defaultAdaptor,
+    ).createSession({
       label: 'Voice chat',
     });
     const handle = this.handles.session(backend);
@@ -4163,6 +4539,11 @@ export class LiveSession {
             ...('jobRef' in event && event.jobRef !== undefined
               ? { jobRef: event.jobRef }
               : {}),
+          });
+          this.options.debugArchive?.recordRuntime('backend.received', {
+            session: sessionHandle,
+            backend,
+            event,
           });
           this.onBackendEvent(sessionHandle, backend, event);
           if (event.type === 'session_closed') {
@@ -4599,6 +4980,8 @@ export class LiveSession {
   }
 
   private restoreTransportContext(context: CallContext): void {
+    if (this.options.memory && !this.publishMemoryContext(context, true))
+      throw new Error('Current Memory context could not be restored.');
     const pending = this.broker.pendingUserRequests;
     const snapshot = this.subagents.snapshot();
     const messages = [
@@ -4670,6 +5053,12 @@ export class LiveSession {
   }
 
   private requeueProactiveAfterTransportRecovery(context: CallContext): void {
+    this.abortProactiveFallbacks(
+      context,
+      'The notification was interrupted by reconnecting.',
+      false,
+      false,
+    );
     const active = context.activeProactiveDelivery;
     this.clearProactiveCancellationGrace(active);
     const deliveries = [
@@ -4805,6 +5194,7 @@ export class LiveSession {
     );
     return {
       kind,
+      inputItemId: event.inputItemId,
       ...(adjacentTask ? { adjacentTask } : {}),
     };
   }
@@ -5007,6 +5397,10 @@ export class LiveSession {
     }
 
     if (!active || (!active.audioForwarded && !active.playbackStarted)) {
+      if (active && !active.audioProduced && event.status === 'completed') {
+        this.queueProactiveSpeechFallback(context, active);
+        return false;
+      }
       this.failProactiveResponse(
         context,
         delivery,
@@ -5018,11 +5412,356 @@ export class LiveSession {
     active.responseDone = true;
     context.userInterruptedProactiveDeliveries.delete(deliveryId);
     if (active.playbackCompleted) {
+      this.completeProactiveSpeechFallback(context, delivery);
       context.proactive?.acknowledgeDelivery(delivery);
       context.proactiveDeliveries.delete(deliveryId);
       context.activeProactiveDelivery = undefined;
     }
     return true;
+  }
+
+  private queueProactiveSpeechFallback(
+    context: CallContext,
+    active: ActiveProactiveDelivery,
+  ): void {
+    const delivery = active.delivery;
+    const states =
+      this.proactiveFallbacks.get(context) ??
+      new Map<string, ProactiveSpeechFallback>();
+    if (
+      states.has(delivery.deliveryId) ||
+      active.fallback ||
+      context.speechInProgress ||
+      context.stopping ||
+      this.host.isOutputMuted?.() === true
+    ) {
+      this.undeliverProactiveSpeech(
+        context,
+        delivery,
+        'Notification speech was unavailable or interrupted.',
+      );
+      return;
+    }
+    const state: ProactiveSpeechFallback = {
+      delivery,
+      controller: new AbortController(),
+      phase: 'queued',
+      responseId: `proactive-fallback-${delivery.deliveryId}`,
+    };
+    states.set(delivery.deliveryId, state);
+    this.proactiveFallbacks.set(context, states);
+    this.clearProactiveCancellationGrace(active);
+    context.activeProactiveDelivery = undefined;
+    context.pendingProactiveDelivery = undefined;
+    const queued =
+      context.proactive?.deferDelivery(delivery) === true &&
+      context.injector.retryProactiveAtFront({
+        kind: 'proactive',
+        context: delivery.event,
+        deliveryId: delivery.deliveryId,
+      });
+    if (!queued) {
+      this.undeliverProactiveSpeech(
+        context,
+        delivery,
+        'Notification speech fallback could not be queued.',
+      );
+      return;
+    }
+    this.debug('proactive.fallback_queued', {
+      epoch: context.epoch,
+      taskId: delivery.taskId,
+      deliveryId: delivery.deliveryId,
+      attempt: 1,
+    });
+  }
+
+  private async runProactiveSpeechFallback(
+    context: CallContext,
+    state: ProactiveSpeechFallback,
+  ): Promise<void> {
+    const current = () =>
+      this.active === context &&
+      !context.stopping &&
+      !context.transportRecovering &&
+      !context.speechInProgress &&
+      !state.controller.signal.aborted &&
+      this.proactiveFallbacks.get(context)?.get(state.delivery.deliveryId) ===
+        state;
+    if (!current()) return;
+    try {
+      if (this.host.isOutputMuted?.() === true || context.responseInFlight)
+        throw new Error('Foreground output is unavailable.');
+      const prefix = '[PROACTIVE_EVENT]';
+      const suffix = '[/PROACTIVE_EVENT]';
+      const event = state.delivery.event.trim();
+      if (!event.startsWith(prefix) || !event.endsWith(suffix))
+        throw new Error('Invalid notification envelope.');
+      const value: unknown = JSON.parse(
+        event.slice(prefix.length, -suffix.length).trim(),
+      );
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error('Invalid notification envelope.');
+      const observation = value as Record<string, unknown>;
+      if (
+        observation['task_id'] !== state.delivery.taskId ||
+        observation['delivery_id'] !== state.delivery.deliveryId ||
+        typeof observation['summary'] !== 'string' ||
+        !observation['summary'].trim()
+      )
+        throw new Error('Invalid notification observation.');
+      state.phase = 'generating';
+      context.pendingProactiveDelivery = undefined;
+      const active: ActiveProactiveDelivery = {
+        delivery: state.delivery,
+        responseId: state.responseId,
+        fallback: true,
+        playbackStarted: false,
+        playbackCompleted: false,
+        audioProduced: false,
+        audioForwarded: false,
+        outputSuppressed: false,
+        responseDone: false,
+      };
+      context.activeProactiveDelivery = active;
+      context.injector.noteResponseCreated('proactive');
+      context.proactive?.announcementStarted(state.delivery, {
+        fallback: true,
+      });
+      this.host.setCallState(context.epoch, 'thinking');
+      this.debug('proactive.fallback_started', {
+        epoch: context.epoch,
+        taskId: state.delivery.taskId,
+        deliveryId: state.delivery.deliveryId,
+        attempt: 1,
+      });
+      const language = this.notificationLanguage();
+      let narrationPreferences: NotificationNarrationPreferences | undefined;
+      if (
+        observation['monitor_mode'] === 'always' &&
+        observation['narration_preferences'] !== undefined
+      ) {
+        const preferences = observation['narration_preferences'];
+        if (
+          !preferences ||
+          typeof preferences !== 'object' ||
+          Array.isArray(preferences)
+        )
+          throw new Error('Invalid narration preference metadata.');
+        const values = preferences as Record<string, unknown>;
+        if (
+          typeof values['source_request'] !== 'string' ||
+          typeof values['narration_focus'] !== 'string' ||
+          typeof observation['title'] !== 'string' ||
+          (values['fallback_language'] !== 'en' &&
+            values['fallback_language'] !== 'zh-CN') ||
+          (values['style_override'] !== undefined &&
+            typeof values['style_override'] !== 'string')
+        )
+          throw new Error('Invalid narration preference metadata.');
+        narrationPreferences = {
+          sourceRequest: values['source_request'],
+          narrationFocus: values['narration_focus'],
+          taskTitle: observation['title'],
+          fallbackLanguage: values['fallback_language'],
+          ...(typeof values['style_override'] === 'string'
+            ? { styleOverride: values['style_override'] }
+            : {}),
+        };
+      }
+      const result = await this.notificationSpeech({
+        ...this.options.realtime,
+        ...this.realtimeDebugContext({
+          epoch: context.epoch,
+          taskId: state.delivery.taskId,
+          deliveryId: state.delivery.deliveryId,
+        }),
+        summary: observation['summary'],
+        language: language.outputLanguage ?? language.fallbackLanguage,
+        ...(narrationPreferences ? { narrationPreferences } : {}),
+        signal: state.controller.signal,
+      });
+      if (!current()) return;
+      if (
+        this.host.isOutputMuted?.() === true ||
+        context.responseInFlight ||
+        result.sampleRate !== QWEN_REALTIME_OUTPUT_SAMPLE_RATE ||
+        result.audio.length === 0 ||
+        result.audio.length > QWEN_REALTIME_OUTPUT_SAMPLE_RATE * 2 * 20 ||
+        result.audio.length % 2 !== 0
+      ) {
+        throw new Error('Notification output could not be played.');
+      }
+      state.phase = 'playing';
+      state.transcript = result.transcript;
+      state.providerSessionId = result.sessionId;
+      state.providerResponseId = result.responseId;
+      active.audioProduced = true;
+      this.debug('proactive.fallback_audio_ready', {
+        epoch: context.epoch,
+        taskId: state.delivery.taskId,
+        deliveryId: state.delivery.deliveryId,
+        providerSessionId: result.sessionId,
+        responseId: result.responseId,
+        audioBytes: result.audio.length,
+      });
+      this.host.setCaption(context.epoch, result.transcript);
+      for (let offset = 0; offset < result.audio.length; offset += 64 * 1024) {
+        if (!current()) return;
+        if (
+          this.host.isOutputMuted?.() === true ||
+          !this.host.sendOutputAudio(
+            context.epoch,
+            result.audio.subarray(offset, offset + 64 * 1024),
+          )
+        )
+          throw new Error('Notification output could not be played.');
+        active.audioForwarded = true;
+        context.playbackSuppressed = false;
+        context.injector.notePlaybackStarted();
+        if (offset + 64 * 1024 < result.audio.length)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (!current()) return;
+      this.host.finishOutputAudio(context.epoch);
+      active.responseDone = true;
+      if (active.playbackCompleted) {
+        this.completeProactiveSpeechFallback(context, state.delivery);
+        context.proactive?.acknowledgeDelivery(state.delivery);
+        context.proactiveDeliveries.delete(state.delivery.deliveryId);
+        context.activeProactiveDelivery = undefined;
+      }
+      context.injector.noteResponseDone('proactive');
+    } catch {
+      if (
+        this.proactiveFallbacks.get(context)?.get(state.delivery.deliveryId) !==
+        state
+      )
+        return;
+      this.undeliverProactiveSpeech(
+        context,
+        state.delivery,
+        'Notification speech fallback was not delivered.',
+      );
+    }
+  }
+
+  private completeProactiveSpeechFallback(
+    context: CallContext,
+    delivery: ProactiveDelivery,
+  ): void {
+    const state = this.proactiveFallbacks
+      .get(context)
+      ?.get(delivery.deliveryId);
+    if (!state) return;
+    this.proactiveFallbacks.get(context)?.delete(delivery.deliveryId);
+    state.controller.abort();
+    const status = {
+      task_id: delivery.taskId,
+      delivery_id: delivery.deliveryId,
+      status: 'delivered',
+      spoken_text: state.transcript ?? '',
+    };
+    try {
+      context.realtime?.sendBackendContext(
+        `[PROACTIVE_DELIVERY_STATUS] ${JSON.stringify(status)}`,
+      );
+    } catch {
+      /* playback remains authoritative if its silent context is unavailable */
+    }
+    this.log.write('transcript.assistant', {
+      epoch: context.epoch,
+      taskId: delivery.taskId,
+      deliveryId: delivery.deliveryId,
+      providerSessionId: state.providerSessionId,
+      responseId: state.providerResponseId,
+      source: 'notification_fallback',
+      text: state.transcript ?? '',
+    });
+    this.debug('proactive.fallback_delivered', {
+      epoch: context.epoch,
+      taskId: delivery.taskId,
+      deliveryId: delivery.deliveryId,
+    });
+    if (!context.responseInFlight && !context.speechInProgress)
+      this.host.setCallState(context.epoch, 'listening');
+  }
+
+  private undeliverProactiveSpeech(
+    context: CallContext,
+    delivery: ProactiveDelivery,
+    reason: string,
+    preserveMainResponse = false,
+    cancelled = false,
+  ): void {
+    const states = this.proactiveFallbacks.get(context);
+    const state = states?.get(delivery.deliveryId);
+    states?.delete(delivery.deliveryId);
+    state?.controller.abort();
+    const active =
+      context.activeProactiveDelivery?.delivery.deliveryId ===
+      delivery.deliveryId
+        ? context.activeProactiveDelivery
+        : undefined;
+    if (active) {
+      this.clearProactiveCancellationGrace(active);
+      context.activeProactiveDelivery = undefined;
+    }
+    if (context.pendingProactiveDelivery?.deliveryId === delivery.deliveryId)
+      context.pendingProactiveDelivery = undefined;
+    context.proactiveDeliveries.delete(delivery.deliveryId);
+    context.userInterruptedProactiveDeliveries.delete(delivery.deliveryId);
+    context.invalidatedProactiveDeliveries.delete(delivery.deliveryId);
+    context.injector.retractProactive(delivery.deliveryId);
+    if (!cancelled) {
+      if (context.proactive?.undeliverDelivery)
+        context.proactive.undeliverDelivery(delivery, reason);
+      else context.proactive?.failDelivery(delivery, reason);
+    }
+    if (active?.audioForwarded) {
+      context.playbackSuppressed = true;
+      this.host.clearOutput(context.epoch);
+      context.injector.noteOutputCleared();
+    }
+    if (state && state.phase !== 'queued' && !preserveMainResponse)
+      context.injector.noteResponseDone('proactive');
+    context.injector.abortProactive(delivery.deliveryId);
+    if (!cancelled)
+      this.subagents.update(
+        `proactive:${delivery.taskId}`,
+        {
+          notification: 'undelivered',
+          activity: liveMessage('subagents.notificationUndelivered'),
+        },
+        { kind: 'notification', text: reason },
+      );
+    this.debug('proactive.fallback_undelivered', {
+      epoch: context.epoch,
+      taskId: delivery.taskId,
+      deliveryId: delivery.deliveryId,
+      reason,
+    });
+    if (!context.stopping && !context.responseInFlight)
+      this.host.setCallState(context.epoch, 'listening');
+  }
+
+  private abortProactiveFallbacks(
+    context: CallContext,
+    reason: string,
+    preserveMainResponse = false,
+    includeQueued = true,
+  ): void {
+    for (const state of [
+      ...(this.proactiveFallbacks.get(context)?.values() ?? []),
+    ]) {
+      if (!includeQueued && state.phase === 'queued') continue;
+      this.undeliverProactiveSpeech(
+        context,
+        state.delivery,
+        reason,
+        preserveMainResponse,
+      );
+    }
   }
 
   private clearProactiveCancellationGrace(
@@ -5135,6 +5874,16 @@ export class LiveSession {
     delivery: ProactiveDelivery,
   ): void {
     if (this.active !== context) return;
+    if (this.proactiveFallbacks.get(context)?.has(delivery.deliveryId)) {
+      this.undeliverProactiveSpeech(
+        context,
+        delivery,
+        'The notification was cancelled.',
+        context.responseInFlight,
+        true,
+      );
+      return;
+    }
     if (context.injector.retractProactive(delivery.deliveryId)) {
       context.proactiveDeliveries.delete(delivery.deliveryId);
       context.userInterruptedProactiveDeliveries.delete(delivery.deliveryId);
@@ -5271,6 +6020,25 @@ export class LiveSession {
     if (this.active !== context || !context.realtime || context.stopping) {
       return false;
     }
+    const fallback = [
+      ...(this.proactiveFallbacks.get(context)?.values() ?? []),
+    ].find(
+      (state) => state.delivery.event === event && state.phase === 'queued',
+    );
+    if (fallback) {
+      if (
+        context.transportRecovering ||
+        context.responseInFlight ||
+        context.realtime.canDeliverExternalAudio?.() === false
+      )
+        return false;
+      // Injector installs the cycle and pending delivery after this sink
+      // returns. Start only after that bookkeeping is in place.
+      queueMicrotask(() => {
+        void this.runProactiveSpeechFallback(context, fallback);
+      });
+      return true;
+    }
     try {
       return context.realtime.respondToProactiveEvent(event);
     } catch {
@@ -5280,7 +6048,6 @@ export class LiveSession {
 
   private sendVisualSettings(context: CallContext): void {
     try {
-      this.publishSessionConfiguration(context);
       const sent = context.realtime?.sendBackendContext(
         `[VISUAL_INPUT] source=${context.visualInput.source} mode=${context.visualInput.mode}.`,
       );
@@ -5327,6 +6094,7 @@ export class LiveSession {
 
   private debug(event: string, details: Record<string, unknown>): void {
     try {
+      this.options.debugArchive?.recordRuntime(event, details);
       this.logger.debug(`${event} ${JSON.stringify(details)}`);
       if (
         this.logger.debugEnabled &&
@@ -5337,6 +6105,15 @@ export class LiveSession {
     } catch {
       // A diagnostic sink must not interrupt background observation or calls.
     }
+  }
+
+  private realtimeDebugContext(context: Record<string, unknown>): {
+    debugArchive?: DebugArchive;
+    debugContext?: Record<string, unknown>;
+  } {
+    return this.options.debugArchive
+      ? { debugArchive: this.options.debugArchive, debugContext: context }
+      : {};
   }
 
   private recordFailure(
@@ -5412,6 +6189,12 @@ export class LiveSession {
   }
 
   private cleanupContext(context: CallContext): void {
+    context.stopping = true;
+    this.clearNarrationInputs(context);
+    this.abortProactiveFallbacks(
+      context,
+      'The call ended before the notification was delivered.',
+    );
     this.stopDiscovery(context);
     this.cancelCallSearches(context);
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
@@ -5470,9 +6253,9 @@ export class LiveSession {
     args: Record<string, unknown>,
   ): Record<string, unknown> {
     const failed = (code: string, key: LiveMessageKey) => {
-      // Async accepted receipts must not request a second acknowledgement.
-      // Admission failures still need an answer; only this user-authorized
-      // handler (never the synthetic-response rejection path) may enqueue one.
+      // An admission error is answered by its ordinary tool continuation.
+      // Keep the failed attempt visible, but do not queue a second synthetic
+      // answer for the same error or start a native/background lookup.
       if (this.active === context && !context.stopping) {
         const query =
           typeof args['query'] === 'string'
@@ -5482,15 +6265,10 @@ export class LiveSession {
           context,
           query || liveText('en', 'subagents.kind.search'),
         );
-        this.queueSearchResult(
-          context,
-          task,
-          {
-            answer: liveText('en', key),
-            searchStatus: 'not_performed',
-          },
-          'failed',
-        );
+        task.outcome = 'failed';
+        task.answer = liveText('en', key);
+        task.searchStatus = 'not_performed';
+        this.finishSearchTask(context, task.id, 'search.failed');
       }
       return { status: 'error', code, note: liveText('en', key) };
     };
@@ -5527,9 +6305,11 @@ export class LiveSession {
   private createSearchTask(
     context: CallContext,
     query: string,
+    kind: CallSearchTask['kind'] = 'search',
   ): CallSearchTask {
     const task: CallSearchTask = {
-      id: `search:${++this.searchSeq}`,
+      id: `${kind}:${++this.searchSeq}`,
+      kind,
       query,
       controller: new AbortController(),
       outcome: 'completed',
@@ -5537,15 +6317,109 @@ export class LiveSession {
     context.searches.set(task.id, task);
     this.subagents.upsert({
       id: task.id,
-      kind: 'search',
+      kind,
       title: firstSentence(query, 180),
       request: query,
       status: 'queued',
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      activity: liveMessage('search.queued'),
+      activity: liveMessage(
+        kind === 'visual' ? 'visual.queued' : 'search.queued',
+      ),
     });
     return task;
+  }
+
+  private async runVisualAnalysis(
+    context: CallContext,
+    task: CallSearchTask,
+    image: string,
+  ): Promise<void> {
+    if (!this.searchIsCurrent(context, task) || !task.visual) return;
+    this.subagents.update(task.id, {
+      status: 'running',
+      activity: liveMessage('visual.running'),
+    });
+    try {
+      const result = await this.analyzeRealtimeImage({
+        ...this.options.realtime,
+        ...this.realtimeDebugContext({ epoch: context.epoch, taskId: task.id }),
+        image,
+        question: task.query,
+        source: task.visual.source,
+        signal: task.controller.signal,
+        onDebug: (event, details) => {
+          if (!this.searchIsCurrent(context, task)) return;
+          const metadata = {
+            ...details,
+            epoch: context.epoch,
+            taskId: task.id,
+          };
+          this.debug(event, metadata);
+          if (this.logger.debugEnabled)
+            this.log.write('visual.analysis', { event, ...metadata });
+        },
+      });
+      if (!this.searchIsCurrent(context, task)) return;
+      if (!result.answer?.trim() || result.answer.length > 16000)
+        throw new Error('Invalid visual analysis');
+      this.log.write('visual.analysis', {
+        epoch: context.epoch,
+        taskId: task.id,
+        providerSessionId: result.providerSessionId,
+        responseId: result.responseId,
+        answerChars: result.answer.length,
+        status: 'completed',
+      });
+      this.queueSearchResult(context, task, {
+        answer: result.answer,
+        searchStatus: 'not_performed',
+      });
+    } catch (error) {
+      if (!this.searchIsCurrent(context, task)) return;
+      const timedOut =
+        error instanceof QwenRealtimeError &&
+        error.code === 'visual_analysis_timeout';
+      this.recordFailure(context, {
+        source: 'tool',
+        code: timedOut ? 'visual_analysis_timeout' : 'visual_analysis_failed',
+        stage: 'snapshot_analysis',
+        impact: 'task',
+        message:
+          'The snapshot could not be analyzed; no visual contents were confirmed.',
+        taskId: task.id,
+        toolName: APPSHOT_TOOL_NAME,
+        fatal: false,
+      });
+      this.queueSearchResult(
+        context,
+        task,
+        {
+          answer: liveText('en', timedOut ? 'visual.timeout' : 'visual.failed'),
+          searchStatus: 'not_performed',
+        },
+        'failed',
+      );
+    }
+  }
+
+  private lookupMessageKey(
+    task: CallSearchTask,
+    key: LiveMessageKey,
+  ): LiveMessageKey {
+    if (task.kind !== 'visual') return key;
+    const keys: Partial<Record<LiveMessageKey, LiveMessageKey>> = {
+      'search.awaitingAnswer': 'visual.awaitingAnswer',
+      'search.answering': 'visual.answering',
+      'search.answered': 'visual.answered',
+      'search.completed': 'visual.completed',
+      'search.failed': 'visual.failed',
+      'search.cancelled': 'visual.cancelled',
+      'search.answerInterrupted': 'visual.answerInterrupted',
+      'search.answerUnspoken': 'visual.answerUnspoken',
+      'search.answerMuted': 'visual.answerMuted',
+    };
+    return keys[key] ?? key;
   }
 
   private async runWebSearch(
@@ -5566,6 +6440,7 @@ export class LiveSession {
     try {
       const result = await this.searchRealtime({
         endpoint: this.options.realtime.endpoint,
+        ...this.realtimeDebugContext({ epoch: context.epoch, taskId: task.id }),
         ...(this.options.realtime.apiKey
           ? { apiKey: this.options.realtime.apiKey }
           : {}),
@@ -5654,14 +6529,20 @@ export class LiveSession {
       ...row,
       status: 'delivering',
       output: result.answer,
-      activity: liveMessage('search.awaitingAnswer'),
+      activity: liveMessage(
+        this.lookupMessageKey(task, 'search.awaitingAnswer'),
+      ),
       notification: 'queued',
     });
     if (this.host.isOutputMuted?.() === true) {
       this.finishSearchTask(context, task.id, 'search.answerMuted');
       return;
     }
-    if (!context.realtime?.respondToSearchResult) {
+    if (
+      !(task.kind === 'visual'
+        ? context.realtime?.respondToVisualResult
+        : context.realtime?.respondToSearchResult)
+    ) {
       this.finishSearchTask(context, task.id, 'search.completed');
       return;
     }
@@ -5670,7 +6551,9 @@ export class LiveSession {
       JSON.stringify({
         query: task.query,
         answer,
-        searchStatus: result.searchStatus,
+        ...(task.kind === 'visual'
+          ? { status: outcome, ...task.visual?.metadata }
+          : { searchStatus: result.searchStatus }),
         ...(answer.length < result.answer.length ? { truncated: true } : {}),
         ...(outcome === 'failed' ? { failed: true } : {}),
       });
@@ -5686,6 +6569,11 @@ export class LiveSession {
       answer = answer.slice(0, Math.floor(answer.length * 0.75));
       evidence = payload();
     }
+    this.logSearchDelivery(context, task.id, 'queued', {
+      answerChars: result.answer.length,
+      searchStatus: result.searchStatus,
+      outcome,
+    });
     const accepted = context.injector.enqueue({
       kind: 'search_result',
       searchId: task.id,
@@ -5716,11 +6604,11 @@ export class LiveSession {
     context.activeSearchResult = active;
     let accepted = false;
     try {
-      accepted =
-        context.realtime?.respondToSearchResult?.(
-          text,
-          this.notificationLanguage(),
-        ) ?? false;
+      const respond =
+        task.kind === 'visual'
+          ? context.realtime?.respondToVisualResult
+          : context.realtime?.respondToSearchResult;
+      accepted = respond?.(text, this.notificationLanguage()) ?? false;
     } catch {
       // An invalid request is not a failed lookup and must not execute a backend.
       this.finishSearchTask(context, task.id, 'search.completed');
@@ -5731,7 +6619,33 @@ export class LiveSession {
         context.activeSearchResult = undefined;
       return false;
     }
+    this.logSearchDelivery(context, task.id, 'requested');
     return true;
+  }
+
+  /** Correlation and delivery state only; answer text lives in its transcript. */
+  private logSearchDelivery(
+    context: CallContext,
+    taskId: string,
+    phase: string,
+    details: Record<string, unknown> = {},
+  ): void {
+    const payload = {
+      epoch: context.epoch,
+      callId: context.callId,
+      providerSessionId: context.providerSessionId,
+      taskId,
+      kind: context.searches.get(taskId)?.kind ?? 'search',
+      phase,
+      ...details,
+    };
+    this.log.write('search.delivery', payload);
+    this.debug(
+      context.searches.get(taskId)?.kind === 'visual'
+        ? 'visual.delivery'
+        : 'web_search.delivery',
+      payload,
+    );
   }
 
   private finishSearchResult(context: CallContext): void {
@@ -5764,10 +6678,15 @@ export class LiveSession {
   ): void {
     const task = context.searches.get(taskId);
     if (!task) return;
+    this.logSearchDelivery(context, task.id, 'finished', {
+      outcome: task.outcome,
+      reason,
+      delivered: reason === 'search.answered',
+    });
     context.searches.delete(taskId);
     this.subagents.result(taskId, task.outcome, task.answer ?? '');
     this.subagents.update(taskId, {
-      activity: liveMessage(reason),
+      activity: liveMessage(this.lookupMessageKey(task, reason)),
       notification: reason === 'search.answered' ? 'delivered' : undefined,
     });
   }
@@ -5783,7 +6702,9 @@ export class LiveSession {
       active.cancelled = true;
       const responseActive = Boolean(
         active.responseId &&
-        context.responseAuthorities.get(active.responseId) === 'search_result',
+        ['search_result', 'visual_result'].includes(
+          context.responseAuthorities.get(active.responseId) ?? '',
+        ),
       );
       if (active.responseDone || responseActive) {
         // Model generation may already be done while the device is still
@@ -5810,7 +6731,7 @@ export class LiveSession {
     }
     this.subagents.result(task.id, 'cancelled', '');
     this.subagents.update(task.id, {
-      activity: liveMessage('search.cancelled'),
+      activity: liveMessage(this.lookupMessageKey(task, 'search.cancelled')),
       notification: undefined,
     });
   }
@@ -5866,7 +6787,7 @@ export class LiveSession {
     });
     try {
       // Never steer an unrelated coding session just because a lookup failed.
-      const adaptor = this.registry.defaultAdaptor;
+      const adaptor = this.observedAdaptor(this.registry.defaultAdaptor);
       const backend = await adaptor.createSession({ label: 'Web Search' });
       task.fallbackBackend = backend;
       if (!this.searchIsCurrent(context, task)) return;

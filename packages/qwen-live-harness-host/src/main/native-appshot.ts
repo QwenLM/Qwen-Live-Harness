@@ -26,6 +26,8 @@ export type NativeDisplay = {
 export type NativeDisplayCapture = {
   displayId: string;
   screenshot: Uint8Array;
+  /** Required acknowledgement when native-resolution capture was requested. */
+  nativeResolution?: true;
 };
 
 export type NativeAppshot = {
@@ -34,7 +36,10 @@ export type NativeAppshot = {
   requestScreenRecording: () => boolean;
   captureAppshot: () => Promise<NativeAppshotCapture>;
   listDisplays: () => NativeDisplay[];
-  captureDisplay: (displayId: string) => Promise<NativeDisplayCapture>;
+  captureDisplay: (
+    displayId: string,
+    nativeResolution?: boolean,
+  ) => Promise<NativeDisplayCapture>;
 };
 
 let loaded: NativeAppshot | undefined;

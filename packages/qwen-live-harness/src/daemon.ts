@@ -33,6 +33,8 @@ import {
 import { LiveHostCoordinator } from './host/qwen-live-harness-host-coordinator.js';
 import { LIVE_HOST_PROTOCOL_VERSION } from './host/types.js';
 import { SessionLog } from './log/session-log.js';
+import { DebugArchive } from './log/debug-archive.js';
+import { readDebugBuildInfo } from './log/build-info.js';
 import {
   RuntimeFailureLog,
   runtimeFailureRecord,
@@ -51,6 +53,10 @@ import { writeDaemonStopMarker, type DaemonIdentity } from './lifecycle.js';
 import { MonitorDebugStore } from './proactive/monitor-debug-store.js';
 import { escapeAnsiCtrlCodes } from './realtime/sanitize.js';
 import { PACKAGE_VERSION } from './version.js';
+import {
+  QWEN_REALTIME_INPUT_SAMPLE_RATE,
+  QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
+} from './realtime/realtime-session.js';
 import {
   MAX_SUBAGENTS_REQUEST_BYTES,
   parseSubagentsControlRequest,
@@ -115,6 +121,7 @@ export class LiveDaemon {
   private memory: MemoryService | undefined;
   private log: SessionLog | undefined;
   private monitorDebug: MonitorDebugStore | undefined;
+  private debugArchive: DebugArchive | undefined;
   private discoveryPublished = false;
   private stopping = false;
   private resourcesStopPromise: Promise<void> | undefined;
@@ -177,7 +184,46 @@ export class LiveDaemon {
     assertStarting();
     this.startupStage = 'debug_archive';
     if (this.logger.debugEnabled) {
+      this.debugArchive = new DebugArchive({
+        directory: join(this.config.dataDir, 'debug'),
+        secrets: runtimeFailureSecrets(this.config, [this.token]),
+        metadata: {
+          effectiveConfig: this.config,
+          version: PACKAGE_VERSION,
+          build: await readDebugBuildInfo(),
+          runtime: {
+            node: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            pid: process.pid,
+          },
+          mediaFormats: {
+            inputAudio: {
+              encoding: 'pcm_s16le',
+              channels: 1,
+              sampleRate: QWEN_REALTIME_INPUT_SAMPLE_RATE,
+            },
+            requestedOutputAudio: {
+              encoding: 'pcm_s16le',
+              channels: 1,
+              sampleRate: QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
+            },
+          },
+          instanceNonce: this.instanceNonce,
+        },
+        onWarning: (warning) =>
+          this.logger.warn(
+            `Debug archive incomplete: ${JSON.stringify(warning)}`,
+          ),
+      });
+      this.logger.debug(
+        `debug.archive ${JSON.stringify({ path: this.debugArchive.path, retainRuns: 10, maxBytes: 512 * 1024 * 1024 })}`,
+      );
+      this.logger.warn(
+        'Debug archives contain private conversation, media, prompts and tool results. Known keys and credential fields are redacted, but secrets visible or spoken in media are not. Review before sharing.',
+      );
       const archive = new MonitorDebugStore((event, details) => {
+        this.debugArchive?.recordRuntime(event, details);
         this.logger.debug(`${event} ${JSON.stringify(details)}`);
         this.log?.write('proactive.debug', { event, ...details });
         if (event === 'proactive.monitor_debug_failed')
@@ -266,6 +312,7 @@ export class LiveDaemon {
         apiKey: this.config.realtime.apiKey,
       },
       log: (event, details) => {
+        this.debugArchive?.recordRuntime(event, details);
         this.logger.debug(`${event} ${JSON.stringify(details ?? {})}`);
         if (
           /[._](?:failed|error|unavailable|bad_response|invalid_response|timeout)$/u.test(
@@ -292,6 +339,8 @@ export class LiveDaemon {
     this.startupStage = 'host_initialization';
     const coordinator = new LiveHostCoordinator({
       onFailure: (failure) => this.recordFailure(failure),
+      onDebug: (event, details) =>
+        this.debugArchive?.recordRuntime(event, details),
       daemonInstanceNonce: this.instanceNonce,
       daemonShutdownV1: true,
       getUiLanguage: () => ({ language: this.config.language ?? 'en' }),
@@ -300,16 +349,23 @@ export class LiveDaemon {
       onScreenDisplayChange: (screenDisplayId) => {
         this.config.visualInput.screenDisplayId =
           persistScreenDisplayPreference(this.config.dataDir, screenDisplayId);
+        this.debugArchive?.recordRuntime('host.screen_display_changed', {
+          screenDisplayId,
+        });
       },
       onLanguageAction: (language) => {
         this.config.language = persistLanguagePreference(
           this.config.dataDir,
           language,
         );
+        this.debugArchive?.recordRuntime('host.language_changed', {
+          language: this.config.language,
+        });
         return { language: this.config.language };
       },
       getMemoryState: () => this.memory!.state(),
       onMemoryAction: (action) => {
+        this.debugArchive?.recordRuntime('host.memory_action', action);
         try {
           this.memory!.applyAction(action);
         } catch (error) {
@@ -370,6 +426,8 @@ export class LiveDaemon {
     const log = new SessionLog({
       directory: join(this.config.dataDir, 'sessions'),
       liveSessionId: `live-${Date.now()}-${this.instanceNonce.slice(0, 8)}`,
+      onEvent: (event) =>
+        this.debugArchive?.recordRuntime('session.log', event),
     });
     this.log = log;
 
@@ -389,6 +447,7 @@ export class LiveDaemon {
       },
       proactive: this.config.proactive,
       monitorDebug: this.monitorDebug,
+      debugArchive: this.debugArchive,
       memory: this.memory,
       log,
       logger: this.logger,
@@ -397,15 +456,36 @@ export class LiveDaemon {
     this.session = session;
 
     coordinator.setHandlers({
-      onStart: (call) => session.start(call),
-      onStop: (call) => session.stop(call),
+      onStart: (call) => {
+        this.debugArchive?.recordRuntime('host.start', call);
+        return session.start(call);
+      },
+      onStop: (call) => {
+        this.debugArchive?.recordRuntime('host.stop', call);
+        return session.stop(call);
+      },
       onInputAudio: (call) => session.pushAudio(call),
-      onInputMuteChanged: (call) => session.setInputMuted(call),
+      onInputMuteChanged: (call) => {
+        this.debugArchive?.recordRuntime('host.input_mute_changed', call);
+        session.setInputMuted(call);
+      },
       onInputImage: (call) => session.pushImage(call),
-      onVisualSettings: (call) => session.setVisualSettings(call),
-      onPlaybackStarted: (call) => session.playbackStarted(call),
-      onPlaybackCompleted: (call) => session.playbackCompleted(call),
-      onOutputMuted: (call) => session.outputMuted(call),
+      onVisualSettings: (call) => {
+        this.debugArchive?.recordRuntime('host.visual_settings', call);
+        session.setVisualSettings(call);
+      },
+      onPlaybackStarted: (call) => {
+        this.debugArchive?.recordRuntime('host.playback_started', call);
+        session.playbackStarted(call);
+      },
+      onPlaybackCompleted: (call) => {
+        this.debugArchive?.recordRuntime('host.playback_completed', call);
+        session.playbackCompleted(call);
+      },
+      onOutputMuted: (call) => {
+        this.debugArchive?.recordRuntime('host.output_muted', call);
+        session.outputMuted(call);
+      },
     });
 
     this.startupStage = 'listen';
@@ -497,6 +577,7 @@ export class LiveDaemon {
         failure,
         runtimeFailureSecrets(this.config, [this.token]),
       );
+      this.debugArchive?.recordRuntime('runtime.failure', record);
       if (includeSession) this.log?.write('failure', record);
       const saved = this.failureLog.write(record as unknown as RuntimeFailure);
       if (!saved && !this.failureLogUnavailable) {
@@ -585,6 +666,7 @@ export class LiveDaemon {
       ['monitor debug archive', () => this.monitorDebug?.flush()],
       ['log', () => this.log?.close()],
       ['discovery', () => this.removeDiscovery()],
+      ['debug archive', () => this.debugArchive?.close()],
     ]);
     const pending = this.pendingCleanup;
     this.resourcesStopPromise ??= (async () => {

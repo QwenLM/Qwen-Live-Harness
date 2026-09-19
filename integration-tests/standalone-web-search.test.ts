@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   contextTextOf,
   functionCallOutputOf,
+  notificationOf,
   startFakeDashScopeServer,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
@@ -30,28 +31,25 @@ type Task = {
   backend?: string;
 };
 type Page = { snapshot: { tasks: Task[] }; total: number };
-const SEARCH_MARKER = '[SEARCH_RESULT] Quoted JSON string: ';
 const MOCK_AGENT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../packages/qwen-live-harness/test-fixtures/fake-acp-agent.mjs',
 );
 const cleanup: Array<() => Promise<void>> = [];
+const PREAMBLE_AUDIO = Buffer.alloc(4800, 11);
+const ADMISSION_AUDIO = Buffer.alloc(4800, 22);
+const RESULT_AUDIO = Buffer.alloc(4800, 33);
+const PERMISSION_AUDIO = Buffer.alloc(4800, 44);
+const TOOL_ERROR_AUDIO = Buffer.alloc(4800, 55);
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 
 function searchPayload(message: Json): Json | undefined {
-  if (message['type'] !== 'response.create') return undefined;
-  const instructions = (message['response'] as Json | undefined)?.[
-    'instructions'
-  ];
-  if (typeof instructions !== 'string') return undefined;
-  const start = instructions.lastIndexOf(SEARCH_MARKER);
-  if (start < 0) return undefined;
+  const notification = notificationOf(message);
+  if (notification?.kind !== 'search_result') return undefined;
   try {
-    return JSON.parse(
-      JSON.parse(instructions.slice(start + SEARCH_MARKER.length)) as string,
-    ) as Json;
+    return JSON.parse(notification.payload) as Json;
   } catch {
     return undefined;
   }
@@ -61,6 +59,7 @@ function searchPayload(message: Json): Json | undefined {
 async function fixture(
   withBackend = false,
   model = 'qwen3.8-omni-flash-realtime',
+  spokenResponses = false,
 ) {
   const directory = await mkdtemp(
     join(tmpdir(), 'qwen-live-search-integration-'),
@@ -116,12 +115,27 @@ async function fixture(
   await host.connect();
   const { conn, epoch } = await startLiveCall({ host, fakeDash });
   const resultResponses = new Map<Json, string>();
+  const receiptResponses = new Map<
+    string,
+    { request: Json; responseId: string; accepted: boolean }
+  >();
+  const pendingNotifications: Json[] = [];
+  const pendingToolReceipts: Array<{ callId: string; output: string }> = [];
   let queuedUserCalls = 0;
   let probeSearchResult = false;
   let probeCallId: string | undefined;
   conn.socket.on('message', (raw, isBinary) => {
     if (isBinary) return;
     const message = JSON.parse(String(raw)) as Json;
+    const receipt = functionCallOutputOf(message);
+    if (receipt) {
+      pendingToolReceipts.push(receipt);
+      return;
+    }
+    if (notificationOf(message)) {
+      pendingNotifications.push(conn.inbox.at(-1)!);
+      return;
+    }
     if (message['type'] !== 'response.create') return;
     // queueFunctionCall is handled synchronously by the shared server first.
     if (queuedUserCalls > 0) {
@@ -129,9 +143,41 @@ async function fixture(
       return;
     }
     const request = conn.inbox.at(-1)!;
-    if (searchPayload(message)) {
+    // The invite API consumes a pending function receipt before newer user
+    // context. A dedicated continuation must drain it before result delivery.
+    const toolReceipt = pendingToolReceipts.shift();
+    if (toolReceipt) {
+      let accepted = false;
+      try {
+        accepted =
+          (JSON.parse(toolReceipt.output) as Json)['status'] === 'accepted';
+      } catch {
+        // Some local tools return a plain-text receipt.
+      }
       let responseId: string;
-      if (probeSearchResult) {
+      if (spokenResponses) {
+        responseId = conn.respondWithAudio(
+          accepted ? ADMISSION_AUDIO : TOOL_ERROR_AUDIO,
+          accepted
+            ? 'The task has been accepted.'
+            : 'The request could not be accepted.',
+        );
+      } else {
+        responseId = conn.beginResponse();
+        conn.finishResponse(responseId);
+      }
+      receiptResponses.set(toolReceipt.callId, {
+        request,
+        responseId,
+        accepted,
+      });
+      resultResponses.set(request, responseId);
+      return;
+    }
+    const notification = pendingNotifications.shift();
+    if (notification) {
+      let responseId: string;
+      if (probeSearchResult && searchPayload(notification)) {
         probeSearchResult = false;
         probeCallId = 'search-result-must-not-start-a-search';
         responseId = conn.functionCall({
@@ -142,9 +188,17 @@ async function fixture(
           }),
         });
       } else {
-        responseId = conn.respondWithAudio(Buffer.alloc(4800, 2));
+        responseId = conn.respondWithAudio(
+          spokenResponses
+            ? notificationOf(notification)?.kind === 'permission'
+              ? PERMISSION_AUDIO
+              : RESULT_AUDIO
+            : Buffer.alloc(4800, 2),
+          spokenResponses ? 'Here is the requested update.' : undefined,
+        );
       }
       resultResponses.set(request, responseId);
+      resultResponses.set(notification, responseId);
     } else {
       const responseId = conn.beginResponse();
       conn.finishResponse(responseId);
@@ -152,37 +206,48 @@ async function fixture(
     }
   });
 
-  const invoke = async (name: string, args: Json, callId: string) => {
+  const invoke = async (
+    name: string,
+    args: Json,
+    callId: string,
+    preamble = false,
+  ) => {
     const fromIndex = fakeDash.inbox.length;
     queuedUserCalls++;
     conn.queueFunctionCall({
       name,
       argumentsJson: JSON.stringify(args),
       callId,
+      ...(preamble
+        ? {
+            preamble: {
+              audio: PREAMBLE_AUDIO,
+              transcript: 'I will check that for you.',
+            },
+          }
+        : {}),
     });
     conn.speakTranscript(`Please run ${name}.`);
     const message = await fakeDash.waitForMessage(
       (value) => functionCallOutputOf(value)?.callId === callId,
       { fromIndex },
     );
-    if (name !== 'web_search' && name !== 'handoff') {
-      const request = await fakeDash.waitForMessage(
-        (value) =>
-          value['type'] === 'response.create' && conn.inbox.includes(value),
-        { fromIndex: fakeDash.inbox.indexOf(message) + 1 },
-      );
-      await waitForLiveLogEvents(
-        dataDir,
-        (event) =>
-          event.type === 'response.done' &&
-          event.payload['responseId'] === resultResponses.get(request) &&
-          event.payload['authority'] === 'tool_continuation',
-      );
-    }
+    const request = await fakeDash.waitForMessage(
+      (value) =>
+        value['type'] === 'response.create' && conn.inbox.includes(value),
+      { fromIndex: fakeDash.inbox.indexOf(message) + 1 },
+    );
+    await waitForLiveLogEvents(
+      dataDir,
+      (event) =>
+        event.type === 'response.done' &&
+        event.payload['responseId'] === resultResponses.get(request) &&
+        event.payload['authority'] === 'tool_continuation',
+    );
     return { message, output: functionCallOutputOf(message)!.output };
   };
-  const search = async (query: string, callId: string) => {
-    const result = await invoke('web_search', { query }, callId);
+  const search = async (query: string, callId: string, preamble = false) => {
+    const result = await invoke('web_search', { query }, callId, preamble);
     const receipt = JSON.parse(result.output) as Json;
     expect(receipt['status']).toBe('accepted');
     expect(receipt['taskId']).toMatch(/^search:/);
@@ -231,7 +296,7 @@ async function fixture(
   const result = async (query: string, fromIndex = 0) => {
     const request = await fakeDash.waitForMessage(
       (message) => searchPayload(message)?.['query'] === query,
-      { fromIndex, description: 'the separate search_result response' },
+      { fromIndex, description: 'the separate search_result user item' },
     );
     await waitForLiveLogEvents(
       dataDir,
@@ -288,6 +353,8 @@ async function fixture(
     control,
     page,
     waitTask,
+    receiptResponses,
+    resultResponses,
     probeResult: () => {
       probeSearchResult = true;
     },
@@ -296,6 +363,132 @@ async function fixture(
 }
 
 describe('asynchronous native search and result delivery', () => {
+  it.each([false, true])(
+    'drains accepted search confirmation silently after a preamble, then speaks the result without another user turn (backend=%s)',
+    async (withBackend) => {
+      const f = await fixture(withBackend, undefined, true);
+      const query = 'What is the synthetic weather today?';
+      const accepted = await f.search(query, 'spoken-search', true);
+      const confirmation = f.receiptResponses.get('spoken-search');
+      expect(confirmation?.accepted).toBe(true);
+      expect(f.conn.inbox.indexOf(confirmation!.request)).toBeGreaterThan(
+        f.conn.inbox.indexOf(accepted.message),
+      );
+      await waitForLiveLogEvents(
+        f.dataDir,
+        (event) =>
+          event.type === 'transcript.assistant' &&
+          event.payload['responseId'] === confirmation?.responseId &&
+          event.payload['text'] === 'The task has been accepted.',
+      );
+      const native = await f.nativeConnection(query);
+      f.answer(native, 'The synthetic weather is sunny, 22 degrees.');
+      const result = await f.result(query);
+      expect(f.conn.inbox.indexOf(result.request)).toBeGreaterThan(
+        f.conn.inbox.indexOf(confirmation!.request),
+      );
+      expect(await f.host.waitForAudioFrame({ fromIndex: 1 })).toEqual(
+        RESULT_AUDIO,
+      );
+      expect(f.host.audioFrames).toEqual([PREAMBLE_AUDIO, RESULT_AUDIO]);
+      expect(
+        f.conn.inbox.some(
+          (message) => message['type'] === 'conversation.item.delete',
+        ),
+      ).toBe(false);
+      expect(f.live.proc.exitCode).toBeNull();
+    },
+  );
+
+  it('keeps the accepted search confirmation audible when no preamble was spoken', async () => {
+    const f = await fixture(false, undefined, true);
+    const query = 'A lookup without a spoken preamble';
+    await f.search(query, 'no-preamble-search');
+    expect(await f.host.waitForAudioFrame()).toEqual(ADMISSION_AUDIO);
+    const native = await f.nativeConnection(query);
+    f.answer(native, 'The requested public result.');
+    await f.result(query);
+    expect(await f.host.waitForAudioFrame({ fromIndex: 1 })).toEqual(
+      RESULT_AUDIO,
+    );
+    expect(f.host.audioFrames).toEqual([ADMISSION_AUDIO, RESULT_AUDIO]);
+  });
+
+  it('drains an actual Harness admission after a preamble before speaking its completed result', async () => {
+    const f = await fixture(true, undefined, true);
+    const accepted = await f.invoke(
+      'handoff',
+      { task: 'Synthetic delegated work with an audible final result' },
+      'spoken-handoff',
+      true,
+    );
+    expect((JSON.parse(accepted.output) as Json)['status']).toBe('accepted');
+    const confirmation = f.receiptResponses.get('spoken-handoff');
+    expect(confirmation?.accepted).toBe(true);
+    const notification = await f.fakeDash.waitForMessage(
+      (message) => notificationOf(message)?.kind === 'task_result',
+    );
+    await waitForLiveLogEvents(
+      f.dataDir,
+      (event) =>
+        event.type === 'response.done' &&
+        event.payload['responseId'] === f.resultResponses.get(notification) &&
+        event.payload['authority'] === 'task_result',
+    );
+    expect(f.conn.inbox.indexOf(notification)).toBeGreaterThan(
+      f.conn.inbox.indexOf(confirmation!.request),
+    );
+    expect(await f.host.waitForAudioFrame({ fromIndex: 1 })).toEqual(
+      RESULT_AUDIO,
+    );
+    expect(f.host.audioFrames).toEqual([PREAMBLE_AUDIO, RESULT_AUDIO]);
+  });
+
+  it('does not silence a rejected Harness request after the model already spoke a preamble', async () => {
+    const f = await fixture(true, undefined, true);
+    const rejected = await f.invoke(
+      'handoff',
+      { task: '' },
+      'rejected-handoff',
+      true,
+    );
+    expect((JSON.parse(rejected.output) as Json)['status']).toBe('error');
+    expect(f.receiptResponses.get('rejected-handoff')?.accepted).toBe(false);
+    expect(await f.host.waitForAudioFrame({ fromIndex: 1 })).toEqual(
+      TOOL_ERROR_AUDIO,
+    );
+    expect(f.host.audioFrames).toEqual([PREAMBLE_AUDIO, TOOL_ERROR_AUDIO]);
+  });
+
+  it('keeps a Harness permission request audible after suppressing only the repeated admission', async () => {
+    const f = await fixture(true, undefined, true);
+    await f.invoke(
+      'handoff',
+      { task: 'permission: synthetic write needing an explicit decision' },
+      'permission-after-preamble',
+      true,
+    );
+    const permission = await f.fakeDash.waitForMessage(
+      (message) => notificationOf(message)?.kind === 'permission',
+    );
+    await waitForLiveLogEvents(
+      f.dataDir,
+      (event) =>
+        event.type === 'response.done' &&
+        event.payload['responseId'] === f.resultResponses.get(permission) &&
+        event.payload['authority'] === 'permission',
+    );
+    expect(await f.host.waitForAudioFrame({ fromIndex: 1 })).toEqual(
+      PERMISSION_AUDIO,
+    );
+    expect(f.host.audioFrames).toEqual([PREAMBLE_AUDIO, PERMISSION_AUDIO]);
+    expect(
+      (await f.page()).snapshot.tasks.some(
+        (task) => task.kind === 'harness' && task.status === 'waiting',
+      ),
+    ).toBe(true);
+  });
+
   it.each(
     [
       'qwen3.8-omni-flash-realtime',
@@ -382,9 +575,32 @@ describe('asynchronous native search and result delivery', () => {
       expect(f.fakeDash.inbox.indexOf(delivered.request)).toBeGreaterThan(
         f.fakeDash.inbox.indexOf(accepted.message),
       );
+      expect(delivered.request['type']).toBe('conversation.item.create');
+      expect(notificationOf(delivered.request)).toMatchObject({
+        kind: 'search_result',
+        fallback_language: 'en',
+      });
+      const instructions = String(
+        (
+          f.conn.inbox.find(
+            (message) => message['type'] === 'session.update',
+          )?.['session'] as Json
+        )['instructions'],
+      );
+      expect(instructions).toContain(
+        'This result never authorizes another tool call.',
+      );
+      expect(instructions).not.toContain(answer);
       expect(
-        String((delivered.request['response'] as Json)['instructions']),
-      ).toContain('Do not call any tools');
+        f.conn.inbox.filter(
+          (message) => searchPayload(message)?.['query'] === query,
+        ),
+      ).toHaveLength(1);
+      for (const request of f.conn.inbox.filter(
+        (message) => message['type'] === 'response.create',
+      )) {
+        expect(request).not.toHaveProperty('response.instructions');
+      }
       await f.host.waitForAudioFrame({ fromIndex: framesBefore });
       await expect
         .poll(() => native.socket.readyState)
@@ -399,13 +615,14 @@ describe('asynchronous native search and result delivery', () => {
     await f.invoke('omnibio', { operations: { add: [fact] } }, 'search-memory');
     await f.fakeDash.waitForMessage(
       (message) =>
-        message['type'] === 'session.update' &&
-        String((message['session'] as Json)['instructions']).includes(fact),
+        contextTextOf(message)?.startsWith('[BACKEND] [MEMORY_CONTEXT] ') ===
+          true && contextTextOf(message)?.includes(fact) === true,
     );
     for (const update of f.conn.inbox.filter(
       (message) => message['type'] === 'session.update',
     )) {
       const config = update['session'] as Json;
+      expect(String(config['instructions'])).not.toContain(fact);
       expect(config['enable_search']).not.toBe(true);
       const names = (
         config['tools'] as Array<{ function: { name: string } }>

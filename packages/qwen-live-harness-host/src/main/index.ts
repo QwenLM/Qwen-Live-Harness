@@ -382,11 +382,6 @@ function hostReadinessBlocker(): string | undefined {
   if (visualInput?.source === 'camera') {
     if (permissions.camera !== 'granted') return 'camera_permission';
   } else {
-    if (
-      visualInput?.mode !== 'live-feed' &&
-      permissions.accessibility !== 'granted'
-    )
-      return 'accessibility_permission';
     if (permissions.screenRecording !== 'granted')
       return 'screen_recording_permission';
   }
@@ -464,8 +459,7 @@ function visualSourceReady(
   return source === 'camera'
     ? permissions.camera === 'granted'
     : permissions.screenRecording === 'granted' &&
-        (mode === 'live-feed' ||
-          (permissions.accessibility === 'granted' && selfChecks.appshot));
+        (mode === 'live-feed' || selfChecks.appshot);
 }
 
 function refreshScreenDisplays(): void {
@@ -1814,26 +1808,32 @@ async function captureOnDemandVisual(request: {
     };
   }
 
-  if (request.screenScope === 'display') {
+  if (request.source === 'screen') {
+    const screenDisplayId =
+      request.screenDisplayId ?? visualInput?.screenDisplayId ?? 'primary';
     if (
-      request.source !== 'screen' ||
-      request.persistAsset !== false ||
       permissions.screenRecording !== 'granted' ||
-      (request.screenDisplayId ?? 'primary') !==
-        (visualInput?.screenDisplayId ?? 'primary')
+      !selfChecks.appshot ||
+      screenDisplayId !== (visualInput?.screenDisplayId ?? 'primary')
     )
       throw new Error(liveMessage('host.error.displayCapture'));
-    const capture = await appshotCapture.captureDisplayFrame(
-      request.screenDisplayId ?? 'primary',
-    );
+    const capture = await appshotCapture.captureDisplayFrame(screenDisplayId, {
+      nativeResolution: request.persistAsset !== false,
+    });
     if (epoch !== daemon.getEpoch() || generation !== visualGeneration)
       throw new Error('stale_visual_capture');
     const frame = encodeScreenFrame(
       capture.screenshot,
       request.snapshotWidth,
       request.snapshotHeight,
-      true,
+      request.persistAsset === false,
     );
+    const screenshotPath =
+      request.persistAsset === false
+        ? undefined
+        : await appshotCapture.storePng(capture.screenshot);
+    if (epoch !== daemon.getEpoch() || generation !== visualGeneration)
+      throw new Error('stale_visual_capture');
     if (diagnosticsEnabled) {
       writeLiveDiagnostic('visual_snapshot_captured', {
         epoch,
@@ -1854,35 +1854,10 @@ async function captureOnDemandVisual(request: {
       screenScope: 'display',
       displayId: capture.displayId,
       ...frame,
+      ...(screenshotPath ? { screenshotPath } : {}),
     };
   }
-
-  if (!selfChecks.appshot) throw new Error('screen_capture_unavailable');
-  const capture = await appshotCapture.captureFrame();
-  if (epoch !== daemon.getEpoch() || generation !== visualGeneration) {
-    throw new Error('stale_visual_capture');
-  }
-  const frame = encodeScreenFrame(
-    capture.screenshot,
-    request.snapshotWidth,
-    request.snapshotHeight,
-    false,
-  );
-  const screenshotPath =
-    request.persistAsset === false
-      ? undefined
-      : await appshotCapture.storePng(capture.screenshot);
-  if (epoch !== daemon.getEpoch() || generation !== visualGeneration) {
-    throw new Error('stale_visual_capture');
-  }
-  return {
-    source: 'screen',
-    ...frame,
-    appName: capture.appName,
-    ...(capture.windowTitle ? { windowTitle: capture.windowTitle } : {}),
-    accessibilityText: capture.accessibilityText,
-    ...(screenshotPath ? { screenshotPath } : {}),
-  };
+  throw new Error('screen_capture_unavailable');
 }
 
 function registerIpc(): void {
@@ -2160,12 +2135,6 @@ function registerIpc(): void {
     }
     if (source === 'screen') {
       appshotReadiness.refresh();
-      if (
-        visualInput.mode !== 'live-feed' &&
-        permissions.accessibility !== 'granted'
-      ) {
-        appshotReadiness.requestPermission('accessibility');
-      }
       if (permissions.screenRecording !== 'granted') {
         appshotReadiness.requestPermission('screenRecording');
       }
@@ -2196,9 +2165,16 @@ function registerIpc(): void {
       visualInput.source === 'screen' &&
       !visualSourceReady('screen', mode)
     ) {
-      appshotReadiness.requestPermission('accessibility');
+      if (permissions.screenRecording !== 'granted')
+        appshotReadiness.requestPermission('screenRecording');
       if (!visualSourceReady('screen', mode))
-        throw new Error(liveMessage('runtime.accessibilityPermission'));
+        throw new Error(
+          liveMessage(
+            permissions.screenRecording !== 'granted'
+              ? 'runtime.screenPermission'
+              : 'runtime.appshot',
+          ),
+        );
     }
     try {
       if (!daemon.sendVisualSettings({ mode }, epoch)) throw new Error();

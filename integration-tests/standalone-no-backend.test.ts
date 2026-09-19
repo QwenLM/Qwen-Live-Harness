@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   contextTextOf,
   functionCallOutputOf,
+  notificationOf,
   startFakeDashScopeServer,
   type FakeDashScopeConnection,
   type FakeDashScopeServer,
@@ -20,7 +21,7 @@ import {
   readLiveDiscovery,
   spawnQwenLiveHarness,
   startLiveCall,
-  waitForLiveResponseAfter,
+  waitForLiveLogEvents,
   type SpawnedQwenLiveHarness,
 } from './qwen-live-harness.js';
 
@@ -42,7 +43,10 @@ describe('standalone Omni without any coding backend', () => {
     discoveryDir = join(directory, 'discovery');
     await mkdir(dataDir);
     await mkdir(discoveryDir);
-    fakeDash = await startFakeDashScopeServer();
+    fakeDash = await startFakeDashScopeServer({
+      autoAckAudioCommits: true,
+      visualAnalysisReply: 'The synthetic snapshot contains a blue region.',
+    });
     live = await spawnQwenLiveHarness({
       dataDir,
       discoveryDir,
@@ -86,12 +90,31 @@ describe('standalone Omni without any coding backend', () => {
       { fromIndex },
     );
     const output = functionCallOutputOf(message)!.output;
-    await waitForLiveResponseAfter(
-      { fakeDash, dataDir },
-      message,
-      'tool_continuation',
-    );
+    await responseAfter(message, 'tool_continuation');
     return output;
+  }
+
+  async function responseAfter(
+    anchor: Json,
+    authority: 'tool_continuation' | 'visual_result',
+  ) {
+    // Independent image workers also send response.create. Match the main
+    // connection rather than letting their request satisfy this turn's wait.
+    const request = await fakeDash.waitForMessage(
+      (message) =>
+        conn.inbox.includes(message) && message['type'] === 'response.create',
+      { fromIndex: fakeDash.inbox.indexOf(anchor) + 1 },
+    );
+    const responseId = fakeDash.autoResponseIdFor(request);
+    expect(responseId).toBeDefined();
+    await waitForLiveLogEvents(
+      dataDir,
+      (event) =>
+        event.type === 'response.done' &&
+        event.payload['responseId'] === responseId &&
+        event.payload['authority'] === authority &&
+        event.payload['status'] === 'completed',
+    );
   }
 
   async function subagents(action: Json = { action: 'list' }): Promise<Json> {
@@ -180,61 +203,31 @@ describe('standalone Omni without any coding backend', () => {
     },
   );
 
-  it('delivers On Demand screen pixels directly without a backend', async () => {
-    const fromIndex = fakeDash.inbox.length;
-    const pending = tool('appshot', {}, 'no-backend-appshot');
-    await fakeDash.waitForMessage(
-      (value) => value['type'] === 'input_audio_buffer.commit',
-      { fromIndex },
-    );
-    const messages = fakeDash.inbox.slice(fromIndex);
-    expect(messages.slice(-4)).toEqual([
-      expect.objectContaining({
-        type: 'session.update',
-        session: { turn_detection: null },
-      }),
-      expect.objectContaining({
-        type: 'input_audio_buffer.append',
-        audio: Buffer.alloc(32000).toString('base64'),
-      }),
-      expect.objectContaining({
-        type: 'input_image_buffer.append',
-        image: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
-      }),
-      expect.objectContaining({ type: 'input_audio_buffer.commit' }),
-    ]);
-    expect(messages.some((value) => functionCallOutputOf(value))).toBe(false);
-
-    const itemId = 'no-backend-appshot-media';
-    conn.send({ type: 'input_audio_buffer.committed', item_id: itemId });
-    conn.send({
-      type: 'conversation.item.input_audio_transcription.completed',
-      item_id: itemId,
-      transcript: '',
-    });
-
-    const receipt = JSON.parse(await pending) as Json;
+  it('starts independent On Demand analysis and retains screen metadata without a backend', async () => {
+    const receipt = JSON.parse(
+      await tool('appshot', {}, 'no-backend-appshot'),
+    ) as Json;
     expect(receipt).toMatchObject({
-      status: 'ok',
+      status: 'accepted',
       source: 'screen',
-      image_delivery: 'realtime',
+      screen_scope: 'display',
       accessibility_text: 'fake accessibility text',
     });
+    expect(receipt['taskId']).toMatch(/^visual:/);
     expect(receipt['asset']).toMatch(/^asset_/);
-    const completed = fakeDash.inbox.slice(fromIndex);
-    const resultIndex = completed.findIndex(
-      (value) => functionCallOutputOf(value)?.callId === 'no-backend-appshot',
+    const result = await fakeDash.waitForMessage(
+      (message) =>
+        conn.inbox.includes(message) &&
+        notificationOf(message)?.kind === 'visual_result',
     );
-    expect(completed[resultIndex - 1]).toMatchObject({
-      type: 'session.update',
-      session: {
-        turn_detection: {
-          type: 'semantic_vad',
-          create_response: false,
-          interrupt_response: true,
-        },
-      },
+    expect(JSON.parse(notificationOf(result)!.payload)).toMatchObject({
+      status: 'completed',
+      asset: receipt['asset'],
+      answer: 'The synthetic snapshot contains a blue region.',
     });
+    // Receipt completion is not result delivery. Drain the asynchronous visual
+    // notification before the following test queues a new user tool call.
+    await responseAfter(result, 'visual_result');
   });
 
   it('keeps Memory writes and refreshed context available', async () => {
@@ -246,12 +239,32 @@ describe('standalone Omni without any coding backend', () => {
       'no-backend-memory',
     );
     expect(receipt).not.toContain('Failed');
-    await fakeDash.waitForMessage(
+    const update = await fakeDash.waitForMessage(
       (value) =>
-        value['type'] === 'session.update' &&
-        String((value['session'] as Json)?.['instructions']).includes(fact),
+        contextTextOf(value)?.startsWith('[BACKEND] [MEMORY_CONTEXT] ') ===
+          true && contextTextOf(value)?.includes(fact) === true,
       { fromIndex },
     );
+    const snapshot = JSON.parse(
+      contextTextOf(update)!.slice('[BACKEND] [MEMORY_CONTEXT] '.length),
+    ) as Json;
+    expect(snapshot).toMatchObject({
+      enabled: true,
+      revision: expect.any(Number),
+    });
+    expect(String(snapshot['sections'])).toContain(fact);
+    expect(
+      conn.inbox.filter(
+        (value) =>
+          value['type'] === 'session.update' &&
+          'instructions' in (value['session'] as Json),
+      ),
+    ).toHaveLength(1);
+    for (const request of conn.inbox.filter(
+      (value) => value['type'] === 'response.create',
+    )) {
+      expect(request).not.toHaveProperty('response.instructions');
+    }
   });
 
   it('creates a Proactive timer and supports stopping it in Subagents', async () => {
@@ -270,8 +283,11 @@ describe('standalone Omni without any coding backend', () => {
     const page = result['page'] as {
       snapshot: { tasks: Array<{ id: string; kind: string; title: string }> };
     };
-    expect(page.snapshot.tasks).toHaveLength(1);
-    const task = page.snapshot.tasks[0]!;
+    const proactiveTasks = page.snapshot.tasks.filter(
+      (task) => task.kind === 'proactive',
+    );
+    expect(proactiveTasks).toHaveLength(1);
+    const task = proactiveTasks[0]!;
     expect(task).toMatchObject({ kind: 'proactive', title });
     const fromIndex = fakeDash.inbox.length;
     expect(await subagents({ action: 'stop', taskId: task.id })).toMatchObject({
@@ -283,7 +299,7 @@ describe('standalone Omni without any coding backend', () => {
       { fromIndex },
     );
     expect(contextTextOf(stopped)).toContain('cancelled');
-    expect(fakeDash.connections).toHaveLength(1);
+    expect(fakeDash.connections).toHaveLength(2);
   });
 
   it('continues to forward Live Feed frames directly to Omni', async () => {

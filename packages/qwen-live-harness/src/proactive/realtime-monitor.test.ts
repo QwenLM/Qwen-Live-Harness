@@ -67,8 +67,6 @@ const DEFAULT_OPTIONS: DashScopeRealtimeMonitorOptions = {
   contextWindowSec: { audio: 60, vision: 60 },
   sessionRecycleEvals: 100,
   representationCompact: 'normal',
-  chunkDurationSec: 1,
-  visionFps: 2,
 };
 const monitors: DashScopeRealtimeMonitor[] = [];
 const archiveCleanups: Array<() => Promise<void>> = [];
@@ -103,13 +101,16 @@ function ready(socket: FakeSocket): void {
   });
   socket.message({ type: 'session.updated' });
 }
+function acknowledgeInput(socket: FakeSocket): void {
+  socket.message({ type: 'input_audio_buffer.committed' });
+}
 function complete(
   socket: FakeSocket,
   id = 'response-1',
   text = 'wait',
   status = 'completed',
 ): void {
-  socket.message({ type: 'input_audio_buffer.committed' });
+  acknowledgeInput(socket);
   socket.message({ type: 'response.created', response: { id } });
   socket.message({ type: 'response.text.done', response_id: id, text });
   socket.message({ type: 'response.done', response: { id, status } });
@@ -139,6 +140,8 @@ function harness(
   const connectionAttempts = vi.fn();
   const monitor = new DashScopeRealtimeMonitor(options, callbacks, {
     now: () => clock.now,
+    // Legacy-sized boundary fixtures use a test dependency, never product options.
+    mediaCadenceForTesting: { chunkDurationSec: 1, visionFps: 2 },
     ...deps,
     createWebSocket: (url, socketOptions) => {
       connectionAttempts(url, socketOptions);
@@ -177,15 +180,138 @@ function harness(
 }
 
 describe('interleaved monitor media clips', () => {
+  it('ignores obsolete cadence fields on runtime options and keeps two seconds with two visual frames', async () => {
+    const obsolete = {
+      ...DEFAULT_OPTIONS,
+      modalities: ['audio', 'vision'] as const,
+      chunkDurationSec: 0.25,
+      visionFps: 60,
+    };
+    const h = harness(obsolete, { mediaCadenceForTesting: undefined });
+    const socket = await h.start();
+    h.feedChunk(1);
+    expect(h.monitor.requestEvaluation()).toBe(false);
+    h.feedChunk(2);
+    expect(h.monitor.requestEvaluation()).toBe(true);
+    expect(wireAudio(socket.sent)).toHaveLength(64_000);
+    expect(wireImages(socket.sent)).toEqual([jpeg(2), jpeg(5)]);
+    expect(h.callbacks.onDebug).toHaveBeenCalledWith(
+      'proactive.monitor_chunk_prepared',
+      expect.objectContaining({ chunkDurationSec: 2, imageFrames: 2 }),
+    );
+  });
+
+  it.each([['audio'], ['vision'], ['audio', 'vision']] as const)(
+    'sends the 2-second / 1-fps %j configuration as streaming clips with task text only on each transport first response',
+    async (...modalities) => {
+      const h = harness(
+        {
+          modalities,
+          sessionRecycleEvals: 2,
+          instruction: '  Watch this synthetic event.  ',
+        },
+        { mediaCadenceForTesting: undefined },
+      );
+      const socket = await h.start();
+      const hasAudio = modalities.some((modality) => modality === 'audio');
+      const hasVision = modalities.some((modality) => modality === 'vision');
+      const feedSecond = (marker: number) => {
+        h.clock.now += 1000;
+        if (hasAudio) h.monitor.feedAudio(Buffer.alloc(32_000, marker));
+        if (hasVision) h.monitor.feedImage(jpeg(marker));
+      };
+      feedSecond(11);
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      expect(types(socket)).toEqual(['session.update']);
+      feedSecond(12);
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      expect(types(socket).slice(1)).toEqual(
+        hasVision
+          ? [
+              'input_audio_buffer.append',
+              'input_image_buffer.append',
+              'input_audio_buffer.append',
+              'input_image_buffer.append',
+              'input_audio_buffer.commit',
+            ]
+          : ['input_audio_buffer.append', 'input_audio_buffer.commit'],
+      );
+      const expectedPcm = hasAudio
+        ? Buffer.concat([Buffer.alloc(32_000, 11), Buffer.alloc(32_000, 12)])
+        : Buffer.alloc(64_000);
+      expect(wireAudio(socket.sent)).toEqual(expectedPcm);
+      if (hasVision) {
+        const appends = socket.sent.filter(
+          (event) => event['type'] === 'input_audio_buffer.append',
+        );
+        expect(
+          appends.map((event) => Buffer.from(String(event['audio']), 'base64')),
+        ).toEqual([
+          expectedPcm.subarray(0, 32_000),
+          expectedPcm.subarray(32_000),
+        ]);
+        expect(wireImages(socket.sent)).toEqual([jpeg(11), jpeg(12)]);
+      }
+      expect(types(socket)).not.toContain('response.create');
+      acknowledgeInput(socket);
+      expect(socket.sent.at(-1)).toMatchObject({
+        type: 'response.create',
+        response: { instructions: 'Watch this synthetic event.' },
+      });
+      expect(socket.sent[0]).toHaveProperty(
+        'session.instructions',
+        PROACTIVE_MONITOR_SYSTEM_PROMPT,
+      );
+      complete(socket, 'first-default-clip');
+
+      const secondIndex = socket.sent.length;
+      feedSecond(21);
+      feedSecond(22);
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      expect(wireAudio(socket.sent.slice(secondIndex))).toEqual(
+        hasAudio
+          ? Buffer.concat([Buffer.alloc(32_000, 21), Buffer.alloc(32_000, 22)])
+          : Buffer.alloc(64_000),
+      );
+      acknowledgeInput(socket);
+      expect(socket.sent.at(-1)).not.toHaveProperty('response');
+      complete(socket, 'second-default-clip');
+      expect(
+        socket.sent.filter((event) => event['type'] === 'session.update'),
+      ).toHaveLength(1);
+      expect(types(socket)).not.toContain('conversation.item.create');
+
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      const recycled = h.sockets[1]!;
+      ready(recycled);
+      await settleReady(h, 2);
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      expect(types(recycled)).toEqual(['session.update']);
+      feedSecond(31);
+      feedSecond(32);
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      acknowledgeInput(recycled);
+      expect(recycled.sent.at(-1)).toHaveProperty(
+        'response.instructions',
+        'Watch this synthetic event.',
+      );
+      expect(wireAudio(recycled.sent)).toEqual(
+        hasAudio
+          ? Buffer.concat([Buffer.alloc(32_000, 31), Buffer.alloc(32_000, 32)])
+          : Buffer.alloc(64_000),
+      );
+      if (hasVision)
+        expect(wireImages(recycled.sent)).toEqual([jpeg(31), jpeg(32)]);
+      expect(types(recycled)).not.toContain('conversation.item.create');
+    },
+  );
+
   it.each([['audio'], ['vision'], ['audio', 'vision']] as const)(
     'configures %j as text-only manual inference without tools or priming silence',
     async (...modalities) => {
       const h = harness({ modalities });
       const socket = await h.start();
-      expect(types(socket)).toEqual([
-        'session.update',
-        'conversation.item.create',
-      ]);
+      expect(types(socket)).toEqual(['session.update']);
       expect(socket.sent[0]).toMatchObject({
         session: {
           modalities: ['text'],
@@ -201,19 +327,18 @@ describe('interleaved monitor media clips', () => {
           },
         },
       });
-      expect(socket.sent[1]).toMatchObject({
-        item: {
-          role: 'user',
-          content: [{ type: 'input_text', text: DEFAULT_OPTIONS.instruction }],
-        },
-      });
       expect(h.monitor.requestEvaluation()).toBe(false);
       h.feedChunk();
       expect(h.monitor.requestEvaluation()).toBe(true);
       expect(types(socket).at(-1)).toBe('input_audio_buffer.commit');
       expect(types(socket)).not.toContain('response.create');
-      socket.message({ type: 'input_audio_buffer.committed' });
+      acknowledgeInput(socket);
       expect(types(socket).at(-1)).toBe('response.create');
+      expect(socket.sent.at(-1)).toHaveProperty(
+        'response.instructions',
+        DEFAULT_OPTIONS.instruction,
+      );
+      expect(types(socket)).not.toContain('conversation.item.create');
     },
   );
 
@@ -225,11 +350,11 @@ describe('interleaved monitor media clips', () => {
       h.monitor.feedAudio(Buffer.alloc(640, frame));
     }
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(1);
     h.clock.now += 20;
     h.monitor.feedAudio(Buffer.alloc(640, 49));
     expect(h.monitor.requestEvaluation()).toBe(true);
-    expect(types(socket).slice(2)).toEqual([
+    expect(types(socket).slice(1)).toEqual([
       'input_audio_buffer.append',
       'input_audio_buffer.commit',
     ]);
@@ -238,6 +363,56 @@ describe('interleaved monitor media clips', () => {
     );
     complete(socket);
     expect(h.monitor.requestEvaluation()).toBe(false);
+  });
+
+  it('waits for committed acknowledgement and ignores user-item or duplicate acknowledgements', async () => {
+    const h = harness();
+    const socket = await h.start();
+    h.feedChunk();
+    expect(h.monitor.requestEvaluation()).toBe(true);
+    expect(socket.sent[1]).toMatchObject({
+      type: 'input_audio_buffer.append',
+      audio: Buffer.alloc(32_000, 1).toString('base64'),
+    });
+    socket.message({
+      type: 'conversation.item.created',
+      item: {
+        role: 'user',
+        content: [{ type: 'input_audio' }],
+      },
+    });
+    expect(types(socket)).not.toContain('response.create');
+    acknowledgeInput(socket);
+    acknowledgeInput(socket);
+    expect(
+      socket.sent.filter((event) => event['type'] === 'response.create'),
+    ).toHaveLength(1);
+    expect(socket.sent.at(-1)).toHaveProperty(
+      'response.instructions',
+      DEFAULT_OPTIONS.instruction,
+    );
+  });
+
+  it('includes the task once again only when a fresh audio transport is created', async () => {
+    const h = harness({ sessionRecycleEvals: 1 });
+    const first = await h.start();
+    h.feedChunk();
+    h.monitor.requestEvaluation();
+    complete(first);
+    h.monitor.requestEvaluation();
+    const second = h.sockets[1]!;
+    ready(second);
+    await settleReady(h, 2);
+    expect(types(second)).toEqual(['session.update']);
+    h.feedChunk();
+    h.monitor.requestEvaluation();
+    expect(second.sent[1]).toHaveProperty('type', 'input_audio_buffer.append');
+    acknowledgeInput(second);
+    expect(second.sent.at(-1)).toHaveProperty(
+      'response.instructions',
+      DEFAULT_OPTIONS.instruction,
+    );
+    expect(types(second)).not.toContain('conversation.item.create');
   });
 
   it('retains partial microphone frames for the next clip without changing sample order', async () => {
@@ -269,7 +444,7 @@ describe('interleaved monitor media clips', () => {
     h.feedChunk(3);
     expect(h.monitor.requestEvaluation()).toBe(false);
     expect(socket.sent).toHaveLength(pending);
-    socket.message({ type: 'input_audio_buffer.committed' });
+    acknowledgeInput(socket);
     socket.message({ type: 'response.created', response: { id: 'first' } });
     socket.message({
       type: 'response.text.done',
@@ -293,8 +468,23 @@ describe('interleaved monitor media clips', () => {
       Buffer.alloc(32_000, 3),
     );
     expect(
-      types(socket).filter((type) => type === 'conversation.item.create'),
+      types(socket).filter((type) => type === 'input_audio_buffer.commit'),
+    ).toHaveLength(3);
+    expect(
+      socket.sent.filter((event) => event['type'] === 'session.update'),
     ).toHaveLength(1);
+    acknowledgeInput(socket);
+    const responses = socket.sent.filter(
+      (event) => event['type'] === 'response.create',
+    );
+    expect(responses).toHaveLength(3);
+    expect(responses[0]).toHaveProperty(
+      'response.instructions',
+      DEFAULT_OPTIONS.instruction,
+    );
+    expect(responses[1]).not.toHaveProperty('response');
+    expect(responses[2]).not.toHaveProperty('response');
+    expect(types(socket)).not.toContain('conversation.item.create');
     expect(types(socket)).not.toContain('conversation.item.delete');
   });
 
@@ -303,7 +493,7 @@ describe('interleaved monitor media clips', () => {
     const socket = await h.start();
     h.feedChunk(4);
     expect(h.monitor.requestEvaluation()).toBe(true);
-    expect(types(socket).slice(2)).toEqual([
+    expect(types(socket).slice(1)).toEqual([
       'input_audio_buffer.append',
       'input_image_buffer.append',
       'input_audio_buffer.append',
@@ -338,7 +528,7 @@ describe('interleaved monitor media clips', () => {
     h.clock.now += 600;
     h.monitor.feedImage(jpeg(3));
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(1);
     expect(h.callbacks.onDebug).toHaveBeenCalledWith(
       'proactive.monitor_chunk_dropped',
       expect.objectContaining({
@@ -374,7 +564,7 @@ describe('interleaved monitor media clips', () => {
     h.feedChunk(1);
     h.feedChunk(2);
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(1);
     socket.bufferedAmount = 0;
     expect(h.monitor.requestEvaluation()).toBe(true);
     expect(wireAudio(socket.sent)).toEqual(Buffer.alloc(32_000, 1));
@@ -424,7 +614,7 @@ describe('interleaved monitor media clips', () => {
       h.clock.now += 2_000;
       expect(h.monitor.requestEvaluation()).toBe(false);
       h.monitor.requestEvaluation();
-      expect(socket.sent).toHaveLength(2);
+      expect(socket.sent).toHaveLength(1);
       expect(h.callbacks.onDebug).toHaveBeenCalledWith(
         'proactive.monitor_input_dropped',
         expect.objectContaining({
@@ -448,30 +638,42 @@ describe('interleaved monitor media clips', () => {
       expect(h.monitor.feedAudio(audio)).toBe(false);
     }
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(1);
   });
 
-  it('clears only pending capture while retaining the resident assistant conversation', async () => {
-    const h = harness();
-    const socket = await h.start();
-    h.feedChunk(1);
-    h.monitor.requestEvaluation();
-    complete(socket);
-    h.feedChunk(2);
-    h.monitor.resetPendingCapture();
-    expect(types(socket).at(-1)).toBe('input_audio_buffer.clear');
-    expect(h.monitor.requestEvaluation()).toBe(false);
-    h.feedChunk(3);
-    const index = socket.sent.length;
-    expect(h.monitor.requestEvaluation()).toBe(true);
-    expect(wireAudio(socket.sent.slice(index))).toEqual(
-      Buffer.alloc(32_000, 3),
-    );
-    expect(h.sockets).toHaveLength(1);
-    expect(
-      types(socket).filter((type) => type === 'conversation.item.create'),
-    ).toHaveLength(1);
-  });
+  it.each([['audio'], ['vision'], ['audio', 'vision']] as const)(
+    'clears pending %j buffers while retaining the resident assistant conversation',
+    async (...modalities) => {
+      const h = harness({ modalities });
+      const socket = await h.start();
+      h.feedChunk(1);
+      h.monitor.requestEvaluation();
+      complete(socket);
+      h.feedChunk(2);
+      h.monitor.resetPendingCapture();
+      expect(types(socket)).toContain('input_audio_buffer.clear');
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      h.feedChunk(3);
+      const index = socket.sent.length;
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      expect(wireAudio(socket.sent.slice(index))).toEqual(
+        Buffer.alloc(
+          32_000,
+          modalities.some((modality) => modality === 'audio') ? 3 : 0,
+        ),
+      );
+      expect(h.sockets).toHaveLength(1);
+      expect(
+        types(socket).filter((type) => type === 'input_audio_buffer.commit'),
+      ).toHaveLength(2);
+      expect(types(socket)).not.toContain('conversation.item.create');
+      acknowledgeInput(socket);
+      expect(socket.sent.at(-1)).not.toHaveProperty('response');
+      expect(
+        socket.sent.filter((event) => event['type'] === 'session.update'),
+      ).toHaveLength(1);
+    },
+  );
 
   it('does not splice audio recorded across a long mute gap into one clip', async () => {
     const h = harness();
@@ -488,7 +690,7 @@ describe('interleaved monitor media clips', () => {
         audioBytes: 16_000,
       }),
     );
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(1);
     h.clock.now += 500;
     h.monitor.feedAudio(Buffer.alloc(16_000, 3));
     expect(h.monitor.requestEvaluation()).toBe(true);
@@ -643,14 +845,13 @@ describe('monitor transport and response lifecycle', () => {
     },
   );
 
-  it.each([
-    ['session.update', 'monitor_session_update_failed'],
-    ['conversation.item.create', 'monitor_initialization_failed'],
-  ])('rejects startup when %s cannot be written', async (event, code) => {
-    const h = harness();
+  it('rejects startup when session.update cannot be written', async () => {
+    const h = harness({ modalities: ['vision'] });
     const pending = h.monitor.start();
-    const rejected = expect(pending).rejects.toMatchObject({ code });
-    h.sockets[0]!.failingTypes.add(event);
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: 'monitor_session_update_failed',
+    });
+    h.sockets[0]!.failingTypes.add('session.update');
     ready(h.sockets[0]!);
     await rejected;
     expect(h.callbacks.onReady).not.toHaveBeenCalled();
@@ -675,6 +876,20 @@ describe('monitor transport and response lifecycle', () => {
       expect(h.callbacks.onLifecycleError).toHaveBeenCalledOnce();
     },
   );
+
+  it('rejects an audio-only append write failure without committing a partial clip', async () => {
+    const h = harness();
+    const socket = await h.start();
+    h.feedChunk();
+    socket.failingTypes.add('input_audio_buffer.append');
+    expect(h.monitor.requestEvaluation()).toBe(false);
+    expect(types(socket)).not.toContain('input_audio_buffer.commit');
+    expect(types(socket)).not.toContain('response.create');
+    expect(h.callbacks.onLifecycleError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ code: 'monitor_media_writer_failed' }),
+      7,
+    );
+  });
 
   it.each([
     ['wait', 'wait'],
@@ -718,7 +933,7 @@ describe('monitor transport and response lifecycle', () => {
       const socket = await h.start();
       h.feedChunk();
       h.monitor.requestEvaluation();
-      socket.message({ type: 'input_audio_buffer.committed' });
+      acknowledgeInput(socket);
       socket.message({
         type: 'response.text.done',
         response_id: 'ok',
@@ -808,11 +1023,17 @@ describe('monitor transport and response lifecycle', () => {
     },
   );
 
-  it('splits configured longer clips into bounded audio append messages', async () => {
-    const h = harness({ chunkDurationSec: 5 });
+  it('streams a configured longer audio clip through bounded appends and one commit', async () => {
+    const h = harness(
+      {},
+      { mediaCadenceForTesting: { chunkDurationSec: 5, visionFps: 2 } },
+    );
     const socket = await h.start();
     for (let index = 0; index < 5; index += 1) h.feedChunk();
     expect(h.monitor.requestEvaluation()).toBe(true);
+    expect(
+      types(socket).filter((type) => type === 'input_audio_buffer.commit'),
+    ).toHaveLength(1);
     const appends = socket.sent.filter(
       (event) => event['type'] === 'input_audio_buffer.append',
     );
@@ -821,6 +1042,7 @@ describe('monitor transport and response lifecycle', () => {
       expect(
         Buffer.from(String(event['audio']), 'base64').length,
       ).toBeLessThanOrEqual(QWEN_REALTIME_LIMITS.maxInputAudioFrameBytes);
+    expect(types(socket)).not.toContain('conversation.item.create');
     expect(wireAudio(socket.sent)).toHaveLength(160_000);
   });
 
@@ -843,7 +1065,7 @@ describe('monitor transport and response lifecycle', () => {
         'session.video.input.representation_compact',
         representationCompact,
       );
-      expect(first.sent).toHaveLength(2);
+      expect(first.sent).toHaveLength(1);
       h.monitor.requestEvaluation();
       complete(first);
       h.feedChunk(2);
@@ -857,7 +1079,7 @@ describe('monitor transport and response lifecycle', () => {
         'session.video.input.representation_compact',
         representationCompact,
       );
-      expect(second.sent).toHaveLength(2);
+      expect(second.sent).toHaveLength(1);
       expect(h.monitor.requestEvaluation()).toBe(true);
       expect(wireAudio(second.sent)).toEqual(Buffer.alloc(32_000, 2));
       expect(wireImages(second.sent)).toEqual([jpeg(4), jpeg(5)]);
@@ -878,7 +1100,7 @@ describe('monitor transport and response lifecycle', () => {
     ready(h.sockets[1]!);
     await settleReady(h, 2);
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(h.sockets[1]!.sent).toHaveLength(2);
+    expect(h.sockets[1]!.sent).toHaveLength(1);
   });
 
   it.each(['failed', 'cancelled', 'incomplete'])(
@@ -919,7 +1141,7 @@ describe('monitor transport and response lifecycle', () => {
     const socket = await h.start();
     h.feedChunk();
     h.monitor.requestEvaluation();
-    socket.message({ type: 'input_audio_buffer.committed' });
+    acknowledgeInput(socket);
     socket.message({ type: 'response.created', response: { id: 'current' } });
     complete(socket, 'unrelated', 'Reply: Wrong result.');
     expect(h.callbacks.onResult).not.toHaveBeenCalled();
@@ -1021,7 +1243,7 @@ describe('monitor transport and response lifecycle', () => {
   });
 
   it('discards pending capture and recycles after a clear send failure', async () => {
-    const h = harness();
+    const h = harness({ modalities: ['vision'] });
     const first = await h.start();
     h.feedChunk();
     first.failingTypes.add('input_audio_buffer.clear');
@@ -1033,7 +1255,7 @@ describe('monitor transport and response lifecycle', () => {
     ready(h.sockets[1]!);
     await settleReady(h, 2);
     expect(h.monitor.requestEvaluation()).toBe(false);
-    expect(h.sockets[1]!.sent).toHaveLength(2);
+    expect(h.sockets[1]!.sent).toHaveLength(1);
   });
 
   it('does not let debug observers interrupt media, completed results or failures', async () => {
@@ -1143,9 +1365,10 @@ describe('exact interleaved monitor debug archives', () => {
     async (...modalities) => {
       const h = await archivedHarness({ modalities });
       const socket = await h.start();
+      const sessionEvents = socket.sent.length;
       h.feedChunk(7);
       expect(h.monitor.requestEvaluation()).toBe(true);
-      socket.message({ type: 'input_audio_buffer.committed' });
+      acknowledgeInput(socket);
       socket.message({
         type: 'response.text.done',
         response_id: 'first',
@@ -1165,7 +1388,10 @@ describe('exact interleaved monitor debug archives', () => {
       expect(h.monitor.requestEvaluation()).toBe(true);
       complete(socket, 'second', 'Reply: Found it.');
       const [first, second] = await archives(h.store);
-      await expectArchivedWire(first!, socket.sent.slice(2, secondIndex));
+      await expectArchivedWire(
+        first!,
+        socket.sent.slice(sessionEvents, secondIndex),
+      );
       await expectArchivedWire(second!, socket.sent.slice(secondIndex));
       expect(first!.request).toMatchObject({
         providerSessionId: 'session-fixture',
@@ -1182,7 +1408,25 @@ describe('exact interleaved monitor debug archives', () => {
           unknownBytes: 0,
         },
       });
-      expect(first!.request.session).toEqual(socket.sent.slice(0, 2));
+      expect(first!.request.session).toEqual(
+        socket.sent.slice(0, sessionEvents),
+      );
+      expect(first!.request.session).toHaveLength(1);
+      expect(first!.request.session[0]).toHaveProperty(
+        'type',
+        'session.update',
+      );
+      expect(first!.request.events.at(-1)).toHaveProperty(
+        'response.instructions',
+        DEFAULT_OPTIONS.instruction,
+      );
+      expect(second!.request.events.at(-1)).not.toHaveProperty('response');
+      expect(
+        first!.request.events.some(
+          (event) => event['type'] === 'conversation.item.create',
+        ),
+      ).toBe(false);
+      expect(second!.request.session).toEqual(first!.request.session);
       expect(second!.request.previousRequest).toBe('000001');
       expect(first!.response).toMatchObject({
         providerSessionId: 'session-fixture',
@@ -1223,36 +1467,41 @@ describe('exact interleaved monitor debug archives', () => {
     );
   });
 
-  it('never invents an archive or replays uncertain media after a rejected commit', async () => {
-    const h = await archivedHarness();
-    const first = await h.start();
-    h.feedChunk();
-    first.failingTypes.add('input_audio_buffer.commit');
-    expect(h.monitor.requestEvaluation()).toBe(true);
-    expect(h.callbacks.onResult).toHaveBeenCalledOnce();
-    expect(await archives(h.store)).toEqual([]);
-    expect(h.monitor.requestEvaluation()).toBe(false);
-    const second = h.sockets[1]!;
-    ready(second);
-    await settleReady(h, 2);
-    expect(h.monitor.requestEvaluation()).toBe(false);
-    h.feedChunk(2);
-    expect(h.monitor.requestEvaluation()).toBe(true);
-    complete(second, 'retry');
-    const [archive] = await archives(h.store);
-    await expectArchivedWire(archive!, second.sent.slice(2));
-    expect(archive!.request).toMatchObject({
-      request: 1,
-      transportGeneration: 2,
-    });
-    expect(archive!.response).toMatchObject({
-      evaluation: 2,
-      transportGeneration: 2,
-      responseId: 'retry',
-    });
-    expect(archive!.request).not.toHaveProperty('previousRequest');
-    expect(wireAudio(second.sent)).toEqual(Buffer.alloc(32_000, 2));
-  });
+  it.each(['audio', 'vision'] as const)(
+    'never invents an archive or replays uncertain %s media after a rejected delivery',
+    async (modality) => {
+      const h = await archivedHarness({ modalities: [modality] });
+      const first = await h.start();
+      h.feedChunk();
+      first.failingTypes.add('input_audio_buffer.commit');
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      expect(h.callbacks.onResult).toHaveBeenCalledOnce();
+      expect(await archives(h.store)).toEqual([]);
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      const second = h.sockets[1]!;
+      ready(second);
+      await settleReady(h, 2);
+      expect(h.monitor.requestEvaluation()).toBe(false);
+      h.feedChunk(2);
+      expect(h.monitor.requestEvaluation()).toBe(true);
+      complete(second, 'retry');
+      const [archive] = await archives(h.store);
+      await expectArchivedWire(archive!, second.sent.slice(1));
+      expect(archive!.request).toMatchObject({
+        request: 1,
+        transportGeneration: 2,
+      });
+      expect(archive!.response).toMatchObject({
+        evaluation: 2,
+        transportGeneration: 2,
+        responseId: 'retry',
+      });
+      expect(archive!.request).not.toHaveProperty('previousRequest');
+      expect(wireAudio(second.sent)).toEqual(
+        Buffer.alloc(32_000, modality === 'audio' ? 2 : 0),
+      );
+    },
+  );
 
   it('does not archive failed media sends or automatically resend committed history', async () => {
     const h = await archivedHarness({ modalities: ['audio', 'vision'] });
@@ -1272,7 +1521,7 @@ describe('exact interleaved monitor debug archives', () => {
     complete(second, 'second');
     const recorded = await archives(h.store);
     expect(recorded).toHaveLength(2);
-    await expectArchivedWire(recorded[1]!, second.sent.slice(2));
+    await expectArchivedWire(recorded[1]!, second.sent.slice(1));
     expect(wireAudio(second.sent)).toEqual(Buffer.alloc(32_000, 2));
     expect(recorded[1]!.request).not.toHaveProperty('previousRequest');
   });
@@ -1283,9 +1532,9 @@ describe('exact interleaved monitor debug archives', () => {
     h.feedChunk();
     h.monitor.requestEvaluation();
     socket.failingTypes.add('response.create');
-    socket.message({ type: 'input_audio_buffer.committed' });
+    acknowledgeInput(socket);
     const [archive] = await archives(h.store);
-    await expectArchivedWire(archive!, socket.sent.slice(2));
+    await expectArchivedWire(archive!, socket.sent.slice(1));
     expect(archive!.response).toMatchObject({
       status: 'failed',
       failure: { code: 'monitor_response_request_failed' },
@@ -1302,7 +1551,7 @@ describe('exact interleaved monitor debug archives', () => {
       const socket = await h.start();
       h.feedChunk();
       h.monitor.requestEvaluation();
-      socket.message({ type: 'input_audio_buffer.committed' });
+      acknowledgeInput(socket);
       socket.message({
         type: 'response.text.delta',
         response_id: 'unfinished',
@@ -1314,7 +1563,7 @@ describe('exact interleaved monitor debug archives', () => {
         );
       else h.monitor.close();
       const [archive] = await archives(h.store);
-      await expectArchivedWire(archive!, socket.sent.slice(2));
+      await expectArchivedWire(archive!, socket.sent.slice(1));
       expect(archive!.response).toMatchObject(
         ending === 'timeout'
           ? {

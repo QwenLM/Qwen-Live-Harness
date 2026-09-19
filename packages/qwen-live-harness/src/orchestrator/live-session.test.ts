@@ -45,7 +45,10 @@ import { LiveLogger } from '../logger.js';
 import { resolveMemoryConfig } from '../memory/config.js';
 import { MemoryService } from '../memory/service.js';
 import { MemoryStore } from '../memory/store.js';
-import { MEMORY_SYSTEM_PROMPT } from '../memory/tools.js';
+import {
+  MEMORY_CONTEXT_PREFIX,
+  MEMORY_SYSTEM_PROMPT,
+} from '../memory/tools.js';
 import {
   ProactiveScheduler,
   type ProactiveDelivery,
@@ -81,6 +84,15 @@ import {
 import { LiveSession } from './live-session.js';
 import { buildLiveInstructions } from '../realtime/instructions.js';
 import type { searchQwenRealtime } from '../realtime/web-search.js';
+import type { analyzeQwenRealtimeImage } from '../realtime/visual-analysis.js';
+import type {
+  synthesizeNotificationSpeech,
+  NotificationSpeechResult,
+} from '../realtime/notification-speech.js';
+import {
+  formatProactiveEvent,
+  DEFAULT_NARRATION_STYLE,
+} from '../proactive/monitor-protocol.js';
 
 const PERMISSION_OPTIONS: readonly PermissionOption[] = [
   { optionId: 'allow', kind: 'proceed' },
@@ -309,18 +321,16 @@ function createFakeRealtime() {
     pushAudio: vi.fn((_pcm16: Uint8Array): boolean => true),
     setInputMuted: vi.fn((_muted: boolean): void => {}),
     pushImage: vi.fn((_jpegBase64: string): boolean => true),
-    submitToolImage: vi.fn(
-      async (
-        _ref: RealtimeFunctionCallRef,
-        _jpegBase64: string,
-        isCurrent?: () => boolean,
-      ): Promise<boolean> => isCurrent?.() ?? true,
-    ),
+    canDeliverExternalAudio: vi.fn((): boolean => true),
     commitInputAudio: vi.fn((): boolean => true),
     clearInputAudio: vi.fn((): boolean => true),
     cancelResponse: vi.fn((): boolean => true),
     submitFunctionOutput: vi.fn(
-      (_ref: RealtimeFunctionCallRef, _output: string): boolean => true,
+      (
+        _ref: RealtimeFunctionCallRef,
+        _output: string,
+        _options?: Parameters<QwenRealtimeSession['submitFunctionOutput']>[2],
+      ): boolean => true,
     ),
     sendBackendContext: vi.fn((_text: string): boolean => true),
     speakToUser: vi.fn((_message: string): boolean => true),
@@ -337,6 +347,10 @@ function createFakeRealtime() {
         true,
     ),
     respondToSearchResult: vi.fn(
+      (_message: string, _language?: RealtimeNotificationLanguage): boolean =>
+        true,
+    ),
+    respondToVisualResult: vi.fn(
       (_message: string, _language?: RealtimeNotificationLanguage): boolean =>
         true,
     ),
@@ -359,6 +373,8 @@ interface StartSessionOptions {
   realtimeEndpoint?: string;
   realtimeApiKey?: string;
   searchRealtime?: typeof searchQwenRealtime;
+  notificationSpeech?: typeof synthesizeNotificationSpeech;
+  analyzeRealtimeImage?: typeof analyzeQwenRealtimeImage;
   logger?: LiveLogger;
   visualInput?: LiveVisualInput;
   capture?: LiveVisualCapture;
@@ -466,6 +482,10 @@ class FakeProactiveScheduler implements ProactiveSchedulerControl {
   readonly announcementStarted = vi.fn(
     (_delivery: ProactiveDelivery): void => {},
   );
+  readonly playbackStarted = vi.fn((_delivery: ProactiveDelivery): void => {});
+  readonly undeliverDelivery = vi.fn(
+    (_delivery: ProactiveDelivery, _error: string): void => {},
+  );
   readonly deferDelivery = vi.fn(
     (_delivery: ProactiveDelivery): boolean => true,
   );
@@ -501,17 +521,41 @@ function createProactiveHarness(): {
   };
 }
 
+function fallbackDelivery(deliveryId = 'delivery-fallback'): ProactiveDelivery {
+  const taskId = MONITOR_TASK.taskId;
+  return {
+    taskId,
+    taskGeneration: 1,
+    deliveryId,
+    event: formatProactiveEvent({
+      taskId,
+      deliveryId,
+      title: 'Knocking',
+      taskType: 'perception_monitor',
+      summary: '这是第1次听到敲击桌子的声音',
+      sourceModalities: ['audio'],
+      interventionText: 'Tell the user three knocks occurred.',
+      monitorMode: 'event',
+    }),
+  };
+}
+
+const FALLBACK_SPEECH: NotificationSpeechResult = {
+  audio: new Uint8Array([1, 0, 2, 0]),
+  sampleRate: 24000,
+  transcript: '刚刚听到了敲桌子的声音。',
+  sessionId: 'sess-fallback',
+  responseId: 'resp-fallback',
+};
+
 // -- rig ---------------------------------------------------------------------
 
 let tempDir: string;
 let pngPath: string;
-let jpegPath: string;
 
 beforeAll(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'qwen-live-harness-session-test-'));
   pngPath = join(tempDir, 'shot.png');
-  jpegPath = join(tempDir, 'shot.jpg');
-  await writeFile(jpegPath, Buffer.from(TEST_JPEG, 'base64'));
   // A real (if tiny) PNG signature so image blocks carry non-empty bytes.
   await writeFile(
     pngPath,
@@ -592,6 +636,13 @@ async function startSession(
     log: log as unknown as SessionLog,
     ...(options.logger ? { logger: options.logger } : {}),
     openRealtime,
+    notificationSpeech:
+      options.notificationSpeech ??
+      (async () => {
+        throw new Error('Synthetic notification speech unavailable.');
+      }),
+    analyzeRealtimeImage:
+      options.analyzeRealtimeImage ?? (() => new Promise(() => {})),
     ...(options.searchRealtime
       ? { searchRealtime: options.searchRealtime }
       : {}),
@@ -647,6 +698,7 @@ function callToolForResponse(
   name: string,
   args: Record<string, unknown>,
   activeTranscript: readonly RealtimeTranscriptEntry[] = [],
+  input?: { inputItemId: string; inputTranscript?: string },
 ): void {
   callSeq += 1;
   callbacks.onFunctionCall?.({
@@ -655,6 +707,7 @@ function callToolForResponse(
     callId: `fc_${callSeq}`,
     name,
     arguments: JSON.stringify(args),
+    ...input,
     activeTranscript,
   });
 }
@@ -677,25 +730,25 @@ async function awaitReceipts(
 
 // -- tests --------------------------------------------------------------------
 
-function recover(
-  callbacks: QwenRealtimeCallbacks,
-  phase: 'started' | 'restoring' | 'completed',
-  inputKind: 'text' | 'audio' | 'none' = 'text',
-  inputReason?: 'completed' | 'tool_dispatched' | 'unavailable',
-) {
-  callbacks.onTransportRecovery?.({
-    callEpoch: 1,
-    phase,
-    inputKind,
-    ...(inputReason ? { inputReason } : {}),
-    responseId: 'lost-response',
-    authority: 'permission',
-    code: 'response_cancel_timeout',
-    sessionId: phase === 'started' ? 'old-session' : 'new-session',
-  });
-}
-
 describe('LiveSession transport recovery', () => {
+  function recover(
+    callbacks: QwenRealtimeCallbacks,
+    phase: 'started' | 'restoring' | 'completed',
+    inputKind: 'text' | 'audio' | 'none' = 'text',
+    inputReason?: 'completed' | 'tool_dispatched' | 'unavailable',
+  ) {
+    callbacks.onTransportRecovery?.({
+      callEpoch: 1,
+      phase,
+      inputKind,
+      ...(inputReason ? { inputReason } : {}),
+      responseId: 'lost-response',
+      authority: 'permission',
+      code: 'response_cancel_timeout',
+      sessionId: phase === 'started' ? 'old-session' : 'new-session',
+    });
+  }
+
   it('restores current permission handles and live task state before the resumed user answer without restarting work', async () => {
     const harness = createProactiveHarness();
     const rig = await startSession(undefined, {
@@ -1080,6 +1133,23 @@ function searchTaskFrom(rig: Rig, taskId: string) {
 }
 
 describe('LiveSession microphone mute heartbeat wiring', () => {
+  it('records the fixed 24 kHz output sample rate', async () => {
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+    });
+    try {
+      expect(rig.config).not.toHaveProperty('outputSampleRate');
+      expect(rig.log.write).toHaveBeenCalledWith(
+        'session.start',
+        expect.objectContaining({
+          outputSampleRate: 24_000,
+        }),
+      );
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
   it('applies a mute change made while the foreground connection is still opening', async () => {
     const host = createFakeHost({
       source: 'screen',
@@ -1197,6 +1267,247 @@ describe('LiveSession microphone mute heartbeat wiring', () => {
     rig.session.setInputMuted({ epoch: 1, inputMuted: true });
     expect(rig.realtime.setInputMuted).toHaveBeenCalledTimes(count);
     rig.session.dispose();
+  });
+});
+
+describe('LiveSession asynchronous snapshot analysis', () => {
+  it.each(['screen', 'camera'] as const)(
+    'analyzes %s without a backend and delivers only after the foreground finishes',
+    async (source) => {
+      let resolve!: (value: { answer: string }) => void;
+      const pending = new Promise<{ answer: string }>((done) => {
+        resolve = done;
+      });
+      const analyze = vi
+        .fn<typeof analyzeQwenRealtimeImage>()
+        .mockReturnValue(pending);
+      const rig = await startSession(undefined, {
+        withoutBackends: true,
+        analyzeRealtimeImage: analyze,
+        realtimeModel: 'custom-deployment',
+        realtimeEndpoint: 'wss://region.example/realtime',
+        realtimeApiKey: 'fixture-key',
+        visualInput: { ...DEFAULT_VISUAL_INPUT, source },
+        capture: {
+          source,
+          image: TEST_JPEG,
+          width: 1280,
+          height: 720,
+          screenshotPath: pngPath,
+        },
+      });
+      try {
+        beginSearchUserTurn(rig, 'visual-request');
+        callToolForResponse(rig.callbacks, 'visual-request', 'appshot', {
+          query: 'What code is visible?',
+        });
+        const [receipt] = await awaitReceipts(rig.realtime, 1);
+        expect(receipt).toMatchObject({
+          status: 'accepted',
+          taskId: 'visual:1',
+          asset: 'asset_1',
+          source,
+        });
+        expect(analyze).toHaveBeenCalledOnce();
+        expect(analyze.mock.calls[0]?.[0]).toMatchObject({
+          model: 'custom-deployment',
+          endpoint: 'wss://region.example/realtime',
+          apiKey: 'fixture-key',
+          source,
+          image: TEST_JPEG,
+          question: 'What code is visible?',
+        });
+        expect(searchTaskFrom(rig, 'visual:1')).toMatchObject({
+          kind: 'visual',
+          status: 'running',
+        });
+        resolve({ answer: 'The code is K7M4.' });
+        await delay(20);
+        expect(rig.realtime.respondToVisualResult).not.toHaveBeenCalled();
+        finishSearchUserTurn(rig, 'visual-request');
+        await vi.waitFor(() =>
+          expect(rig.realtime.respondToVisualResult).toHaveBeenCalledOnce(),
+        );
+        expect(
+          JSON.parse(rig.realtime.respondToVisualResult.mock.calls[0]![0]),
+        ).toMatchObject({
+          query: 'What code is visible?',
+          answer: 'The code is K7M4.',
+          status: 'completed',
+          asset: 'asset_1',
+          source,
+        });
+        expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+        expect(rig.realtime.pushImage).not.toHaveBeenCalled();
+        expect(rig.adaptor.createSession).not.toHaveBeenCalled();
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'visual-answer',
+          authority: 'visual_result',
+        });
+        rig.callbacks.onOutputAudioDelta?.({
+          callEpoch: 1,
+          responseId: 'visual-answer',
+          audio: Buffer.from([1, 0]),
+        });
+        rig.session.playbackStarted({ epoch: 1 });
+        rig.callbacks.onResponseDone?.({
+          callEpoch: 1,
+          responseId: 'visual-answer',
+          authority: 'visual_result',
+          status: 'completed',
+        });
+        expect(searchTaskFrom(rig, 'visual:1')?.notification).not.toBe(
+          'delivered',
+        );
+        rig.session.playbackCompleted({ epoch: 1 });
+        expect(searchTaskFrom(rig, 'visual:1')).toMatchObject({
+          status: 'completed',
+          notification: 'delivered',
+          output: 'The code is K7M4.',
+        });
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it.each(['stop', 'end-call'] as const)(
+    'cancels a pending visual analysis on %s and fences its late result',
+    async (action) => {
+      let resolve!: (value: { answer: string }) => void;
+      const analyze = vi.fn<typeof analyzeQwenRealtimeImage>().mockReturnValue(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      const rig = await startSession(undefined, {
+        analyzeRealtimeImage: analyze,
+      });
+      try {
+        callTool(rig.callbacks, 'appshot', {});
+        await awaitReceipts(rig.realtime, 1);
+        if (action === 'stop')
+          await rig.session.handleSubagentsRequest({
+            action: 'stop',
+            taskId: 'visual:1',
+          });
+        else await rig.session.stop({ epoch: 1, callId: 'call-1' });
+        expect(analyze.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+        resolve({ answer: 'Late answer must not play.' });
+        await delay(20);
+        expect(rig.realtime.respondToVisualResult).not.toHaveBeenCalled();
+        expect(searchTaskFrom(rig, 'visual:1')).toMatchObject({
+          status: 'cancelled',
+        });
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('reports visual failure without guessing an empty screen or starting a backend', async () => {
+    const analyze = vi
+      .fn<typeof analyzeQwenRealtimeImage>()
+      .mockRejectedValue(
+        new QwenRealtimeError('sanitized', 'visual_analysis_timeout'),
+      );
+    const rig = await startSession(undefined, {
+      analyzeRealtimeImage: analyze,
+    });
+    try {
+      callTool(rig.callbacks, 'appshot', {});
+      await awaitReceipts(rig.realtime, 1);
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToVisualResult).toHaveBeenCalledOnce(),
+      );
+      const payload = JSON.parse(
+        rig.realtime.respondToVisualResult.mock.calls[0]![0],
+      );
+      expect(payload).toMatchObject({ status: 'failed', failed: true });
+      expect(payload.answer).toContain('no visual contents were confirmed');
+      expect(rig.adaptor.createSession).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('keeps a muted visual result available without speaking it', async () => {
+    const rig = await startSession(undefined, {
+      analyzeRealtimeImage: async () => ({ answer: 'K7M4' }),
+    });
+    try {
+      rig.host.isOutputMuted.mockReturnValue(true);
+      callTool(rig.callbacks, 'appshot', {});
+      await awaitReceipts(rig.realtime, 1);
+      expect(rig.realtime.respondToVisualResult).not.toHaveBeenCalled();
+      expect(searchTaskFrom(rig, 'visual:1')).toMatchObject({
+        status: 'completed',
+        output: 'K7M4',
+      });
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('runs independent visual queries concurrently and preserves ready-result order', async () => {
+    const completions: Array<(value: { answer: string }) => void> = [];
+    const analyze = vi
+      .fn<typeof analyzeQwenRealtimeImage>()
+      .mockImplementation(() => new Promise((done) => completions.push(done)));
+    const rig = await startSession(undefined, {
+      analyzeRealtimeImage: analyze,
+    });
+    try {
+      beginSearchUserTurn(rig, 'visual-batch');
+      callToolForResponse(rig.callbacks, 'visual-batch', 'appshot', {
+        query: 'First picture question',
+      });
+      callToolForResponse(rig.callbacks, 'visual-batch', 'appshot', {
+        query: 'Second picture question',
+      });
+      await awaitReceipts(rig.realtime, 2);
+      expect(analyze).toHaveBeenCalledTimes(2);
+      completions[1]!({ answer: 'Second answer' });
+      completions[0]!({ answer: 'First answer' });
+      await delay(10);
+      finishSearchUserTurn(rig, 'visual-batch');
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToVisualResult).toHaveBeenCalledTimes(1),
+      );
+      expect(rig.realtime.respondToVisualResult.mock.calls[0]?.[0]).toContain(
+        'Second answer',
+      );
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'second-ready',
+        authority: 'visual_result',
+      });
+      rig.callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'second-ready',
+        audio: Buffer.from([1, 0]),
+      });
+      rig.session.playbackStarted({ epoch: 1 });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'second-ready',
+        authority: 'visual_result',
+        status: 'completed',
+      });
+      rig.session.playbackCompleted({ epoch: 1 });
+      await vi.waitFor(
+        () =>
+          expect(rig.realtime.respondToVisualResult).toHaveBeenCalledTimes(2),
+        { timeout: 2000 },
+      );
+      expect(rig.realtime.respondToVisualResult.mock.calls[1]?.[0]).toContain(
+        'First answer',
+      );
+    } finally {
+      rig.session.dispose();
+    }
   });
 });
 
@@ -1542,6 +1853,132 @@ describe('LiveSession asynchronous web search', () => {
       }
     },
   );
+
+  it('records a silent result as unspoken without rerunning its lookup or blocking the next answer', async () => {
+    const pending = [deferredWebSearch(), deferredWebSearch()];
+    const search = vi
+      .fn<typeof searchQwenRealtime>()
+      .mockReturnValueOnce(pending[0]!.promise)
+      .mockReturnValueOnce(pending[1]!.promise);
+    const rig = await startSession(undefined, {
+      withoutBackends: true,
+      searchRealtime: search,
+    });
+    try {
+      beginSearchUserTurn(rig, 'parallel-weather');
+      callToolForResponse(rig.callbacks, 'parallel-weather', 'web_search', {
+        query: 'first weather query',
+      });
+      callToolForResponse(rig.callbacks, 'parallel-weather', 'web_search', {
+        query: 'second weather query',
+      });
+      const receipts = await awaitReceipts(rig.realtime, 2);
+      const firstId = String(receipts[0]!['taskId']);
+      const secondId = String(receipts[1]!['taskId']);
+      pending[0]!.resolve({
+        answer: 'First result.',
+        searchStatus: 'performed',
+      });
+      pending[1]!.resolve({
+        answer: 'Second result.',
+        searchStatus: 'performed',
+      });
+      await vi.waitFor(() =>
+        expect(searchTaskFrom(rig, secondId)?.status).toBe('delivering'),
+      );
+      finishSearchUserTurn(rig, 'parallel-weather');
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
+      );
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'silent-weather-answer',
+        authority: 'search_result',
+      });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'silent-weather-answer',
+        authority: 'search_result',
+        status: 'completed',
+      });
+      expect(searchTaskFrom(rig, firstId)).toMatchObject({
+        status: 'completed',
+        activity: liveMessage('search.answerUnspoken'),
+        output: 'First result.',
+      });
+      expect(searchTaskFrom(rig, firstId)?.notification).not.toBe('delivered');
+      expect(rig.log.write).toHaveBeenCalledWith(
+        'failure',
+        expect.objectContaining({
+          code: 'search_answer_unspoken',
+          taskId: firstId,
+          responseId: 'silent-weather-answer',
+          fatal: false,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledTimes(2),
+      );
+      rig.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'audible-weather-answer',
+        authority: 'search_result',
+      });
+      rig.callbacks.onOutputTextDone?.({
+        callEpoch: 1,
+        responseId: 'audible-weather-answer',
+        text: 'Second result.',
+        source: 'audio_transcript',
+      });
+      rig.callbacks.onOutputAudioDelta?.({
+        callEpoch: 1,
+        responseId: 'audible-weather-answer',
+        audio: Buffer.alloc(320),
+      });
+      rig.session.playbackStarted({ epoch: 1 });
+      rig.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'audible-weather-answer',
+        authority: 'search_result',
+        status: 'completed',
+      });
+      rig.session.playbackCompleted({ epoch: 1 });
+      expect(searchTaskFrom(rig, secondId)).toMatchObject({
+        status: 'completed',
+        notification: 'delivered',
+      });
+      const deliveries = rig.log.write.mock.calls
+        .filter(([type]) => type === 'search.delivery')
+        .map(([, payload]) => payload as Record<string, unknown>);
+      expect(
+        deliveries
+          .filter((item) => item['taskId'] === secondId)
+          .map((item) => item['phase']),
+      ).toEqual([
+        'queued',
+        'requested',
+        'response_started',
+        'transcript',
+        'audio_started',
+        'response_done',
+        'finished',
+      ]);
+      expect(deliveries).toContainEqual(
+        expect.objectContaining({
+          taskId: firstId,
+          phase: 'finished',
+          reason: 'search.answerUnspoken',
+          delivered: false,
+        }),
+      );
+      expect(JSON.stringify(deliveries)).not.toContain('Second result.');
+      expect(search).toHaveBeenCalledTimes(2);
+      expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      rig.session.dispose();
+    }
+  });
 
   it('bounds escaped search evidence before giving it to the dedicated result lane', async () => {
     const answer = 'Public fact.' + '\u0000'.repeat(15988);
@@ -1976,9 +2413,9 @@ describe('LiveSession asynchronous web search', () => {
       await vi.waitFor(() =>
         expect(rig.realtime.submitFunctionOutput).toHaveBeenCalledOnce(),
       );
-      expect(JSON.stringify(rig.realtime.configure.mock.calls)).toContain(
-        'PRIVATE-MEMORY-CONTENT',
-      );
+      expect(
+        JSON.stringify(rig.realtime.sendBackendContext.mock.calls),
+      ).toContain('PRIVATE-MEMORY-CONTENT');
       rig.realtime.submitFunctionOutput.mockClear();
       callTool(rig.callbacks, 'handoff', { task: 'PRIVATE-EXISTING-TASK' }, [
         { role: 'user', text: 'PRIVATE-PAST-CONVERSATION' },
@@ -2389,7 +2826,7 @@ describe('LiveSession asynchronous web search', () => {
     },
   );
 
-  it('rejects empty, oversized or augmented queries and queues safe feedback without running a search', async () => {
+  it('rejects invalid queries through the tool receipt only, without duplicate result speech or a lookup', async () => {
     const search = vi.fn<typeof searchQwenRealtime>();
     const rig = await startSession(undefined, {
       withoutBackends: true,
@@ -2415,15 +2852,19 @@ describe('LiveSession asynchronous web search', () => {
         rig.session
           .getSubagentsSnapshot()
           .tasks.every(
-            (task) => task.kind === 'search' && task.status === 'delivering',
+            (task) =>
+              task.kind === 'search' &&
+              task.status === 'failed' &&
+              task.activity === liveMessage('search.failed'),
           ),
       ).toBe(true);
-      await vi.waitFor(() =>
-        expect(rig.realtime.respondToSearchResult).toHaveBeenCalledOnce(),
-      );
+      expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
+      expect(rig.realtime.speakToUser).not.toHaveBeenCalled();
       expect(
-        JSON.parse(rig.realtime.respondToSearchResult.mock.calls[0]![0]),
-      ).toMatchObject({ failed: true, searchStatus: 'not_performed' });
+        rig.realtime.submitFunctionOutput.mock.calls.every(
+          ([, , options]) => options?.taskAdmission !== true,
+        ),
+      ).toBe(true);
     } finally {
       rig.session.dispose();
     }
@@ -2505,7 +2946,7 @@ describe('LiveSession without a background Harness', () => {
   );
 
   it.each(['screen', 'camera'] as const)(
-    'delivers %s Appshot pixels directly without a background Harness',
+    'keeps %s Appshot metadata receipts without changing the pixel protocol',
     async (source) => {
       const { session, realtime, host, adaptor, callbacks } =
         await startSession(undefined, {
@@ -2526,24 +2967,13 @@ describe('LiveSession without a background Harness', () => {
         callTool(callbacks, 'appshot', {});
         const [receipt] = await awaitReceipts(realtime, 1);
         expect(receipt).toMatchObject({
-          status: 'ok',
+          status: 'accepted',
+          taskId: expect.stringMatching(/^visual:/),
           source,
           asset: 'asset_1',
         });
-        expect(receipt).toHaveProperty('image_delivery', 'realtime');
-        expect(receipt?.['note']).toContain('Answer directly');
-        expect(receipt?.['note']).not.toContain('call handoff');
         expect(host.captureVisualContext).toHaveBeenCalledOnce();
-        expect(realtime.submitToolImage).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ callEpoch: 1 }),
-          TEST_JPEG,
-          expect.any(Function),
-        );
-        expect(
-          realtime.submitToolImage.mock.invocationCallOrder[0],
-        ).toBeLessThan(
-          realtime.submitFunctionOutput.mock.invocationCallOrder[0]!,
-        );
+        expect(realtime.pushImage).not.toHaveBeenCalled();
         expect(realtime.commitInputAudio).not.toHaveBeenCalled();
         expect(adaptor.createSession).not.toHaveBeenCalled();
         expect(host.failCall).not.toHaveBeenCalled();
@@ -4523,69 +4953,6 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it.each(['opening', 'active'] as const)(
-    'shows actionable quota guidance without blocking later retries (%s)',
-    async (phase) => {
-      const host = createFakeHost({
-        source: 'screen',
-        image: TEST_JPEG,
-        width: 1280,
-        height: 720,
-      });
-      const setProviderReachability = vi.fn();
-      const error = new QwenRealtimeError(
-        'Allocated quota exceeded, please increase your quota limit.',
-        'connection_closed',
-        true,
-        { closeCode: 1007 },
-      );
-      let callbacks: QwenRealtimeCallbacks = {};
-      const session = new LiveSession({
-        host: { ...host, setProviderReachability },
-        registry: new BackendRegistry([
-          { adaptor: new FakeAdaptor(), isDefault: true },
-        ]),
-        realtime: {
-          endpoint: 'https://dashscope.example.com',
-          model: 'qwen3.5-omni-plus-realtime',
-        },
-        log: { write: vi.fn(), close: async () => {} } as unknown as SessionLog,
-        openRealtime: async (_config, handlers) => {
-          callbacks = handlers ?? {};
-          if (phase === 'opening') {
-            callbacks.onClose?.({ reason: 'remote', error });
-            throw error;
-          }
-          return createFakeRealtime() as unknown as QwenRealtimeSession;
-        },
-      });
-      try {
-        const starting = session.start({
-          epoch: 1,
-          callId: 'call-1',
-          mode: 'new',
-          visualInput: DEFAULT_VISUAL_INPUT,
-        });
-        if (phase === 'opening') await expect(starting).rejects.toBe(error);
-        else {
-          await starting;
-          callbacks.onError?.(error);
-        }
-        expect(host.failCall).toHaveBeenCalledOnce();
-        const message = host.failCall.mock.calls[0]![1]!;
-        expect(displayLiveMessage('en', message)).toContain(
-          'Realtime quota limit reached.',
-        );
-        expect(displayLiveMessage('en', message)).toContain(error.message);
-        expect(displayLiveMessage('zh-CN', message)).toContain('配额');
-        expect(displayLiveMessage('zh-CN', message)).toContain('重试');
-        expect(setProviderReachability).not.toHaveBeenCalled();
-      } finally {
-        session.dispose();
-      }
-    },
-  );
-
   it('surfaces an actionable Realtime authentication failure', async () => {
     const host = createFakeHost({
       source: 'screen',
@@ -4685,64 +5052,6 @@ describe('LiveSession', () => {
       blocker: 'provider_config',
       message: host.failCall.mock.calls[0]![1],
     });
-  });
-
-  it('queues a reminder that becomes due while the voice connection is recovering', async () => {
-    const proactive = createProactiveHarness();
-    const rig = await startSession(undefined, {
-      proactive: DEFAULT_PROACTIVE_CONFIG,
-      createProactiveScheduler: proactive.createScheduler,
-    });
-    recover(rig.callbacks, 'started', 'none');
-    const accepted = proactive.options().onEvent({
-      taskId: 'task-timer',
-      taskGeneration: 1,
-      deliveryId: 'during-recovery',
-      event: 'The timer is ready.',
-    });
-    expect(accepted).toBe(true);
-    expect(rig.realtime.respondToProactiveEvent).not.toHaveBeenCalled();
-    recover(rig.callbacks, 'restoring', 'none');
-    recover(rig.callbacks, 'completed', 'none');
-    await vi.waitFor(() =>
-      expect(
-        rig.realtime.respondToProactiveEvent,
-      ).toHaveBeenCalledExactlyOnceWith('The timer is ready.'),
-    );
-    rig.session.dispose();
-  });
-
-  it('queues a search result that finishes while the voice connection is recovering', async () => {
-    const pending = deferredWebSearch();
-    const rig = await startSession(undefined, {
-      withoutBackends: true,
-      realtimeModel: 'qwen3.5-omni-plus-realtime',
-      searchRealtime: vi
-        .fn<typeof searchQwenRealtime>()
-        .mockReturnValue(pending.promise),
-    });
-    beginSearchUserTurn(rig, 'search-request');
-    callToolForResponse(rig.callbacks, 'search-request', 'web_search', {
-      query: 'a simple public lookup',
-    });
-    await awaitReceipts(rig.realtime, 1);
-    finishSearchUserTurn(rig, 'search-request');
-    recover(rig.callbacks, 'started', 'none');
-    pending.resolve({
-      answer: 'The awaited result.',
-      searchStatus: 'performed',
-    });
-    await delay(30);
-    expect(rig.realtime.respondToSearchResult).not.toHaveBeenCalled();
-    recover(rig.callbacks, 'restoring', 'none');
-    recover(rig.callbacks, 'completed', 'none');
-    await vi.waitFor(() =>
-      expect(rig.realtime.respondToSearchResult).toHaveBeenCalledWith(
-        expect.stringContaining('The awaited result.'),
-        { fallbackLanguage: 'en', outputLanguage: 'en' },
-      ),
-    );
-    rig.session.dispose();
   });
 
   it('does not replace a fatal provider error with a final-input commit error', async () => {
@@ -5172,12 +5481,22 @@ describe('LiveSession', () => {
       trigger_response: 'Remind the user to sit upright.',
       repeat: true,
     });
-    callTool(callbacks, CREATE_LIVE_NARRATION_TOOL_NAME, {
-      title: 'Narrate the workspace',
-      modalities: ['vision'],
-      narration_focus: 'Meaningful workspace changes.',
-      narration_style: 'Brief English narration.',
-    });
+    callToolForResponse(
+      callbacks,
+      'narration-source-response',
+      CREATE_LIVE_NARRATION_TOOL_NAME,
+      {
+        title: 'Narrate the workspace',
+        modalities: ['vision'],
+        narration_focus: 'Meaningful workspace changes.',
+      },
+      [],
+      {
+        inputItemId: 'narration-source-input',
+        inputTranscript:
+          'Describe meaningful workspace changes in brief English.',
+      },
+    );
     callTool(callbacks, CREATE_PROACTIVE_TIMER_TOOL_NAME, {
       title: 'Tea timer',
       duration_sec: 300,
@@ -5201,6 +5520,16 @@ describe('LiveSession', () => {
     const toolReceipts = realtime.submitFunctionOutput.mock.calls.map(
       ([, output]) => output,
     );
+    expect(
+      realtime.submitFunctionOutput.mock.calls.map(([, , options]) => options),
+    ).toEqual([
+      { taskAdmission: true },
+      { taskAdmission: true },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
 
     expect(harness.scheduler.createPerceptionMonitor).toHaveBeenCalledWith({
       title: 'Watch posture',
@@ -5213,7 +5542,12 @@ describe('LiveSession', () => {
       title: 'Narrate the workspace',
       modalities: ['vision'],
       narrationFocus: 'Meaningful workspace changes.',
-      narrationStyle: 'Brief English narration.',
+      narrationStyle: DEFAULT_NARRATION_STYLE,
+      narrationPreferences: {
+        sourceRequest:
+          'Describe meaningful workspace changes in brief English.',
+        fallbackLanguage: 'en',
+      },
     });
     expect(harness.scheduler.createTimer).toHaveBeenCalledWith({
       title: 'Tea timer',
@@ -5245,6 +5579,362 @@ describe('LiveSession', () => {
 
     session.dispose();
   });
+
+  it('creates three-field narration using only the bound final user request, including explicit English preferences', async () => {
+    const harness = createProactiveHarness();
+    const { callbacks, session } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+      getLanguage: () => 'zh-CN',
+    });
+    const source = '请持续描述屏幕，用英语给初学者讲解，语气轻松一点。';
+    callbacks.onInputTranscriptDone?.({
+      callEpoch: 1,
+      itemId: 'real-source',
+      text: source,
+    });
+    callToolForResponse(
+      callbacks,
+      'narration-three-fields',
+      CREATE_LIVE_NARRATION_TOOL_NAME,
+      {
+        title: 'Screen',
+        modalities: ['vision'],
+        narration_focus: 'Meaningful screen changes',
+      },
+      [
+        {
+          role: 'assistant',
+          text: 'Use a different style from unrelated history.',
+        },
+      ],
+      { inputItemId: 'real-source' },
+    );
+    expect(
+      harness.scheduler.createLiveNarration,
+    ).toHaveBeenCalledExactlyOnceWith({
+      title: 'Screen',
+      modalities: ['vision'],
+      narrationFocus: 'Meaningful screen changes',
+      narrationStyle: DEFAULT_NARRATION_STYLE,
+      narrationPreferences: {
+        sourceRequest: source,
+        fallbackLanguage: 'zh-CN',
+      },
+    });
+    session.dispose();
+  });
+
+  it('waits for the exact late narration ASR item without borrowing a newer user turn or its language', async () => {
+    const harness = createProactiveHarness();
+    const { callbacks, realtime, session } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+      getLanguage: () => 'zh-CN',
+    });
+    callToolForResponse(
+      callbacks,
+      'waiting-narration',
+      CREATE_LIVE_NARRATION_TOOL_NAME,
+      {
+        title: 'Screen',
+        modalities: ['vision'],
+        narration_focus: 'Selected screen changes',
+      },
+      [],
+      { inputItemId: 'late-original' },
+    );
+    expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+    callbacks.onInputTranscriptDone?.({
+      callEpoch: 1,
+      itemId: 'newer-unrelated',
+      text: 'Use Spanish for the weather report.',
+    });
+    await Promise.resolve();
+    expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+    const original = '请持续描述画面，这个任务用英语说。';
+    callbacks.onDialogue?.({
+      callEpoch: 1,
+      inputItemId: 'late-original',
+      role: 'user',
+      text: original,
+    });
+    await vi.waitFor(() =>
+      expect(realtime.submitFunctionOutput).toHaveBeenCalledOnce(),
+    );
+    expect(harness.scheduler.createLiveNarration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        narrationPreferences: {
+          sourceRequest: original,
+          fallbackLanguage: 'zh-CN',
+        },
+      }),
+    );
+    session.dispose();
+  });
+
+  it('accepts a transport-bound recovered user transcript without requiring a new ASR callback', async () => {
+    const harness = createProactiveHarness();
+    const { callbacks, session } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+    });
+    callToolForResponse(
+      callbacks,
+      'recovered-narration',
+      CREATE_LIVE_NARRATION_TOOL_NAME,
+      {
+        title: 'Screen',
+        modalities: ['vision'],
+        narration_focus: 'Screen changes',
+      },
+      [],
+      {
+        inputItemId: 'recovered-real-user',
+        inputTranscript: 'Describe screen changes in English for beginners.',
+      },
+    );
+    expect(harness.scheduler.createLiveNarration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        narrationPreferences: {
+          sourceRequest: 'Describe screen changes in English for beginners.',
+          fallbackLanguage: 'en',
+        },
+      }),
+    );
+    session.dispose();
+  });
+
+  it('does not create narration after the two-second source deadline or a later transcript arrival', async () => {
+    const harness = createProactiveHarness();
+    const { callbacks, realtime, session } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+    });
+    vi.useFakeTimers();
+    try {
+      callToolForResponse(
+        callbacks,
+        'missing-asr',
+        CREATE_LIVE_NARRATION_TOOL_NAME,
+        {
+          title: 'Screen',
+          modalities: ['vision'],
+          narration_focus: 'Screen changes',
+        },
+        [],
+        { inputItemId: 'never-transcribed-in-time' },
+      );
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2);
+      expect(realtime.submitFunctionOutput).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.stringContaining('持续解说任务未创建'),
+      );
+      expect(realtime.submitFunctionOutput.mock.calls[0]![1]).toContain(
+        '完整转写',
+      );
+      callbacks.onInputTranscriptDone?.({
+        callEpoch: 1,
+        itemId: 'never-transcribed-in-time',
+        text: 'Use English for screen narration.',
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['unbound', 'oversized', 'rejected', 'old_style_field'] as const)(
+    'rejects unsafe narration source %s rather than silently dropping preferences',
+    async (reason) => {
+      const harness = createProactiveHarness();
+      const { callbacks, realtime, session } = await startSession(undefined, {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+      });
+      if (reason === 'rejected')
+        callbacks.onInputRejected?.({
+          callEpoch: 1,
+          itemId: 'source',
+          reason: 'semantic_vad',
+        });
+      const args = {
+        title: 'Screen',
+        modalities: ['vision'],
+        narration_focus: 'Screen changes',
+        ...(reason === 'old_style_field'
+          ? { narration_style: 'Use English.' }
+          : {}),
+      };
+      callToolForResponse(
+        callbacks,
+        'invalid-source',
+        CREATE_LIVE_NARRATION_TOOL_NAME,
+        args,
+        [{ role: 'user', text: 'Never use this unrelated transcript tail.' }],
+        reason === 'unbound'
+          ? undefined
+          : {
+              inputItemId: 'source',
+              inputTranscript:
+                reason === 'oversized'
+                  ? 'a'.repeat(4097)
+                  : 'Use English for screen narration.',
+            },
+      );
+      expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+      expect(realtime.submitFunctionOutput.mock.calls[0]?.[1]).toContain(
+        '未创建',
+      );
+      session.dispose();
+    },
+  );
+
+  it.each(['stop', 'recovery', 'rejected'] as const)(
+    'ends pending narration source waits on %s without a late task creation',
+    async (ending) => {
+      const harness = createProactiveHarness();
+      const { callbacks, session } = await startSession(undefined, {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+      });
+      callToolForResponse(
+        callbacks,
+        'pending-source',
+        CREATE_LIVE_NARRATION_TOOL_NAME,
+        {
+          title: 'Screen',
+          modalities: ['vision'],
+          narration_focus: 'Screen changes',
+        },
+        [],
+        { inputItemId: 'pending-user' },
+      );
+      if (ending === 'stop') session.dispose();
+      else if (ending === 'rejected')
+        callbacks.onInputRejected?.({
+          callEpoch: 1,
+          itemId: 'pending-user',
+          reason: 'semantic_vad',
+        });
+      else
+        callbacks.onTransportRecovery?.({
+          callEpoch: 1,
+          phase: 'started',
+          inputKind: 'none',
+          code: 'response_cancel_timeout',
+          responseId: 'old',
+          authority: 'direct',
+        });
+      callbacks.onDialogue?.({
+        callEpoch: 1,
+        inputItemId: 'pending-user',
+        role: 'user',
+        text: 'Late source must not create work.',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+      session.dispose();
+    },
+  );
+
+  it('carries the original real input into a narration repair instead of using assistant promises as preferences', async () => {
+    const harness = createProactiveHarness();
+    const { callbacks, realtime, session } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+    });
+    const original = '请用英语持续讲解画面。';
+    callbacks.onInputTranscriptDone?.({
+      callEpoch: 1,
+      itemId: 'origin',
+      text: original,
+    });
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'promise',
+      authority: 'direct',
+      inputItemId: 'origin',
+    });
+    callbacks.onDirectTranscript?.({
+      callEpoch: 1,
+      responseId: 'promise',
+      inputItemId: 'origin',
+      entries: [{ role: 'assistant', text: '我会一直看着你的画面。' }],
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'promise',
+      inputItemId: 'origin',
+      status: 'completed',
+      authority: 'direct',
+    });
+    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'repair',
+      authority: 'proactive_repair',
+    });
+    callToolForResponse(callbacks, 'repair', CREATE_LIVE_NARRATION_TOOL_NAME, {
+      title: 'Screen',
+      modalities: ['vision'],
+      narration_focus: 'Screen changes',
+    });
+    expect(harness.scheduler.createLiveNarration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        narrationPreferences: {
+          sourceRequest: original,
+          fallbackLanguage: 'zh-CN',
+        },
+      }),
+    );
+    session.dispose();
+  });
+
+  it.each([
+    CREATE_PROACTIVE_MONITOR_TOOL_NAME,
+    CREATE_LIVE_NARRATION_TOOL_NAME,
+  ])(
+    'does not silence the receipt when %s fails to create work',
+    async (name) => {
+      const harness = createProactiveHarness();
+      harness.scheduler.createPerceptionMonitor.mockImplementationOnce(() => {
+        throw new Error('Synthetic monitor creation failure.');
+      });
+      harness.scheduler.createLiveNarration.mockImplementationOnce(() => {
+        throw new Error('Synthetic narration creation failure.');
+      });
+      const { callbacks, realtime, session } = await startSession(undefined, {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+      });
+      try {
+        callTool(callbacks, name, {
+          title: 'Monitor to create',
+          modalities: ['vision'],
+          ...(name === CREATE_PROACTIVE_MONITOR_TOOL_NAME
+            ? { condition: 'The screen changes.', trigger_response: 'Tell me.' }
+            : { narration_focus: 'Screen changes.' }),
+        });
+        await vi.waitFor(() =>
+          expect(realtime.submitFunctionOutput).toHaveBeenCalledOnce(),
+        );
+        expect(
+          realtime.submitFunctionOutput.mock.calls[0]?.[2],
+        ).toBeUndefined();
+        expect(realtime.submitFunctionOutput.mock.calls[0]?.[1]).toContain(
+          '未创建',
+        );
+      } finally {
+        session.dispose();
+      }
+    },
+  );
 
   it('accepts Proactive arguments wrapped in one extra JSON string', async () => {
     const harness = createProactiveHarness();
@@ -6368,6 +7058,11 @@ describe('LiveSession', () => {
       responseId: 'proactive-1',
       authority: 'proactive',
     });
+    callbacks.onOutputAudioDelta?.({
+      callEpoch: 1,
+      responseId: 'proactive-1',
+      audio: new Uint8Array([1, 0]),
+    });
     session.playbackStarted({ epoch: 1 });
     callbacks.onResponseDone?.({
       callEpoch: 1,
@@ -6740,7 +7435,7 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('fails a completed Proactive response with no audio and never ACKs later direct playback', async () => {
+  it('marks invalid fallback context undelivered and never ACKs later direct playback', async () => {
     const harness = createProactiveHarness();
     const { callbacks, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
@@ -6766,10 +7461,13 @@ describe('LiveSession', () => {
       authority: 'proactive',
     });
 
-    expect(harness.scheduler.failDelivery).toHaveBeenCalledWith(
-      delivery,
-      expect.stringContaining('without audio'),
+    await vi.waitFor(() =>
+      expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledWith(
+        delivery,
+        expect.any(String),
+      ),
     );
+    expect(harness.scheduler.failDelivery).not.toHaveBeenCalled();
     callbacks.onResponseCreated?.({
       callEpoch: 1,
       responseId: 'later-direct',
@@ -6788,6 +7486,539 @@ describe('LiveSession', () => {
     ).toHaveBeenCalledExactlyOnceWith(delivery);
     expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
 
+    session.dispose();
+  });
+
+  it('preserves the real narration preference source in fallback without treating it as observed scene facts', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue({
+        ...FALLBACK_SPEECH,
+        transcript: 'A new window opened.',
+      });
+    const { session, callbacks, host } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+      notificationSpeech,
+      getLanguage: () => 'zh-CN',
+    });
+    const delivery: ProactiveDelivery = {
+      taskId: 'task-narration',
+      taskGeneration: 1,
+      deliveryId: 'narration-fallback',
+      event: formatProactiveEvent({
+        taskId: 'task-narration',
+        deliveryId: 'narration-fallback',
+        title: 'Screen narration',
+        taskType: 'perception_monitor',
+        summary: 'A new window opened.',
+        sourceModalities: ['vision'],
+        interventionText: 'Default style',
+        monitorMode: 'always',
+        narrationFocus: 'Window changes',
+        narrationPreferences: {
+          sourceRequest: '请用英语持续讲解新窗口。',
+          fallbackLanguage: 'zh-CN',
+          styleOverride: 'Use a technical tone.',
+        },
+      }),
+    };
+    harness.options().onEvent(delivery);
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-narration',
+      authority: 'proactive',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-narration',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await vi.waitFor(() => expect(host.sendOutputAudio).toHaveBeenCalledOnce());
+    expect(notificationSpeech).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        summary: 'A new window opened.',
+        language: 'zh-CN',
+        narrationPreferences: {
+          sourceRequest: '请用英语持续讲解新窗口。',
+          fallbackLanguage: 'zh-CN',
+          taskTitle: 'Screen narration',
+          narrationFocus: 'Window changes',
+          styleOverride: 'Use a technical tone.',
+        },
+      }),
+    );
+    session.dispose();
+  });
+
+  it('uses one independent no-tools speech fallback and only records delivery after actual playback', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue(FALLBACK_SPEECH);
+    const { session, callbacks, host, realtime, log } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+        getLanguage: () => 'zh-CN',
+      },
+    );
+    const delivery = fallbackDelivery();
+    harness.options().onEvent(delivery);
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await vi.waitFor(() => expect(host.sendOutputAudio).toHaveBeenCalledOnce());
+    expect(notificationSpeech).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        endpoint: 'https://dashscope.example.com',
+        model: DEFAULT_REALTIME_MODEL,
+        voice: 'Cherry',
+        language: 'zh-CN',
+        summary: '这是第1次听到敲击桌子的声音',
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(notificationSpeech.mock.calls[0]![0]).not.toHaveProperty(
+      'interventionText',
+    );
+    expect(notificationSpeech.mock.calls[0]![0]).not.toHaveProperty(
+      'narrationPreferences',
+    );
+    expect(harness.scheduler.deferDelivery).toHaveBeenCalledExactlyOnceWith(
+      delivery,
+    );
+    expect(harness.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
+    expect(realtime.respondToProactiveEvent).toHaveBeenCalledExactlyOnceWith(
+      delivery.event,
+    );
+    expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+    expect(
+      realtime.sendBackendContext.mock.calls.some(([text]) =>
+        text.includes('PROACTIVE_DELIVERY_STATUS'),
+      ),
+    ).toBe(false);
+    expect(
+      log.write.mock.calls.some(
+        ([type, payload]) =>
+          type === 'transcript.assistant' &&
+          payload.source === 'notification_fallback',
+      ),
+    ).toBe(false);
+    session.playbackStarted({ epoch: 1 });
+    expect(harness.scheduler.playbackStarted).toHaveBeenCalledExactlyOnceWith(
+      delivery,
+    );
+    session.playbackCompleted({ epoch: 1 });
+    expect(
+      harness.scheduler.acknowledgeDelivery,
+    ).toHaveBeenCalledExactlyOnceWith(delivery);
+    expect(realtime.sendBackendContext).toHaveBeenCalledWith(
+      expect.stringContaining('"spoken_text":"刚刚听到了敲桌子的声音。"'),
+    );
+    expect(log.write).toHaveBeenCalledWith(
+      'transcript.assistant',
+      expect.objectContaining({
+        source: 'notification_fallback',
+        providerSessionId: 'sess-fallback',
+        text: FALLBACK_SPEECH.transcript,
+      }),
+    );
+    expect(harness.scheduler.undeliverDelivery).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it.each([
+    'speech',
+    'mute',
+    'stop',
+    'cancel',
+    'foreground',
+    'recovery',
+  ] as const)(
+    'aborts pending fallback generation on %s and never plays its late completion',
+    async (interruption) => {
+      const harness = createProactiveHarness();
+      let complete!: (value: NotificationSpeechResult) => void;
+      const notificationSpeech = vi.fn<typeof synthesizeNotificationSpeech>(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const { session, callbacks, host, realtime } = await startSession(
+        undefined,
+        {
+          proactive: DEFAULT_PROACTIVE_CONFIG,
+          createProactiveScheduler: harness.createScheduler,
+          notificationSpeech,
+        },
+      );
+      const delivery = fallbackDelivery();
+      harness.options().onEvent(delivery);
+      callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'silent-primary',
+        authority: 'proactive',
+      });
+      callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'silent-primary',
+        authority: 'proactive',
+        status: 'completed',
+      });
+      await vi.waitFor(() => expect(notificationSpeech).toHaveBeenCalledOnce());
+      if (interruption === 'speech')
+        callbacks.onSpeechStarted?.({ callEpoch: 1, itemId: 'new-user' });
+      else if (interruption === 'mute') {
+        host.setOutputMuted(true);
+        session.outputMuted({ epoch: 1 });
+      } else if (interruption === 'stop') session.dispose();
+      else if (interruption === 'cancel')
+        harness.options().onDeliveryInvalidated?.(delivery);
+      else if (interruption === 'foreground')
+        callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'new-main-response',
+          authority: 'direct',
+          inputItemId: 'new-user',
+        });
+      else
+        callbacks.onTransportRecovery?.({
+          callEpoch: 1,
+          phase: 'started',
+          code: 'response_cancel_timeout',
+          responseId: 'old-response',
+          authority: 'tool_continuation',
+          inputKind: 'none',
+        });
+      expect(notificationSpeech.mock.calls[0]![0].signal?.aborted).toBe(true);
+      complete(FALLBACK_SPEECH);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(host.sendOutputAudio).not.toHaveBeenCalled();
+      expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+      expect(realtime.respondToProactiveEvent).toHaveBeenCalledOnce();
+      if (interruption !== 'cancel')
+        expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledOnce();
+      expect(host.failCall).not.toHaveBeenCalled();
+      session.dispose();
+    },
+  );
+
+  it('marks a failed fallback undelivered without retrying detection or creating a failure speech loop', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockRejectedValue(new Error('private-provider-detail'));
+    const { session, callbacks, realtime, host } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      },
+    );
+    const first = fallbackDelivery();
+    const second = fallbackDelivery('delivery-second');
+    harness.options().onEvent(first);
+    harness.options().onEvent(second);
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await vi.waitFor(() =>
+      expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledOnce(),
+    );
+    expect(notificationSpeech).toHaveBeenCalledOnce();
+    expect(harness.scheduler.failDelivery).not.toHaveBeenCalled();
+    expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+    expect(host.sendOutputAudio).not.toHaveBeenCalled();
+    expect(realtime.speakToUser).not.toHaveBeenCalled();
+    expect(realtime.respondToProactiveEvent).toHaveBeenNthCalledWith(
+      2,
+      second.event,
+    );
+    expect(host.failCall).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it.each(['failed', 'cancelled', 'partial'] as const)(
+    'does not synthesize fallback for a %s primary response',
+    async (ending) => {
+      const harness = createProactiveHarness();
+      const notificationSpeech = vi.fn<typeof synthesizeNotificationSpeech>();
+      const { session, callbacks } = await startSession(undefined, {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      });
+      harness.options().onEvent(fallbackDelivery());
+      callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'primary',
+        authority: 'proactive',
+      });
+      if (ending === 'partial')
+        callbacks.onOutputAudioDelta?.({
+          callEpoch: 1,
+          responseId: 'primary',
+          audio: new Uint8Array([1, 0]),
+        });
+      callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'primary',
+        authority: 'proactive',
+        status: ending === 'partial' ? 'completed' : ending,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(notificationSpeech).not.toHaveBeenCalled();
+      session.dispose();
+    },
+  );
+
+  it('keeps queued fallback behind the main receipt drain without cancelling it', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue(FALLBACK_SPEECH);
+    const { session, callbacks, realtime, host } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      },
+    );
+    harness.options().onEvent(fallbackDelivery());
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    realtime.canDeliverExternalAudio.mockReturnValue(false);
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await Promise.resolve();
+    expect(notificationSpeech).not.toHaveBeenCalled();
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'main-drain',
+      authority: 'tool_continuation',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'main-drain',
+      authority: 'tool_continuation',
+      status: 'completed',
+    });
+    expect(harness.scheduler.undeliverDelivery).not.toHaveBeenCalled();
+    realtime.canDeliverExternalAudio.mockReturnValue(true);
+    await vi.waitFor(
+      () => expect(host.sendOutputAudio).toHaveBeenCalledOnce(),
+      { timeout: 2000 },
+    );
+    expect(notificationSpeech).toHaveBeenCalledOnce();
+    session.dispose();
+  });
+
+  it('preserves an unstarted queued fallback through main transport recovery', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue(FALLBACK_SPEECH);
+    const { session, callbacks, realtime, host } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      },
+    );
+    harness.options().onEvent(fallbackDelivery());
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    realtime.canDeliverExternalAudio.mockReturnValue(false);
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    const recovery = {
+      callEpoch: 1,
+      code: 'response_cancel_timeout' as const,
+      responseId: 'main-drain',
+      authority: 'tool_continuation' as const,
+      inputKind: 'none' as const,
+    };
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'started' });
+    await Promise.resolve();
+    expect(notificationSpeech).not.toHaveBeenCalled();
+    expect(harness.scheduler.undeliverDelivery).not.toHaveBeenCalled();
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'restoring' });
+    realtime.canDeliverExternalAudio.mockReturnValue(true);
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'completed' });
+    await vi.waitFor(() => expect(host.sendOutputAudio).toHaveBeenCalledOnce());
+    expect(notificationSpeech).toHaveBeenCalledOnce();
+    expect(realtime.respondToProactiveEvent).toHaveBeenCalledOnce();
+    session.dispose();
+  });
+
+  it('discards a queued fallback on new user speech rather than replaying it after the user turn', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue(FALLBACK_SPEECH);
+    const { session, callbacks, realtime, host } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      },
+    );
+    harness.options().onEvent(fallbackDelivery());
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    realtime.canDeliverExternalAudio.mockReturnValue(false);
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    callbacks.onSpeechStarted?.({ callEpoch: 1, itemId: 'user-new' });
+    realtime.canDeliverExternalAudio.mockReturnValue(true);
+    callbacks.onInputCommitted?.({
+      callEpoch: 1,
+      itemId: 'user-new',
+      responsePending: true,
+    });
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'user-response',
+      inputItemId: 'user-new',
+      authority: 'direct',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'user-response',
+      authority: 'direct',
+      status: 'completed',
+    });
+    await delay(800);
+    expect(notificationSpeech).not.toHaveBeenCalled();
+    expect(host.sendOutputAudio).not.toHaveBeenCalled();
+    expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledOnce();
+    expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it('never retries or replays the remainder after fallback playback is interrupted', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi
+      .fn<typeof synthesizeNotificationSpeech>()
+      .mockResolvedValue({
+        ...FALLBACK_SPEECH,
+        audio: new Uint8Array(100_000),
+      });
+    const { session, callbacks, host, realtime } = await startSession(
+      undefined,
+      {
+        proactive: DEFAULT_PROACTIVE_CONFIG,
+        createProactiveScheduler: harness.createScheduler,
+        notificationSpeech,
+      },
+    );
+    host.sendOutputAudio.mockImplementationOnce(() => {
+      queueMicrotask(() =>
+        callbacks.onSpeechStarted?.({ callEpoch: 1, itemId: 'interruption' }),
+      );
+      return true;
+    });
+    harness.options().onEvent(fallbackDelivery());
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await vi.waitFor(() =>
+      expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledOnce(),
+    );
+    expect(host.sendOutputAudio).toHaveBeenCalledOnce();
+    expect(host.clearOutput).toHaveBeenCalled();
+    expect(notificationSpeech).toHaveBeenCalledOnce();
+    expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+    expect(
+      realtime.sendBackendContext.mock.calls.some(([text]) =>
+        text.includes('PROACTIVE_DELIVERY_STATUS'),
+      ),
+    ).toBe(false);
+    session.dispose();
+  });
+
+  it('does not synthesize fallback for an already-muted output and never claims delivery', async () => {
+    const harness = createProactiveHarness();
+    const notificationSpeech = vi.fn<typeof synthesizeNotificationSpeech>();
+    const { session, callbacks, host } = await startSession(undefined, {
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: harness.createScheduler,
+      notificationSpeech,
+    });
+    harness.options().onEvent(fallbackDelivery());
+    callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+    });
+    host.setOutputMuted(true);
+    callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'silent-primary',
+      authority: 'proactive',
+      status: 'completed',
+    });
+    await Promise.resolve();
+    expect(notificationSpeech).not.toHaveBeenCalled();
+    expect(harness.scheduler.undeliverDelivery).toHaveBeenCalledOnce();
+    expect(harness.scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
     session.dispose();
   });
 
@@ -7762,7 +8993,7 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('records malformed tool arguments and business rejection without changing receipts or ending the call', async () => {
+  it('rejects malformed tool arguments before handler execution without ending the call', async () => {
     const rig = await startSession();
     try {
       rig.callbacks.onReady?.({
@@ -7780,7 +9011,8 @@ describe('LiveSession', () => {
       const [receipt] = await awaitReceipts(rig.realtime, 1);
       expect(receipt).toMatchObject({
         status: 'error',
-        note: 'handoff needs a task.',
+        code: 'invalid_arguments',
+        note: 'Tool arguments must be a valid JSON object. No action was executed.',
       });
       const failures = rig.log.write.mock.calls
         .filter(([type]) => type === 'failure')
@@ -7796,20 +9028,49 @@ describe('LiveSession', () => {
             responseId: 'resp_bad_args',
             toolCallId: 'call_bad_args',
           }),
-          expect.objectContaining({
-            source: 'tool',
-            code: 'tool_business_rejected',
-            toolCallId: 'call_bad_args',
-          }),
+        ]),
+      );
+      expect(failures).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'tool_business_rejected' }),
         ]),
       );
       expect(JSON.stringify(failures)).not.toContain('private-input');
       expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+      expect(rig.adaptor.createSession).not.toHaveBeenCalled();
+      expect(rig.host.captureVisualContext).not.toHaveBeenCalled();
       expect(rig.host.failCall).not.toHaveBeenCalled();
     } finally {
       rig.session.dispose();
     }
   });
+
+  it.each(['', '   ', '{broken', 'null', '[]'])(
+    'never captures the desktop when appshot arguments are malformed: %s',
+    async (argumentsText) => {
+      const rig = await startSession();
+      try {
+        rig.callbacks.onFunctionCall?.({
+          callEpoch: 1,
+          responseId: 'resp_bad_appshot',
+          callId: 'call_bad_appshot',
+          name: 'appshot',
+          arguments: argumentsText,
+          activeTranscript: [],
+        });
+        const [receipt] = await awaitReceipts(rig.realtime, 1);
+        expect(receipt).toMatchObject({
+          status: 'error',
+          code: 'invalid_arguments',
+        });
+        expect(rig.host.captureVisualContext).not.toHaveBeenCalled();
+        expect(rig.adaptor.prompt).not.toHaveBeenCalled();
+        expect(rig.host.failCall).not.toHaveBeenCalled();
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
 
   it('records an unexpected provider close but not an intentional client close', async () => {
     for (const reason of ['client', 'remote'] as const) {
@@ -8114,7 +9375,7 @@ describe('LiveSession', () => {
       expect.any(String),
     );
     expect(appshotReceipt).toMatchObject({
-      status: 'ok',
+      status: 'accepted',
       app: 'Safari',
       window: 'Docs',
       asset: 'asset_1',
@@ -8134,10 +9395,80 @@ describe('LiveSession', () => {
     expect(image.data.byteLength).toBeGreaterThan(0);
   });
 
-  it.each(['expired', 'unknown'])(
-    'rejects a handoff with an %s image instead of sending a text-only task',
+  it('returns selected-display identity with the full Screen Appshot asset without requiring AX metadata', async () => {
+    const displayId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const { callbacks, host, realtime, session } = await startSession(
+      undefined,
+      {
+        capture: {
+          source: 'screen',
+          screenScope: 'display',
+          displayId,
+          image: TEST_JPEG,
+          width: 1920,
+          height: 1080,
+          screenshotPath: pngPath,
+        },
+      },
+    );
+    try {
+      callTool(callbacks, 'appshot', {});
+      const [receipt] = await awaitReceipts(realtime, 1);
+      expect(receipt).toEqual({
+        status: 'accepted',
+        taskId: expect.stringMatching(/^visual:/),
+        source: 'screen',
+        screen_scope: 'display',
+        display_id: displayId,
+        width: 1920,
+        height: 1080,
+        asset: 'asset_1',
+      });
+      expect(host.captureVisualContext).toHaveBeenCalledWith('call-1', {
+        persistAsset: true,
+      });
+      expect(realtime.pushImage).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it('returns Camera appshot through the same asset receipt path', async () => {
+    const { callbacks, host, realtime } = await startSession(undefined, {
+      visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
+      capture: {
+        source: 'camera',
+        image: TEST_JPEG,
+        width: 1280,
+        height: 720,
+        screenshotPath: pngPath,
+      },
+    });
+
+    callTool(callbacks, 'appshot', {});
+    const [receipt] = await awaitReceipts(realtime, 1);
+
+    expect(host.captureVisualContext).toHaveBeenCalledWith('call-1', {
+      persistAsset: true,
+    });
+    expect(realtime.submitFunctionOutput).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(String),
+    );
+    expect(receipt).toMatchObject({
+      status: 'accepted',
+      source: 'camera',
+      width: 1280,
+      height: 720,
+      asset: 'asset_1',
+    });
+    expect(receipt).not.toHaveProperty('image_delivery');
+  });
+
+  it.each(['expired', 'unknown', 'empty'] as const)(
+    'rejects an %s image reference without submitting a text-only task or duplicate English announcement',
     async (kind) => {
-      const capturePath = join(tempDir, `${kind}-shot.png`);
+      const capturePath = join(tempDir, `${kind}-image.png`);
       await writeFile(capturePath, Buffer.from(TEST_JPEG, 'base64'));
       const { adaptor, callbacks, realtime } = await startSession(undefined, {
         capture: {
@@ -8151,233 +9482,34 @@ describe('LiveSession', () => {
       callTool(callbacks, 'appshot', {});
       await awaitReceipts(realtime, 1);
       if (kind === 'expired') await rm(capturePath);
-
-      callbacks.onResponseCreated?.({
-        callEpoch: 1,
-        responseId: 'image-handoff',
-        authority: 'direct',
-      });
-      callToolForResponse(callbacks, 'image-handoff', 'handoff', {
-        task: 'describe the attached image',
-        input_refs:
-          kind === 'expired' ? ['asset_1'] : ['asset_1', 'asset_unknown'],
+      if (kind === 'empty') await writeFile(capturePath, Buffer.alloc(0));
+      callTool(callbacks, 'handoff', {
+        task: 'Inspect the attached image',
+        input_refs: kind === 'unknown' ? ['asset_unknown'] : ['asset_1'],
       });
       const [, receipt] = await awaitReceipts(realtime, 2);
-
       expect(receipt).toMatchObject({
         status: 'error',
         code: 'image_unavailable',
       });
       expect(adaptor.prompt).not.toHaveBeenCalled();
       expect(realtime.speakToUser).not.toHaveBeenCalled();
-      callbacks.onResponseDone?.({
-        callEpoch: 1,
-        responseId: 'image-handoff',
-        authority: 'direct',
-        status: 'completed',
-      });
-      await vi.waitFor(() =>
-        expect(realtime.speakToUser).toHaveBeenCalledExactlyOnceWith(
-          'The image is no longer available. The task was not sent; capture a new image and try again.',
-        ),
-      );
     },
   );
 
-  it('sends Camera appshot directly and retains its asset for explicit delegation', async () => {
-    const { adaptor, callbacks, host, realtime } = await startSession(
-      undefined,
-      {
-        visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
-        capture: {
-          source: 'camera',
-          image: TEST_JPEG,
-          width: 1280,
-          height: 720,
-          screenshotPath: jpegPath,
-        },
-      },
+  it('reports quota exhaustion as its own failure category', async () => {
+    const { callbacks, host } = await startSession();
+    const detail = 'Insufficient quota';
+    callbacks.onError?.(
+      new QwenRealtimeError(detail, 'insufficient_quota', true, {
+        kind: 'quota',
+      }),
     );
-
-    callTool(callbacks, 'appshot', {});
-    const [receipt] = await awaitReceipts(realtime, 1);
-
-    expect(host.captureVisualContext).toHaveBeenCalledWith('call-1', {
-      persistAsset: true,
-    });
-    expect(realtime.submitFunctionOutput).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.any(String),
+    expect(host.failCall).toHaveBeenCalledWith(
+      1,
+      liveMessage('runtime.realtimeQuota', { detail }),
     );
-    expect(receipt).toMatchObject({
-      status: 'ok',
-      source: 'camera',
-      width: 1280,
-      height: 720,
-      asset: 'asset_1',
-    });
-    expect(receipt).toHaveProperty('image_delivery', 'realtime');
-    expect(receipt?.['note']).toContain('Answer directly');
-    expect(realtime.submitToolImage).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ callEpoch: 1 }),
-      TEST_JPEG,
-      expect.any(Function),
-    );
-    expect(adaptor.prompt).not.toHaveBeenCalled();
-
-    callTool(callbacks, 'handoff', {
-      task: 'describe this camera photo',
-      input_refs: ['asset_1'],
-    });
-    await awaitReceipts(realtime, 2);
-    expect(adaptor.prompt.mock.calls[0]?.[1]?.[1]).toEqual({
-      type: 'image',
-      mimeType: 'image/jpeg',
-      name: 'asset_1.jpg',
-      data: new Uint8Array(Buffer.from(TEST_JPEG, 'base64')),
-    });
   });
-
-  it('sends the latest captured frame on repeated Appshots and a source switch', async () => {
-    const { session, callbacks, host, realtime, adaptor } =
-      await startSession();
-    const secondImage = Buffer.from([255, 216, 2, 255, 217]).toString('base64');
-    const cameraImage = Buffer.from([255, 216, 3, 255, 217]).toString('base64');
-    try {
-      callTool(callbacks, 'appshot', {});
-      await awaitReceipts(realtime, 1);
-      host.captureVisualContext.mockResolvedValueOnce({
-        source: 'screen',
-        image: secondImage,
-        width: 1,
-        height: 1,
-      });
-      callTool(callbacks, 'appshot', {});
-      await awaitReceipts(realtime, 2);
-      session.setVisualSettings({
-        epoch: 1,
-        callId: 'call-1',
-        visualInput: { ...DEFAULT_VISUAL_INPUT, source: 'camera' },
-      });
-      host.captureVisualContext.mockResolvedValueOnce({
-        source: 'camera',
-        image: cameraImage,
-        width: 1,
-        height: 1,
-      });
-      callTool(callbacks, 'appshot', {});
-      const receipts = await awaitReceipts(realtime, 3);
-      expect(
-        realtime.submitToolImage.mock.calls.map(([, image]) => image),
-      ).toEqual([TEST_JPEG, secondImage, cameraImage]);
-      expect(receipts.map((receipt) => receipt['source'])).toEqual([
-        'screen',
-        'screen',
-        'camera',
-      ]);
-      for (let i = 0; i < 3; i++) {
-        expect(
-          realtime.submitToolImage.mock.invocationCallOrder[i],
-        ).toBeLessThan(
-          realtime.submitFunctionOutput.mock.invocationCallOrder[i]!,
-        );
-      }
-      expect(adaptor.prompt).not.toHaveBeenCalled();
-    } finally {
-      session.dispose();
-    }
-  });
-
-  it.each(['reject', 'throw'] as const)(
-    'reports an Appshot delivery failure when the image transport will %s',
-    async (failure) => {
-      const { session, callbacks, realtime, adaptor, host } =
-        await startSession();
-      try {
-        if (failure === 'reject')
-          realtime.submitToolImage.mockResolvedValue(false);
-        else
-          realtime.submitToolImage.mockImplementation(() => {
-            throw new Error('closed');
-          });
-        callTool(callbacks, 'appshot', {});
-        const [receipt] = await awaitReceipts(realtime, 1);
-        expect(receipt).toMatchObject({ status: 'error' });
-        expect(receipt).not.toHaveProperty('image_delivery');
-        expect(receipt).not.toHaveProperty('asset');
-        expect(adaptor.prompt).not.toHaveBeenCalled();
-        expect(host.failCall).not.toHaveBeenCalled();
-      } finally {
-        session.dispose();
-      }
-    },
-  );
-
-  it.each(['stop', 'source', 'mode', 'reconnect', 'failed-response'] as const)(
-    'does not send a delayed Appshot image after %s',
-    async (change) => {
-      const rig = await startSession();
-      const { session, callbacks, host, realtime, log } = rig;
-      let finish!: (capture: LiveVisualCapture) => void;
-      host.captureVisualContext.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            finish = resolve;
-          }),
-      );
-      try {
-        callToolForResponse(callbacks, 'capture-response', 'appshot', {});
-        await vi.waitFor(() =>
-          expect(host.captureVisualContext).toHaveBeenCalledOnce(),
-        );
-        if (change === 'stop') session.dispose();
-        else if (change === 'reconnect') {
-          recover(callbacks, 'started', 'none');
-          recover(callbacks, 'restoring', 'none');
-          recover(callbacks, 'completed', 'none');
-        } else if (change === 'failed-response') {
-          callbacks.onResponseDone?.({
-            callEpoch: 1,
-            responseId: 'capture-response',
-            status: 'failed',
-            authority: 'direct',
-          });
-        } else {
-          session.setVisualSettings({
-            epoch: 1,
-            callId: 'call-1',
-            visualInput: {
-              ...DEFAULT_VISUAL_INPUT,
-              ...(change === 'source'
-                ? { source: 'camera' as const }
-                : { mode: 'live-feed' as const }),
-            },
-          });
-          session.setVisualSettings({
-            epoch: 1,
-            callId: 'call-1',
-            visualInput: DEFAULT_VISUAL_INPUT,
-          });
-        }
-        finish({ source: 'screen', image: TEST_JPEG, width: 1, height: 1 });
-        await vi.waitFor(() =>
-          expect(log.write).toHaveBeenCalledWith(
-            'tool.result',
-            expect.objectContaining({ name: 'appshot' }),
-          ),
-        );
-        expect(realtime.submitToolImage).not.toHaveBeenCalled();
-        if (change === 'stop' || change === 'reconnect')
-          expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
-        else
-          expect(
-            JSON.parse(realtime.submitFunctionOutput.mock.calls[0]![1]),
-          ).toMatchObject({ status: 'error' });
-      } finally {
-        session.dispose();
-      }
-    },
-  );
 
   it('fails the call when an active Realtime response rejects a tool result', async () => {
     const { callbacks, host, log, realtime } = await startSession();
@@ -8913,6 +10045,40 @@ describe('LiveSession', () => {
     });
   });
 
+  it('releases a rejected uncommitted VAD candidate without ending the call or blocking backend results', async () => {
+    const { adaptor, callbacks, realtime, host } = await startSession();
+    callTool(callbacks, 'handoff', { task: 'search the news' });
+    await awaitReceipts(realtime, 1);
+    callbacks.onSpeechStarted?.({ callEpoch: 1, itemId: 'vad-candidate' });
+    adaptor.queue('s1').push({
+      type: 'turn_complete',
+      jobRef: 'p1',
+      summary: 'news found',
+    });
+    await delay(30);
+    expect(realtime.respondToTaskResult).not.toHaveBeenCalled();
+
+    callbacks.onInputRejected?.({
+      callEpoch: 1,
+      itemId: 'vad-candidate',
+      reason: 'semantic_vad',
+    });
+    callbacks.onError?.(
+      new QwenRealtimeError(
+        'Input speech was not accepted by semantic turn detection',
+        'semantic_turn_rejected',
+        false,
+        { kind: 'protocol' },
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(realtime.respondToTaskResult).toHaveBeenCalledTimes(1);
+    });
+    expect(host.failCall).not.toHaveBeenCalled();
+    expect(realtime.commitInputAudio).not.toHaveBeenCalled();
+    expect(realtime.clearInputAudio).not.toHaveBeenCalled();
+  });
+
   it('closes injection before an interrupted response is finalized', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
@@ -9088,7 +10254,7 @@ describe('LiveSession', () => {
     expect(respondReceipt).toEqual({ status: 'delivered' });
   });
 
-  it('retains an interrupted permission as silent context for the user answer', async () => {
+  it('retains an interrupted permission as silent context instead of repeating its speech', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -9128,21 +10294,14 @@ describe('LiveSession', () => {
       itemId: 'input-answer',
       responsePending: true,
     });
-    await vi.waitFor(() => {
-      expect(realtime.sendBackendContext).toHaveBeenCalledWith(
-        expect.stringContaining('"request_id":"req_1"'),
-      );
-    });
+    await delay(80);
     expect(realtime.askPermission).not.toHaveBeenCalled();
-    callTool(callbacks, 'respond_permission', {
-      request_id: 'req_1',
-      decision: 'allow',
-    });
-    await awaitReceipts(realtime, 2);
-    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
+    expect(realtime.sendBackendContext).toHaveBeenCalledWith(
+      expect.stringContaining('"request_id":"req_1"'),
+    );
   });
 
-  it('keeps an active permission pending without another speech after barge-in', async () => {
+  it('retains active permission context silently after barge-in', async () => {
     const { adaptor, callbacks, host, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -9158,7 +10317,6 @@ describe('LiveSession', () => {
       expect(realtime.askPermission).toHaveBeenCalledTimes(1);
     });
     realtime.askPermission.mockClear();
-    realtime.sendBackendContext.mockClear();
     host.clearOutput.mockClear();
 
     callbacks.onResponseCreated?.({
@@ -9184,15 +10342,14 @@ describe('LiveSession', () => {
       itemId: 'input-answer',
       responsePending: true,
     });
-    await vi.waitFor(() => {
-      expect(realtime.sendBackendContext).toHaveBeenCalledWith(
-        expect.stringContaining('"request_id":"req_1"'),
-      );
-    });
+    await delay(80);
     expect(realtime.askPermission).not.toHaveBeenCalled();
+    expect(realtime.sendBackendContext).toHaveBeenCalledWith(
+      expect.stringContaining('[PERMISSION]'),
+    );
   });
 
-  it('does not repeat an unresolved approval after the user changes the subject', async () => {
+  it('keeps an unresolved permission available without repeating the spoken question after every direct response', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -9225,7 +10382,7 @@ describe('LiveSession', () => {
     expect(adaptor.respondPermission).not.toHaveBeenCalled();
   });
 
-  it('delivers a delayed permission decision without another reminder', async () => {
+  it('accepts a delayed permission vote without a duplicate spoken question', async () => {
     const { adaptor, callbacks, realtime } = await startSession();
 
     callTool(callbacks, 'handoff', { task: 'clean tmp' });
@@ -9252,11 +10409,14 @@ describe('LiveSession', () => {
       responseId: 'direct-ack',
       inputItemId: 'input-allow',
     });
+    await delay(500);
     callbacks.onResponseCreated?.({
       callEpoch: 1,
       responseId: 'direct-tool',
       authority: 'direct',
     });
+    // A slow real user vote must not create a repeated permission question.
+    await delay(600);
     callTool(callbacks, 'respond_permission', {
       request_id: 'req_1',
       decision: 'allow',
@@ -9985,7 +11145,7 @@ describe('LiveSession', () => {
     await stopPending;
   });
 
-  it('updates session instructions and silent context when Source and Mode change', async () => {
+  it('forwards Source and Mode changes as silent realtime context', async () => {
     const { realtime, session } = await startSession();
 
     session.setVisualSettings({
@@ -9997,22 +11157,10 @@ describe('LiveSession', () => {
         mode: 'live-feed',
       },
     });
-    expect(realtime.configure).toHaveBeenLastCalledWith({
-      instructions: expect.stringContaining(
-        '[VISUAL_INPUT] source=camera mode=live-feed.',
-      ),
-      tools: expect.any(Array),
-    });
     session.setVisualSettings({
       epoch: 1,
       callId: 'call-1',
       visualInput: DEFAULT_VISUAL_INPUT,
-    });
-    expect(realtime.configure).toHaveBeenLastCalledWith({
-      instructions: expect.stringContaining(
-        '[VISUAL_INPUT] source=screen mode=on-demand.',
-      ),
-      tools: expect.any(Array),
     });
 
     expect(realtime.sendBackendContext).toHaveBeenNthCalledWith(
@@ -10074,12 +11222,6 @@ describe('LiveSession', () => {
     expect(realtime.sendBackendContext).toHaveBeenCalledWith(
       '[VISUAL_INPUT] source=camera mode=live-feed.',
     );
-    expect(realtime.configure).toHaveBeenLastCalledWith({
-      instructions: expect.stringContaining(
-        '[VISUAL_INPUT] source=camera mode=live-feed.',
-      ),
-      tools: expect.any(Array),
-    });
   });
 
   it('routes tool calls to the owning adaptor when two backends coexist', async () => {
@@ -10226,7 +11368,6 @@ describe('LiveSession', () => {
 
     // Register the asset first (appshot), then hand off referencing it.
     callTool(callbacks, 'appshot', {});
-    await awaitReceipts(realtime, 1);
     callTool(
       callbacks,
       'handoff',
@@ -10324,6 +11465,24 @@ describe('LiveSession memory integration', () => {
     return realtime.submitFunctionOutput.mock.calls[count - 1]?.[1];
   }
 
+  function memoryContexts(realtime: FakeRealtime) {
+    return realtime.sendBackendContext.mock.calls
+      .map(([text]) => text)
+      .filter((text) => text.startsWith(MEMORY_CONTEXT_PREFIX))
+      .map(
+        (text) =>
+          JSON.parse(text.slice(MEMORY_CONTEXT_PREFIX.length)) as {
+            enabled: boolean;
+            revision: number;
+            sections?: string;
+          },
+      );
+  }
+
+  function latestMemoryContext(realtime: FakeRealtime) {
+    return memoryContexts(realtime).at(-1);
+  }
+
   afterEach(async () => {
     memoryRigs.splice(0).forEach((rig) => rig.session.dispose());
     await Promise.all(
@@ -10350,6 +11509,10 @@ describe('LiveSession memory integration', () => {
     expect(finish).not.toHaveBeenCalled();
     expect(rig.realtime.close).not.toHaveBeenCalled();
     expect(rig.config.instructions).toContain(MEMORY_SYSTEM_PROMPT);
+    expect(memoryContexts(rig.realtime)).toHaveLength(2);
+    expect(memoryContexts(rig.realtime)[1]).toEqual(
+      memoryContexts(rig.realtime)[0],
+    );
   });
 
   it('loads the initial profile and four memory sections and exposes only enabled memory tools', async () => {
@@ -10381,20 +11544,22 @@ describe('LiveSession memory integration', () => {
     expect(rig.config.instructions).not.toContain(
       'ordinary orchestration pre-tool acknowledgement',
     );
-    expect(rig.config.instructions).toContain('小王');
+    expect(rig.config.instructions).not.toContain('小王');
+    expect(latestMemoryContext(rig.realtime)?.sections).toContain('小王');
     for (const section of [
       'user_profile',
       'recent',
       'retrieved',
       'personalized_user_memories',
     ])
-      expect(rig.config.instructions).toContain(`<${section}>`);
+      expect(latestMemoryContext(rig.realtime)?.sections).toContain(
+        `<${section}>`,
+      );
     expect(rig.config.tools.map((tool) => tool.function.name)).toEqual(
       expect.arrayContaining(['omnibio', 'omniretrieve']),
     );
     expect(service.state().locked).toBe(true);
     expect(rig.realtime.configure).toHaveBeenCalledWith({
-      instructions: rig.config.instructions,
       tools: rig.config.tools,
     });
 
@@ -10403,12 +11568,76 @@ describe('LiveSession memory integration', () => {
     expect(off.config.instructions).not.toContain(
       '<personalized_user_memories>',
     );
+    expect(off.config.instructions).toContain(MEMORY_SYSTEM_PROMPT);
+    expect(latestMemoryContext(off.realtime)).toEqual({
+      enabled: false,
+      revision: 1,
+    });
     expect(off.config.tools.map((tool) => tool.function.name)).not.toContain(
       'omnibio',
     );
     expect(off.config.tools.map((tool) => tool.function.name)).not.toContain(
       'omniretrieve',
     );
+  });
+
+  it('keeps system instructions fixed when initially disabled Memory is enabled and ignores no-op updates', async () => {
+    const service = await memoryService({ enabled: false });
+    const { config, session, realtime } = await startMemory(service);
+    const initialInstructions = config.instructions;
+    session.syncMemorySettings();
+    expect(memoryContexts(realtime)).toHaveLength(1);
+    service.applyAction({ action: 'set_enabled', enabled: true });
+    session.syncMemorySettings();
+    expect(latestMemoryContext(realtime)).toMatchObject({
+      enabled: true,
+      revision: 2,
+      sections: expect.stringContaining('<user_profile>'),
+    });
+    expect(realtime.configure.mock.calls.at(-1)?.[0].tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          function: expect.objectContaining({ name: 'omniretrieve' }),
+        }),
+      ]),
+    );
+    session.syncMemorySettings();
+    expect(memoryContexts(realtime)).toHaveLength(2);
+    for (const [update] of realtime.configure.mock.calls)
+      expect(update).not.toHaveProperty('instructions');
+    expect(config.instructions).toBe(initialInstructions);
+    expect(config.instructions).toContain(MEMORY_SYSTEM_PROMPT);
+    expect(config.instructions).not.toContain('<personalized_user_memories>');
+  });
+
+  it('restores only the latest disabled Memory state when settings change during recovery', async () => {
+    const service = await memoryService();
+    const { callbacks, realtime, session } = await startMemory(service);
+    callTool(callbacks, 'omnibio', {
+      operations: { add: ['PRIVATE-MEMORY-BEFORE-RECOVERY'] },
+    });
+    await waitMemoryReceipt(realtime, 1);
+    const recovery = {
+      callEpoch: 1,
+      inputKind: 'none' as const,
+      inputReason: 'completed' as const,
+      code: 'response_done_timeout' as const,
+      authority: 'direct' as const,
+      responseId: 'lost-response',
+    };
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'started' });
+    realtime.sendBackendContext.mockClear();
+    service.applyAction({ action: 'set_enabled', enabled: false });
+    session.syncMemorySettings();
+    expect(memoryContexts(realtime)).toHaveLength(0);
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'restoring' });
+    expect(memoryContexts(realtime)).toEqual([{ enabled: false, revision: 3 }]);
+    expect(
+      JSON.stringify(realtime.sendBackendContext.mock.calls),
+    ).not.toContain('PRIVATE-MEMORY-BEFORE-RECOVERY');
+    callbacks.onTransportRecovery?.({ ...recovery, phase: 'completed' });
+    session.syncMemorySettings();
+    expect(memoryContexts(realtime)).toHaveLength(1);
   });
 
   it('retains memory reads and writes without a configured backend', async () => {
@@ -10427,10 +11656,10 @@ describe('LiveSession memory integration', () => {
     expect(await waitMemoryReceipt(realtime, 1)).toBe(
       'Successfully updated memory.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+    expect(latestMemoryContext(realtime)?.sections).toContain(
       'The user prefers concise replies.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+    expect(config.instructions).toContain(
       'No background Harness is configured.',
     );
     beginDialogue(callbacks, 'without-backend-dialogue', '辣椒间距多少');
@@ -10448,9 +11677,7 @@ describe('LiveSession memory integration', () => {
     expect(await waitMemoryReceipt(realtime, 2)).toBe(
       'Successfully searched past conversations. 1 matched.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
-      '三十到四十厘米',
-    );
+    expect(latestMemoryContext(realtime)?.sections).toContain('三十到四十厘米');
     expect(adaptor.createSession).not.toHaveBeenCalled();
     expect(adaptor.prompt).not.toHaveBeenCalled();
     expect(host.failCall).not.toHaveBeenCalled();
@@ -10514,22 +11741,63 @@ describe('LiveSession memory integration', () => {
     expect(saved.segments[0]?.['body']).toContain('被用户打断');
   });
 
+  it('labels suppressed admission text in logs without adding transcript-only acknowledgements to Memory', async () => {
+    const service = await memoryService();
+    const { callbacks, log, session } = await startMemory(service);
+    callbacks.onReady?.({
+      callEpoch: 1,
+      sessionId: 'sess_suppressed_ack_fixture',
+    });
+    beginDialogue(callbacks, 'weather-input', '北京天气如何？');
+    // The transport retains this callback for diagnostic text but deliberately
+    // does not emit an onDialogue event for an inaudible admission response.
+    callbacks.onOutputTextDone?.({
+      callEpoch: 1,
+      responseId: 'suppressed-admission',
+      text: 'Unverified hidden receipt text.',
+      source: 'audio_transcript',
+      audioSuppressed: true,
+    });
+    callbacks.onDialogue?.({
+      callEpoch: 1,
+      inputItemId: 'weather-input',
+      role: 'assistant',
+      text: '实际查询结果是晴天。',
+      source: 'normal',
+    });
+    session.dispose();
+    expect(log.write).toHaveBeenCalledWith('transcript.assistant', {
+      providerSessionId: 'sess_suppressed_ack_fixture',
+      responseId: 'suppressed-admission',
+      source: 'audio_transcript',
+      audioSuppressed: true,
+      text: 'Unverified hidden receipt text.',
+    });
+    const saved = inspectMemory(service);
+    expect(saved.turns).toHaveLength(1);
+    expect(saved.turns[0]).toMatchObject({
+      user_text: '北京天气如何？',
+      asst_text: '实际查询结果是晴天。',
+    });
+    expect(JSON.stringify(saved)).not.toContain('Unverified hidden receipt');
+  });
+
   it('publishes omnibio changes before its receipt and keeps memory content out of tool logs', async () => {
     const service = await memoryService();
     const { callbacks, realtime, adaptor, log } = await startMemory(service);
     realtime.configure.mockClear();
+    realtime.sendBackendContext.mockClear();
     const fact = '用户喜欢在阳台种薄荷。';
     callTool(callbacks, 'omnibio', { operations: { add: [fact] } });
     expect(await waitMemoryReceipt(realtime, 1)).toBe(
       'Successfully updated memory.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
-      `0. ${fact}`,
-    );
-    expect(realtime.configure.mock.invocationCallOrder[0]).toBeLessThan(
-      realtime.submitFunctionOutput.mock.invocationCallOrder[0]!,
-    );
+    expect(latestMemoryContext(realtime)?.sections).toContain(`0. ${fact}`);
+    expect(
+      realtime.sendBackendContext.mock.invocationCallOrder[0],
+    ).toBeLessThan(realtime.submitFunctionOutput.mock.invocationCallOrder[0]!);
     expect(adaptor.prompt).not.toHaveBeenCalled();
+    expect(realtime.configure).not.toHaveBeenCalled();
     expect(realtime.commitInputAudio).not.toHaveBeenCalled();
     expect(JSON.stringify(log.write.mock.calls)).not.toContain(fact);
   });
@@ -10546,6 +11814,7 @@ describe('LiveSession memory integration', () => {
       source: 'normal',
     });
     realtime.configure.mockClear();
+    realtime.sendBackendContext.mockClear();
     callTool(callbacks, 'omniretrieve', {
       query: '辣椒 间距',
       source: 'dialogue',
@@ -10553,12 +11822,10 @@ describe('LiveSession memory integration', () => {
     expect(await waitMemoryReceipt(realtime, 1)).toBe(
       'Successfully searched past conversations. 1 matched.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
-      '三十到四十厘米',
-    );
-    expect(realtime.configure.mock.invocationCallOrder[0]).toBeLessThan(
-      realtime.submitFunctionOutput.mock.invocationCallOrder[0]!,
-    );
+    expect(latestMemoryContext(realtime)?.sections).toContain('三十到四十厘米');
+    expect(
+      realtime.sendBackendContext.mock.invocationCallOrder[0],
+    ).toBeLessThan(realtime.submitFunctionOutput.mock.invocationCallOrder[0]!);
     callTool(callbacks, 'omniretrieve', {
       query: '量子纠缠',
       source: 'dialogue',
@@ -10566,12 +11833,13 @@ describe('LiveSession memory integration', () => {
     expect(await waitMemoryReceipt(realtime, 2)).toBe(
       'Successfully searched past conversations. 0 matched.',
     );
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+    expect(latestMemoryContext(realtime)?.sections).toContain(
       '<retrieved>\n</retrieved>',
     );
-    expect(
-      realtime.configure.mock.calls.at(-1)?.[0].instructions,
-    ).not.toContain('三十到四十厘米');
+    expect(latestMemoryContext(realtime)?.sections).not.toContain(
+      '三十到四十厘米',
+    );
+    expect(realtime.configure).not.toHaveBeenCalled();
   });
 
   it('removes memory context and tools when disabled, restores WM when enabled, and rejects late old-input events', async () => {
@@ -10585,7 +11853,11 @@ describe('LiveSession memory integration', () => {
     service.applyAction({ action: 'set_enabled', enabled: false });
     session.syncMemorySettings();
     const off = realtime.configure.mock.calls.at(-1)?.[0];
-    expect(off?.instructions).not.toContain('<personalized_user_memories>');
+    expect(off).not.toHaveProperty('instructions');
+    expect(latestMemoryContext(realtime)).toEqual({
+      enabled: false,
+      revision: 3,
+    });
     expect(off?.tools.map((tool) => tool.function.name)).not.toContain(
       'omnibio',
     );
@@ -10598,7 +11870,7 @@ describe('LiveSession memory integration', () => {
     );
     service.applyAction({ action: 'set_enabled', enabled: true });
     session.syncMemorySettings();
-    expect(realtime.configure.mock.calls.at(-1)?.[0].instructions).toContain(
+    expect(latestMemoryContext(realtime)?.sections).toContain(
       '0. 用户喜欢种薄荷。',
     );
     callbacks.onDialogue?.({
@@ -10695,6 +11967,7 @@ describe('LiveSession memory integration', () => {
     service.applyAction({ action: 'set_enabled', enabled: false });
     session.syncMemorySettings();
     realtime.configure.mockClear();
+    realtime.sendBackendContext.mockClear();
     finish({
       receipt: 'Successfully searched past conversations. 1 matched.',
       count: 1,
@@ -10704,6 +11977,7 @@ describe('LiveSession memory integration', () => {
       'Failed to search memory.',
     );
     expect(realtime.configure).not.toHaveBeenCalled();
+    expect(realtime.sendBackendContext).not.toHaveBeenCalled();
   });
 
   it.each(['screen', 'camera'] as const)(
@@ -11290,6 +12564,7 @@ describe('persisted realtime protocol diagnostics', () => {
         type: 'response.created',
         sessionId: 'sess-diagnostic',
         responseId: 'response-diagnostic',
+        callId: 'call-provider-tool',
         eventId: 'event-diagnostic',
         hasPendingResponseCreate: true,
         queuedResponseCreates: 1,
@@ -11304,7 +12579,8 @@ describe('persisted realtime protocol diagnostics', () => {
           expect(records[0]?.[1]).toEqual({
             ...details,
             epoch: 1,
-            callId: 'call-1',
+            localCallId: 'call-1',
+            toolCallId: 'call-provider-tool',
             providerSessionId: 'sess-diagnostic',
           });
         }

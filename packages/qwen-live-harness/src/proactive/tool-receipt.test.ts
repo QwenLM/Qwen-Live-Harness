@@ -66,6 +66,25 @@ function timer(
 }
 
 describe('Proactive authoritative tool receipts', () => {
+  it('records the preserved narration preferences without reading the raw user request aloud', () => {
+    const task = monitor({
+      monitorMode: 'always',
+      narrationPreferences: {
+        sourceRequest: '请用英语说，不要把整句请求读出来。',
+        fallbackLanguage: 'zh-CN',
+        styleOverride: 'More playful.',
+      },
+    });
+    const receipt = buildProactiveCreateReceipt(task, [task]);
+    expect(receipt.active_tasks[0]).toHaveProperty('narration_preferences', {
+      source_request: task.narrationPreferences!.sourceRequest,
+      fallback_language: 'zh-CN',
+      style_override: 'More playful.',
+    });
+    const spoken = renderProactiveToolReceipt(receipt);
+    expect(spoken).toContain('已记录本次请求中的语言和表达偏好');
+    expect(spoken).not.toContain(task.narrationPreferences!.sourceRequest);
+  });
   it('builds a committed create receipt with an authoritative active snapshot', () => {
     const task = monitor();
     const receipt = buildProactiveCreateReceipt(task, [task]);

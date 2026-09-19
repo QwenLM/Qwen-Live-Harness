@@ -43,6 +43,19 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
+  it('accepts visual task identity and truthful delivery states', () => {
+    for (const notification of [
+      'queued',
+      'preparing',
+      'speaking',
+      'delivered',
+      'undelivered',
+    ]) {
+      const visual = { ...task, id: 'visual:1', kind: 'visual', notification };
+      const value = { ...snapshot, tasks: [visual] };
+      expect(parseSubagentsSnapshot(value)).toEqual(value);
+    }
+  });
   it('accepts search tasks through snapshot, detail and Stop contracts without inventing progress', () => {
     for (const status of [
       'queued',

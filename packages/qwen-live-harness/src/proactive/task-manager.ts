@@ -7,7 +7,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ProactiveMonitorMode } from './monitor-protocol.js';
+import {
+  DEFAULT_NARRATION_STYLE,
+  MAX_NARRATION_SOURCE_CHARS,
+  type NarrationPreferences,
+  type ProactiveMonitorMode,
+} from './monitor-protocol.js';
 
 export type ProactiveTaskStatus =
   | 'provisioning'
@@ -42,6 +47,7 @@ export interface PerceptionTask extends ProactiveTaskBase {
   modalities: ProactiveModality[];
   taskDescription: string;
   interventionText: string;
+  narrationPreferences?: NarrationPreferences;
 }
 
 export interface TimerTask extends ProactiveTaskBase {
@@ -67,7 +73,8 @@ export interface CreateNarrationInput {
   title: unknown;
   modalities: unknown;
   narrationFocus: unknown;
-  narrationStyle: unknown;
+  narrationStyle?: unknown;
+  narrationPreferences?: NarrationPreferences;
 }
 
 export interface CreateTimerInput {
@@ -164,6 +171,9 @@ function copyTask<T extends ProactiveTask>(task: T): T {
     ...(task.taskType === 'perception_monitor'
       ? { modalities: [...task.modalities] }
       : {}),
+    ...(task.taskType === 'perception_monitor' && task.narrationPreferences
+      ? { narrationPreferences: { ...task.narrationPreferences } }
+      : {}),
   } as T;
 }
 
@@ -190,11 +200,27 @@ export class ProactiveTaskManager {
   }
 
   createNarration(input: CreateNarrationInput): PerceptionTask {
+    const preferences = input.narrationPreferences;
+    if (
+      preferences &&
+      (typeof preferences.sourceRequest !== 'string' ||
+        !preferences.sourceRequest.trim() ||
+        preferences.sourceRequest.length > MAX_NARRATION_SOURCE_CHARS ||
+        !['en', 'zh-CN'].includes(preferences.fallbackLanguage) ||
+        (preferences.styleOverride !== undefined &&
+          (typeof preferences.styleOverride !== 'string' ||
+            !preferences.styleOverride.trim())))
+    )
+      throw new Error('Invalid narration preferences.');
     return this.createPerception({
       title: text(input.title, 'title'),
       modalities: modalities(input.modalities),
       taskDescription: text(input.narrationFocus, 'narration_focus'),
-      interventionText: text(input.narrationStyle, 'narration_style'),
+      interventionText:
+        input.narrationStyle === undefined
+          ? DEFAULT_NARRATION_STYLE
+          : text(input.narrationStyle, 'narration_style'),
+      ...(preferences ? { narrationPreferences: { ...preferences } } : {}),
       repeat: true,
       monitorMode: 'always',
     });
@@ -305,6 +331,8 @@ export class ProactiveTaskManager {
       }
       if (input.narrationStyle !== undefined) {
         task.interventionText = text(input.narrationStyle, 'narration_style');
+        if (task.narrationPreferences)
+          task.narrationPreferences.styleOverride = task.interventionText;
       }
     }
     task.generation += 1;
@@ -446,6 +474,7 @@ export class ProactiveTaskManager {
     modalities: ProactiveModality[];
     taskDescription: string;
     interventionText: string;
+    narrationPreferences?: NarrationPreferences;
     repeat: boolean;
     monitorMode: ProactiveMonitorMode;
   }): PerceptionTask {
@@ -461,6 +490,9 @@ export class ProactiveTaskManager {
       modalities: input.modalities,
       taskDescription: input.taskDescription,
       interventionText: input.interventionText,
+      ...(input.narrationPreferences
+        ? { narrationPreferences: { ...input.narrationPreferences } }
+        : {}),
       generation: 1,
       createdAt: now,
       updatedAt: now,

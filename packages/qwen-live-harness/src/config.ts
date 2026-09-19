@@ -18,6 +18,10 @@ import { resolveMemoryConfig, type MemoryConfig } from './memory/config.js';
 import type { LiveLanguage } from './i18n/messages.js';
 import { resolveLiveLanguage } from './language-preferences.js';
 import {
+  PROACTIVE_MONITOR_CHUNK_DURATION_SEC,
+  PROACTIVE_MONITOR_FPS,
+} from './proactive/media-cadence.js';
+import {
   resolveLiveDataDirectory,
   resolveLiveDiscoveryDirectory,
 } from './paths.js';
@@ -77,8 +81,6 @@ export interface VisualInputConfig {
 export interface ProactiveConfig {
   enabled: boolean;
   monitor: {
-    /** Media duration of one interleaved user turn, independent of polling. */
-    chunkDurationSec: number;
     sessionRecycleEvals: number;
     representationCompact: 'none' | 'normal';
   };
@@ -94,7 +96,6 @@ export interface ProactiveConfig {
     };
   };
   vision: {
-    fps: number;
     windowSizeSec: number;
     minEvalDurationSec: number;
   };
@@ -151,7 +152,6 @@ const SESSION_MODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   enabled: true,
   monitor: {
-    chunkDurationSec: 1,
     sessionRecycleEvals: 60,
     representationCompact: 'normal',
   },
@@ -165,7 +165,6 @@ export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
     },
   },
   vision: {
-    fps: 2,
     windowSizeSec: 10,
     minEvalDurationSec: 0,
   },
@@ -441,7 +440,6 @@ const PROACTIVE_KEYS = [
   'audio',
 ] as const;
 const PROACTIVE_MONITOR_KEYS = [
-  'chunkDurationSec',
   'sessionRecycleEvals',
   'representationCompact',
 ] as const;
@@ -456,11 +454,7 @@ const PROACTIVE_REPEAT_KEYS = [
   'maxWaitTtsSec',
   'clearBufferOnResume',
 ] as const;
-const PROACTIVE_VISION_KEYS = [
-  'fps',
-  'windowSizeSec',
-  'minEvalDurationSec',
-] as const;
+const PROACTIVE_VISION_KEYS = ['windowSizeSec', 'minEvalDurationSec'] as const;
 const PROACTIVE_AUDIO_KEYS = ['windowSizeSec', 'minEvalDurationSec'] as const;
 
 function strictObject(
@@ -566,6 +560,22 @@ function resolveProactive(
     configPath,
     PROACTIVE_KEYS,
   );
+  const removed: string[] = [];
+  if (
+    isRecordLike(proactive['monitor']) &&
+    Object.hasOwn(proactive['monitor'], 'chunkDurationSec')
+  )
+    removed.push('proactive.monitor.chunkDurationSec');
+  if (
+    isRecordLike(proactive['vision']) &&
+    Object.hasOwn(proactive['vision'], 'fps')
+  )
+    removed.push('proactive.vision.fps');
+  if (removed.length) {
+    throw new Error(
+      `Remove ${removed.map((field) => `"${field}"`).join(' and ')} from ${configPath}: Proactive media input is fixed at ${PROACTIVE_MONITOR_FPS} FPS and ${PROACTIVE_MONITOR_CHUNK_DURATION_SEC}-second chunks; these fields are no longer configurable.`,
+    );
+  }
   const monitor = strictObject(
     proactive['monitor'],
     'proactive.monitor',
@@ -654,37 +664,14 @@ function resolveProactive(
     );
   }
 
-  const chunkDurationSec = proactiveNumber(
-    monitor['chunkDurationSec'],
-    DEFAULT_PROACTIVE_CONFIG.monitor.chunkDurationSec,
-    'proactive.monitor.chunkDurationSec',
-    configPath,
-    0.1,
-    60,
-  );
-  const visionFps = proactiveNumber(
-    vision['fps'],
-    DEFAULT_PROACTIVE_CONFIG.vision.fps,
-    'proactive.vision.fps',
-    configPath,
-    0.1,
-    60,
-  );
-  if (chunkDurationSec * visionFps < 2) {
-    throw new Error(
-      `Invalid "proactive.vision.fps" in ${configPath}: ` +
-        'fps * proactive.monitor.chunkDurationSec must be at least 2 ' +
-        '(use fps: 2 with chunkDurationSec: 1, or a longer chunk).',
-    );
-  }
   for (const [modality, windowSizeSec] of [
     ['vision', visionWindowSizeSec],
     ['audio', audioWindowSizeSec],
   ] as const) {
-    if (windowSizeSec < chunkDurationSec) {
+    if (windowSizeSec < PROACTIVE_MONITOR_CHUNK_DURATION_SEC) {
       throw new Error(
         `Invalid "proactive.${modality}.windowSizeSec" in ${configPath}: ` +
-          'must be at least proactive.monitor.chunkDurationSec.',
+          `must cover the fixed ${PROACTIVE_MONITOR_CHUNK_DURATION_SEC}-second Proactive media chunk.`,
       );
     }
   }
@@ -692,7 +679,6 @@ function resolveProactive(
   return {
     enabled: resolveProactiveEnabled(env, proactive, configPath),
     monitor: {
-      chunkDurationSec,
       representationCompact,
       sessionRecycleEvals: proactiveNumber(
         monitor['sessionRecycleEvals'],
@@ -761,7 +747,6 @@ function resolveProactive(
       },
     },
     vision: {
-      fps: visionFps,
       windowSizeSec: visionWindowSizeSec,
       minEvalDurationSec: visionMinEvalDurationSec,
     },

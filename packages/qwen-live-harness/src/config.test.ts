@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -227,7 +227,6 @@ describe('loadConfig', () => {
     expect(defaults.proactive).toEqual({
       enabled: true,
       monitor: {
-        chunkDurationSec: 1,
         sessionRecycleEvals: 60,
         representationCompact: 'normal',
       },
@@ -241,7 +240,6 @@ describe('loadConfig', () => {
         },
       },
       vision: {
-        fps: 2,
         windowSizeSec: 10,
         minEvalDurationSec: 0,
       },
@@ -492,7 +490,7 @@ describe('loadConfig', () => {
       realtimeApiKey: 'k',
       proactive: {
         enabled: false,
-        monitor: { chunkDurationSec: 2, sessionRecycleEvals: 120 },
+        monitor: { sessionRecycleEvals: 120 },
         scheduler: {
           evalIntervalSec: 0.5,
           maxConcurrentTasks: 8,
@@ -504,7 +502,6 @@ describe('loadConfig', () => {
           },
         },
         vision: {
-          fps: 2,
           windowSizeSec: 15,
           minEvalDurationSec: 5,
         },
@@ -517,7 +514,6 @@ describe('loadConfig', () => {
     ).toEqual({
       enabled: false,
       monitor: {
-        chunkDurationSec: 2,
         sessionRecycleEvals: 120,
         representationCompact: 'normal',
       },
@@ -532,7 +528,6 @@ describe('loadConfig', () => {
         },
       },
       vision: {
-        fps: 2,
         windowSizeSec: 15,
         minEvalDurationSec: 5,
       },
@@ -562,7 +557,6 @@ describe('loadConfig', () => {
       expect(
         loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).proactive.monitor,
       ).toEqual({
-        chunkDurationSec: 1,
         sessionRecycleEvals: 60,
         representationCompact,
       });
@@ -697,12 +691,10 @@ describe('loadConfig', () => {
     }
   });
 
-  it('requires enough frames and local media capacity for a complete monitor chunk', async () => {
+  it('requires local media windows to cover the fixed two-second monitor chunk', async () => {
     for (const [proactive, field] of [
-      [{ vision: { fps: 1 } }, 'proactive.vision.fps'],
-      [{ monitor: { chunkDurationSec: 0.5 } }, 'proactive.vision.fps'],
-      [{ audio: { windowSizeSec: 0.5 } }, 'proactive.audio.windowSizeSec'],
-      [{ vision: { windowSizeSec: 0.5 } }, 'proactive.vision.windowSizeSec'],
+      [{ audio: { windowSizeSec: 1 } }, 'proactive.audio.windowSizeSec'],
+      [{ vision: { windowSizeSec: 1 } }, 'proactive.vision.windowSizeSec'],
     ] as const) {
       const dataDir = await dataDirWithConfig({
         realtimeApiKey: 'k',
@@ -712,15 +704,52 @@ describe('loadConfig', () => {
         field,
       );
     }
+  });
+
+  it.each([
+    { chunkDurationSec: 2, fps: 1 },
+    { chunkDurationSec: 1, fps: 2 },
+    { chunkDurationSec: 4, fps: 0.5 },
+  ])(
+    'rejects obsolete Monitor cadence fields even when their values were compatible: %j',
+    async (settings) => {
+      const dataDir = await dataDirWithConfig({
+        realtimeApiKey: 'k',
+        proactive: {
+          monitor: { chunkDurationSec: settings.chunkDurationSec },
+          vision: { fps: settings.fps },
+        },
+      });
+      const before = await readFile(join(dataDir, 'config.json'), 'utf8');
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        'Remove "proactive.monitor.chunkDurationSec" and "proactive.vision.fps"',
+      );
+      expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+        'fixed at 1 FPS and 2-second chunks',
+      );
+      expect(await readFile(join(dataDir, 'config.json'), 'utf8')).toBe(before);
+    },
+  );
+
+  it('leaves foreground visual FPS configurable without exposing Proactive cadence fields', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'k',
-      proactive: { monitor: { chunkDurationSec: 2 }, vision: { fps: 1 } },
+      visualInput: { fps: 5 },
+      proactive: {
+        monitor: { sessionRecycleEvals: 80 },
+        vision: { windowSizeSec: 12 },
+        audio: { minEvalDurationSec: 3 },
+      },
     });
-    const proactive = loadConfig({
+    const { proactive, visualInput } = loadConfig({
       QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
-    }).proactive;
-    expect(proactive.monitor.chunkDurationSec).toBe(2);
-    expect(proactive.vision.fps).toBe(1);
+    });
+    expect(visualInput.fps).toBe(5);
+    expect(proactive.monitor).not.toHaveProperty('chunkDurationSec');
+    expect(proactive.vision).not.toHaveProperty('fps');
+    expect(proactive.monitor.sessionRecycleEvals).toBe(80);
+    expect(proactive.vision.windowSizeSec).toBe(12);
+    expect(proactive.audio.minEvalDurationSec).toBe(3);
   });
 
   it('rejects proactive warm-up durations longer than their media windows', async () => {

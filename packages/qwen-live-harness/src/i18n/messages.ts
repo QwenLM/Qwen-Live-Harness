@@ -2087,6 +2087,55 @@ export const LIVE_MESSAGES = {
   'subagents.harness': { en: 'Agent task', 'zh-CN': '智能体任务' },
   'subagents.proactive': { en: 'Proactive task', 'zh-CN': '主动任务' },
   'subagents.kind.search': { en: 'Web Search', 'zh-CN': '联网搜索' },
+  'subagents.kind.visual': { en: 'Visual Analysis', 'zh-CN': '画面分析' },
+  'visual.queued': {
+    en: 'Waiting to inspect the snapshot.',
+    'zh-CN': '等待分析截图。',
+  },
+  'visual.running': {
+    en: 'Inspecting the selected snapshot.',
+    'zh-CN': '正在分析所选来源的截图。',
+  },
+  'visual.completed': {
+    en: 'Snapshot analysis is available here.',
+    'zh-CN': '可在此查看画面分析结果。',
+  },
+  'visual.failed': {
+    en: 'Snapshot analysis failed; no visual contents were confirmed.',
+    'zh-CN': '画面分析失败，无法确认图片内容。',
+  },
+  'visual.timeout': {
+    en: 'Snapshot analysis timed out; no visual contents were confirmed.',
+    'zh-CN': '画面分析超时，无法确认图片内容。',
+  },
+  'visual.cancelled': {
+    en: 'Snapshot analysis cancelled.',
+    'zh-CN': '画面分析已取消。',
+  },
+  'visual.awaitingAnswer': {
+    en: 'Snapshot analysis ready; waiting to answer.',
+    'zh-CN': '画面分析已就绪，等待回答。',
+  },
+  'visual.answering': {
+    en: 'Speaking the snapshot analysis.',
+    'zh-CN': '正在播报画面分析结果。',
+  },
+  'visual.answered': {
+    en: 'Snapshot answer delivered.',
+    'zh-CN': '画面分析结果已播报。',
+  },
+  'visual.answerInterrupted': {
+    en: 'Snapshot answer interrupted; the result remains here.',
+    'zh-CN': '画面分析播报已中断，仍可在此查看结果。',
+  },
+  'visual.answerUnspoken': {
+    en: 'Snapshot analysis ready, but no spoken answer was produced.',
+    'zh-CN': '画面分析已就绪，但未生成语音回答。',
+  },
+  'visual.answerMuted': {
+    en: 'Snapshot answer muted; the result remains here.',
+    'zh-CN': '画面分析播报已静音，仍可在此查看结果。',
+  },
   'search.queued': {
     en: 'Waiting to search.',
     'zh-CN': '正在等待搜索。',
@@ -2135,6 +2184,10 @@ export const LIVE_MESSAGES = {
     en: 'Search answer interrupted.',
     'zh-CN': '查询结果播报已中断。',
   },
+  'search.answerUnspoken': {
+    en: 'The result is ready, but no spoken answer was produced. View the result here.',
+    'zh-CN': '结果已就绪，但未生成语音答复。可在此查看结果。',
+  },
   'search.answerMuted': {
     en: 'Search answer muted; the result is still available here.',
     'zh-CN': '查询结果播报已静音，仍可在此查看结果。',
@@ -2150,6 +2203,14 @@ export const LIVE_MESSAGES = {
   'subagents.notificationQueued': {
     en: 'Announcement queued',
     'zh-CN': '播报已入队',
+  },
+  'subagents.notificationPreparing': {
+    en: 'Preparing announcement',
+    'zh-CN': '准备播报',
+  },
+  'subagents.notificationUndelivered': {
+    en: 'Not announced',
+    'zh-CN': '未送达',
   },
   'subagents.notificationSpeaking': {
     en: 'Announcing',

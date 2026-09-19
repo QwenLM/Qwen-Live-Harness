@@ -122,10 +122,30 @@ it.each(['permission', 'direct'] as const)(
       fakeDash.autoAckResponses = false;
       let fromIndex = fakeDash.inbox.length;
       if (authority === 'permission') {
-        await invoke(
+        const handoffReceipt = await invoke(
           'handoff',
           { task: 'permission: keep this unrelated background task waiting' },
           'waiting-backend',
+        );
+        // Handoff now consumes its own receipt response before a permission
+        // notification may start. Settle that response only: the following
+        // permission response remains deliberately unacknowledged.
+        await fakeDash.waitForMessage(
+          (message) => message['type'] === 'response.create',
+          {
+            fromIndex: fakeDash.inbox.indexOf(handoffReceipt) + 1,
+            description: 'handoff admission continuation before permission',
+          },
+        );
+        const receiptResponseId = conn.beginResponse();
+        conn.finishResponse(receiptResponseId);
+        await waitForLiveLogEvents(
+          dataDir,
+          (event) =>
+            event.type === 'response.done' &&
+            event.payload['responseId'] === receiptResponseId &&
+            event.payload['authority'] === 'tool_continuation' &&
+            event.payload['status'] === 'completed',
         );
         const permission = await fakeDash.waitForMessage(
           (message) => permissionPayloadOf(message)?.request_id === 'req_1',

@@ -356,9 +356,7 @@ export class LiveView {
       state.permissions.microphone === 'granted' &&
       (state.visualInput?.source === 'camera'
         ? state.permissions.camera === 'granted'
-        : state.permissions.screenRecording === 'granted' &&
-          (state.visualInput?.mode === 'live-feed' ||
-            state.permissions.accessibility === 'granted'));
+        : state.permissions.screenRecording === 'granted');
     const needsSetup =
       !canRecoverAudio &&
       shouldRenderSetup(state.live, state.connection === 'ready');
@@ -585,9 +583,7 @@ export class LiveView {
         permission === 'microphone' ||
         (state.visualInput?.source === 'camera'
           ? permission === 'camera'
-          : permission !== 'camera' &&
-            (permission !== 'accessibility' ||
-              state.visualInput?.mode !== 'live-feed'));
+          : permission === 'screenRecording');
       controls.row.hidden = state.connection !== 'ready' || !relevant;
       const granted = state.permissions[permission] === 'granted';
       text(

@@ -73,6 +73,7 @@ export function validateNativeCapture(
 export function validateNativeDisplayCapture(
   value: NativeDisplayCapture,
   requestedDisplay: string,
+  nativeResolution = false,
 ): NativeDisplayCapture {
   if (
     !value ||
@@ -95,16 +96,24 @@ export function validateNativeDisplayCapture(
     screenshot.byteOffset,
     screenshot.byteLength,
   );
+  const width = header.getUint32(16);
+  const height = header.getUint32(20);
   if (
     header.getUint32(8) !== 13 ||
     header.getUint32(12) !== 0x49484452 ||
-    header.getUint32(16) < 1 ||
-    header.getUint32(16) > 1920 ||
-    header.getUint32(20) < 1 ||
-    header.getUint32(20) > 1080
+    width < 1 ||
+    width > (nativeResolution ? 16_384 : 1920) ||
+    height < 1 ||
+    height > (nativeResolution ? 16_384 : 1080) ||
+    width * height > 64 * 1024 * 1024 ||
+    (nativeResolution && value.nativeResolution !== true)
   )
     throw new Error(liveMessage('host.error.displayCapture'));
-  return { displayId: value.displayId.toLowerCase(), screenshot };
+  return {
+    displayId: value.displayId.toLowerCase(),
+    screenshot,
+    ...(nativeResolution ? { nativeResolution: true as const } : {}),
+  };
 }
 
 export class AppshotCaptureService {
@@ -157,13 +166,18 @@ export class AppshotCaptureService {
     }
   }
 
-  captureDisplayFrame(displayId = 'primary'): Promise<NativeDisplayCapture> {
+  captureDisplayFrame(
+    displayId = 'primary',
+    options: { nativeResolution?: boolean } = {},
+  ): Promise<NativeDisplayCapture> {
     return this.queueCapture(async () => {
       if (displayId !== 'primary' && !isDisplayUuid(displayId))
         throw new Error(liveMessage('host.error.displayUnavailable'));
       let capture: NativeDisplayCapture;
       try {
-        capture = await this.native().captureDisplay(displayId.toLowerCase());
+        capture = options.nativeResolution
+          ? await this.native().captureDisplay(displayId.toLowerCase(), true)
+          : await this.native().captureDisplay(displayId.toLowerCase());
       } catch (error) {
         const code =
           error && typeof error === 'object' && 'code' in error
@@ -179,7 +193,11 @@ export class AppshotCaptureService {
           ),
         );
       }
-      return validateNativeDisplayCapture(capture, displayId);
+      return validateNativeDisplayCapture(
+        capture,
+        displayId,
+        options.nativeResolution,
+      );
     });
   }
 

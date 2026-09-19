@@ -6,8 +6,61 @@
 
 import { describe, expect, it } from 'vitest';
 import { ProactiveTaskManager } from './task-manager.js';
+import {
+  DEFAULT_NARRATION_STYLE,
+  MAX_NARRATION_SOURCE_CHARS,
+} from './monitor-protocol.js';
 
 describe('ProactiveTaskManager', () => {
+  it('defaults narration style internally and retains a copied real-user preference source across updates', () => {
+    const manager = new ProactiveTaskManager();
+    const preferences = {
+      sourceRequest: '请持续描述画面，用英语给初学者讲解。',
+      fallbackLanguage: 'zh-CN' as const,
+    };
+    const created = manager.createNarration({
+      title: 'Screen',
+      modalities: ['vision'],
+      narrationFocus: 'Changes in the screen',
+      narrationPreferences: preferences,
+    });
+    expect(created.interventionText).toBe(DEFAULT_NARRATION_STYLE);
+    preferences.sourceRequest = 'Changed outside the task';
+    created.narrationPreferences!.sourceRequest = 'Changed returned snapshot';
+    manager.mutate(created.taskId, created.generation, (task) => {
+      task.status = 'running';
+      return true;
+    });
+    const updated = manager.update({
+      targetTitle: 'Screen',
+      narrationStyle: 'Be more humorous.',
+    });
+    expect(updated).toMatchObject({
+      interventionText: 'Be more humorous.',
+      narrationPreferences: {
+        sourceRequest: '请持续描述画面，用英语给初学者讲解。',
+        fallbackLanguage: 'zh-CN',
+        styleOverride: 'Be more humorous.',
+      },
+    });
+    expect(updated.generation).toBe(created.generation + 1);
+  });
+
+  it('does not silently truncate an oversized narration preference source', () => {
+    const manager = new ProactiveTaskManager();
+    expect(() =>
+      manager.createNarration({
+        title: 'Screen',
+        modalities: ['vision'],
+        narrationFocus: 'Screen changes',
+        narrationPreferences: {
+          sourceRequest: 'x'.repeat(MAX_NARRATION_SOURCE_CHARS + 1),
+          fallbackLanguage: 'en',
+        },
+      }),
+    ).toThrow('Invalid narration preferences');
+    expect(manager.listActive()).toEqual([]);
+  });
   it('creates canonical event and narration tasks', () => {
     const manager = new ProactiveTaskManager(4);
     const event = manager.createMonitor({

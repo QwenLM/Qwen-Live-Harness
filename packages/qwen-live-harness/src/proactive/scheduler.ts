@@ -9,6 +9,8 @@
 import { randomUUID } from 'node:crypto';
 import type { ProactiveConfig } from '../config.js';
 import type { MonitorDebugStore } from './monitor-debug-store.js';
+import type { DebugArchive } from '../log/debug-archive.js';
+import { PROACTIVE_MONITOR_FPS } from './media-cadence.js';
 import {
   QWEN_REALTIME_INPUT_SAMPLE_RATE,
   QWEN_REALTIME_LIMITS,
@@ -79,8 +81,11 @@ export interface ProactiveDelivery {
 
 interface DeliveryRecord {
   delivery: ProactiveDelivery;
-  status: 'queued' | 'announcing';
+  status: 'queued' | 'preparing' | 'announcing';
 }
+
+export type ProactiveNotificationState =
+  'queued' | 'preparing' | 'speaking' | 'delivered' | 'undelivered';
 
 export interface ProactiveSchedulerRealtimeConfig {
   endpoint: string;
@@ -97,10 +102,12 @@ export interface ProactiveSchedulerOptions {
   onTaskFailed?: (task: ProactiveTask, error: string) => void;
   onTaskChanged?: (
     task: ProactiveTask,
-    notification?: 'queued' | 'speaking' | 'delivered',
+    notification?: ProactiveNotificationState,
   ) => void;
   captureVision?: () => Promise<string | undefined>;
   monitorDebug?: MonitorDebugStore;
+  debugArchive?: DebugArchive;
+  debugContext?: Record<string, unknown>;
   createMonitor?: (
     options: DashScopeRealtimeMonitorOptions,
     callbacks: DashScopeRealtimeMonitorCallbacks,
@@ -121,10 +128,16 @@ export interface ProactiveSchedulerControl {
   feedAudio(pcm16: Uint8Array): void;
   feedImage(jpegBase64: string): void;
   resetVisualSource(): void;
-  announcementStarted(delivery: ProactiveDelivery): void;
+  announcementStarted(
+    delivery: ProactiveDelivery,
+    options?: { fallback?: boolean },
+  ): void;
+  playbackStarted?(delivery: ProactiveDelivery): void;
   deferDelivery(delivery: ProactiveDelivery): boolean;
   acknowledgeDelivery(delivery: ProactiveDelivery): void;
   failDelivery(delivery: ProactiveDelivery, error: string): void;
+  /** Retire only this announcement; a repeating monitor remains active. */
+  undeliverDelivery?(delivery: ProactiveDelivery, error: string): void;
   dispose(): void;
 }
 
@@ -137,6 +150,10 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
   private readonly cooldownAudioDrops = new Map<string, CooldownAudioDrops>();
   private readonly timers = new Map<string, TimerRecord>();
   private readonly deliveries = new Map<string, DeliveryRecord>();
+  private readonly deliveryOutcomes = new Map<
+    string,
+    'delivered' | 'undelivered'
+  >();
   private readonly deliveryTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -312,7 +329,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     rateLimit: boolean,
   ): void {
     if (this.disposed || !jpegBase64) return;
-    const minimumGap = 1_000 / this.options.config.vision.fps;
+    const minimumGap = 1_000 / PROACTIVE_MONITOR_FPS;
     if (rateLimit && capturedAt - this.lastVisionAt < minimumGap) return;
     const tasks = this.manager
       .activePerceptionTasks()
@@ -332,7 +349,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
       const lastFrame = state.vision.at(-1);
       const continuityGapMs = Math.max(
         1_000,
-        (3 * 1_000) / this.options.config.vision.fps,
+        (3 * 1_000) / PROACTIVE_MONITOR_FPS,
       );
       if (lastFrame !== undefined && capturedAt - lastFrame > continuityGapMs) {
         state.vision = [];
@@ -356,21 +373,32 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     }
   }
 
-  announcementStarted(delivery: ProactiveDelivery): void {
+  announcementStarted(
+    delivery: ProactiveDelivery,
+    options?: { fallback?: boolean },
+  ): void {
     const current = this.deliveries.get(delivery.deliveryId);
     if (!current || !this.sameDelivery(current.delivery, delivery)) return;
     if (current.status !== 'queued') return;
-    current.status = 'announcing';
+    current.status = 'preparing';
     this.notifyTaskId(delivery.taskId);
+    const fallback = options?.fallback === true;
     const timer = setTimeout(() => {
       this.deliveryTimers.delete(delivery.deliveryId);
-      this.failDelivery(
-        delivery,
-        'Proactive announcement playback acknowledgement timed out.',
-      );
+      const error =
+        'Proactive announcement playback acknowledgement timed out.';
+      if (fallback) this.undeliverDelivery(delivery, error);
+      else this.failDelivery(delivery, error);
     }, this.options.config.scheduler.repeat.maxWaitTtsSec * 1_000);
     timer.unref?.();
     this.deliveryTimers.set(delivery.deliveryId, timer);
+  }
+
+  playbackStarted(delivery: ProactiveDelivery): void {
+    const current = this.deliveries.get(delivery.deliveryId);
+    if (!current || !this.sameDelivery(current.delivery, delivery)) return;
+    current.status = 'announcing';
+    this.notifyTaskId(delivery.taskId);
   }
 
   deferDelivery(delivery: ProactiveDelivery): boolean {
@@ -394,6 +422,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     if (!task || task.generation !== delivery.taskGeneration) return;
     this.clearDeliveryTimer(delivery.deliveryId);
     this.deliveries.delete(delivery.deliveryId);
+    this.deliveryOutcomes.set(task.taskId, 'delivered');
     this.debug('proactive.delivery_acknowledged', {
       taskId: delivery.taskId,
       deliveryId: delivery.deliveryId,
@@ -411,6 +440,36 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     this.failTask(delivery.taskId, delivery.taskGeneration, error);
   }
 
+  undeliverDelivery(delivery: ProactiveDelivery, error: string): void {
+    const current = this.deliveries.get(delivery.deliveryId);
+    const task = this.manager.get(delivery.taskId);
+    if (
+      !current ||
+      !this.sameDelivery(current.delivery, delivery) ||
+      !task ||
+      task.generation !== delivery.taskGeneration
+    )
+      return;
+    this.clearDeliveryTimer(delivery.deliveryId);
+    this.deliveries.delete(delivery.deliveryId);
+    this.deliveryOutcomes.set(task.taskId, 'undelivered');
+    if (!task.repeat) {
+      this.manager.completeDelivery(task.taskId, task.generation);
+      this.cleanupTask(task.taskId);
+    }
+    this.notifyTaskId(task.taskId, 'undelivered');
+    this.debug('proactive.delivery_undelivered', {
+      taskId: task.taskId,
+      deliveryId: delivery.deliveryId,
+      reason: error.slice(0, 300),
+    });
+    try {
+      this.options.onDeliveryInvalidated?.(delivery);
+    } catch {
+      /* delivery is already retired; observers cannot resurrect it */
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -425,6 +484,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     this.invalidateDeliveries();
     this.manager.clear();
     this.diagnosticStates.clear();
+    this.deliveryOutcomes.clear();
   }
 
   private startLoops(): void {
@@ -436,7 +496,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     if (this.options.captureVision) {
       this.visionTimer = setInterval(
         () => void this.captureVision(),
-        1_000 / this.options.config.vision.fps,
+        1_000 / PROACTIVE_MONITOR_FPS,
       );
       this.visionTimer.unref?.();
     }
@@ -530,7 +590,10 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
             taskDescription: task.taskDescription,
             monitorMode: task.monitorMode,
             ...(task.monitorMode === 'always'
-              ? { narrationStyle: task.interventionText }
+              ? {
+                  narrationStyle: task.interventionText,
+                  narrationPreferences: task.narrationPreferences,
+                }
               : {}),
           }),
           monitorMode: task.monitorMode,
@@ -542,9 +605,9 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
           sessionRecycleEvals: this.options.config.monitor.sessionRecycleEvals,
           representationCompact:
             this.options.config.monitor.representationCompact,
-          chunkDurationSec: this.options.config.monitor.chunkDurationSec,
-          visionFps: this.options.config.vision.fps,
           monitorDebug: this.options.monitorDebug,
+          debugArchive: this.options.debugArchive,
+          debugContext: this.options.debugContext,
         },
         {
           onReady: (taskGeneration) => {
@@ -681,8 +744,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     if (task.modalities.includes('vision')) {
       if (state.vision.length === 0) return false;
       const minimumFrames = Math.ceil(
-        this.options.config.vision.minEvalDurationSec *
-          this.options.config.vision.fps,
+        this.options.config.vision.minEvalDurationSec * PROACTIVE_MONITOR_FPS,
       );
       // Retain the nominal-rate contract, but let slower successful captures
       // warm by elapsed observation time across a continuously fresh window.
@@ -836,6 +898,13 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
         sourceModalities,
         interventionText,
         monitorMode: delivering.monitorMode,
+        ...(delivering.taskType === 'perception_monitor' &&
+        delivering.narrationPreferences
+          ? {
+              narrationPreferences: delivering.narrationPreferences,
+              narrationFocus: delivering.taskDescription,
+            }
+          : {}),
       }),
     };
     if (delivery.event.length > QWEN_REALTIME_LIMITS.maxFunctionOutputChars) {
@@ -847,6 +916,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
       return false;
     }
     this.deliveries.set(deliveryId, { delivery, status: 'queued' });
+    this.deliveryOutcomes.delete(delivering.taskId);
     this.notifyTaskId(delivering.taskId);
     if (delivering.repeat) {
       this.repeats.set(delivering.taskId, {
@@ -975,25 +1045,34 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     }
   }
 
-  private notifyTaskId(taskId: string, notification?: 'delivered'): void {
+  private notifyTaskId(
+    taskId: string,
+    notification?: 'delivered' | 'undelivered',
+  ): void {
     const task = this.manager.get(taskId);
     if (task) this.notifyTask(task, notification);
   }
 
-  private notifyTask(task: ProactiveTask, notification?: 'delivered'): void {
+  private notifyTask(
+    task: ProactiveTask,
+    notification?: 'delivered' | 'undelivered',
+  ): void {
     const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
     const pending = terminal
       ? []
       : [...this.deliveries.values()].filter(
           (record) => record.delivery.taskId === task.taskId,
         );
-    const currentNotification = pending.some(
-      (record) => record.status === 'announcing',
-    )
-      ? 'speaking'
-      : pending.length
-        ? 'queued'
-        : notification;
+    const currentNotification =
+      task.status === 'cancelled'
+        ? undefined
+        : pending.some((record) => record.status === 'announcing')
+          ? 'speaking'
+          : pending.some((record) => record.status === 'preparing')
+            ? 'preparing'
+            : pending.length
+              ? 'queued'
+              : (notification ?? this.deliveryOutcomes.get(task.taskId));
     if (this.options.debug) {
       const stateKey = JSON.stringify([
         task.generation,

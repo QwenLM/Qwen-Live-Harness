@@ -6,11 +6,12 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryDialogueCollector } from '../memory/dialogue.js';
-import { MEMORY_TOOLS } from '../memory/tools.js';
+import { memoryContextMessage, MEMORY_TOOLS } from '../memory/tools.js';
 import {
   openQwenRealtimeSession,
   MAX_REALTIME_INSTRUCTIONS_CHARS,
   QwenRealtimeError,
+  QWEN_REALTIME_LIMITS,
   type QwenRealtimeCallbacks,
 } from './realtime-session.js';
 
@@ -19,6 +20,7 @@ class MemorySocket {
   readyState = 1;
   bufferedAmount = 0;
   sent: Array<Record<string, unknown>> = [];
+  readonly outputs = new Map<string, Array<Record<string, unknown>>>();
   handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   send(value: string | Uint8Array): void {
     this.sent.push(JSON.parse(String(value)));
@@ -30,11 +32,36 @@ class MemorySocket {
     this.handlers.set(name, [...(this.handlers.get(name) ?? []), callback]);
   }
   message(value: Record<string, unknown>): void {
+    if (value['type'] === 'response.output_item.done') {
+      const responseId = value['response_id'];
+      const item = value['item'];
+      if (typeof responseId === 'string' && typeof item === 'object' && item) {
+        this.outputs.set(responseId, [
+          ...(this.outputs.get(responseId) ?? []),
+          item as Record<string, unknown>,
+        ]);
+      }
+    }
     for (const callback of this.handlers.get('message') ?? [])
       callback(JSON.stringify(value), false);
   }
   messages(type: string): Array<Record<string, unknown>> {
     return this.sent.filter((item) => item['type'] === type);
+  }
+  acknowledgeToolOutputs(): void {
+    for (const event of this.messages('conversation.item.create')) {
+      const item = event['item'] as Record<string, unknown>;
+      if (item['type'] === 'function_call_output')
+        this.message({
+          type: 'conversation.item.created',
+          event_id: `ack-${event['event_id']}`,
+          item: {
+            ...item,
+            id: `receipt-${item['call_id']}`,
+            status: 'completed',
+          },
+        });
+    }
   }
 }
 
@@ -72,7 +99,7 @@ function created(socket: MemorySocket, id: string): void {
 function done(socket: MemorySocket, id: string): void {
   socket.message({
     type: 'response.done',
-    response: { id, status: 'completed' },
+    response: { id, status: 'completed', output: socket.outputs.get(id) ?? [] },
   });
 }
 function text(socket: MemorySocket, id: string, value: string): void {
@@ -94,6 +121,7 @@ function call(
     item: {
       id: 'item-' + callId,
       type: 'function_call',
+      status: 'completed',
       call_id: callId,
       name,
       arguments: JSON.stringify({ query: 'tea', source: 'dialogue' }),
@@ -111,14 +139,15 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
     async (model) => {
       const { socket, session } = await connect({}, model);
       try {
+        expect(session.configure({ tools: [] })).toBe(true);
+        socket.message({ type: 'session.updated' });
         expect(
           session.configure({
-            instructions: 'updated memory',
             tools: MEMORY_TOOLS,
           }),
         ).toBe(true);
         const publications = socket.messages('session.update');
-        expect(publications).toHaveLength(2);
+        expect(publications).toHaveLength(3);
         for (const [index, publication] of publications.entries()) {
           const published = publication['session'] as {
             instructions: string;
@@ -128,8 +157,12 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
             }>;
           };
           expect(published.instructions).toBe(
-            index === 0 ? 'base instructions' : 'updated memory',
+            index === 0 ? 'base instructions' : undefined,
           );
+          if (index === 1) {
+            expect(published.tools).toEqual([]);
+            continue;
+          }
           // The transport strips only local behavior flags, never schema fields.
           expect(published.tools).toEqual(
             MEMORY_TOOLS.map(({ type, function: definition }) => ({
@@ -201,34 +234,44 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
     },
   );
 
-  it('stages active configuration and puts updated memory on the receipt continuation', async () => {
+  it('publishes Memory in one silent user item before its receipt without changing instructions', async () => {
     const onFunctionCall = vi.fn();
     const { socket, session } = await connect({ onFunctionCall });
     input(socket, 'input-1', 'What did I say about tea?');
     created(socket, 'direct');
     call(socket, 'direct', 'retrieve');
+    done(socket, 'direct');
     expect(onFunctionCall).toHaveBeenCalledOnce();
-    session.configure({
-      instructions: 'base\n<retrieved>green tea</retrieved>',
-      tools: MEMORY_TOOLS,
-    });
+    const memory = memoryContextMessage(1, '<retrieved>green tea</retrieved>');
+    expect(session.sendBackendContext(memory)).toBe(true);
     expect(socket.messages('session.update')).toHaveLength(1);
     session.submitFunctionOutput(
       { callEpoch: 1, callId: 'retrieve' },
       'Successfully searched past conversations. 1 matched.',
     );
     expect(socket.messages('session.update')).toHaveLength(1);
-    done(socket, 'direct');
+    socket.acknowledgeToolOutputs();
     await Promise.resolve();
-    const update = socket.messages('session.update').at(-1)?.['session'];
-    expect(update).toMatchObject({
-      instructions: 'base\n<retrieved>green tea</retrieved>',
-    });
+    const items = socket
+      .messages('conversation.item.create')
+      .map((event) => event['item']);
+    expect(items).toEqual([
+      expect.objectContaining({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: `[BACKEND] ${memory}` }],
+      }),
+      expect.objectContaining({
+        type: 'function_call_output',
+        call_id: 'retrieve',
+      }),
+    ]);
+    expect(socket.messages('session.update')).toHaveLength(1);
     const response = socket.messages('response.create').at(-1)?.['response'];
     expect(response).toMatchObject({
-      instructions: 'base\n<retrieved>green tea</retrieved>',
       modalities: ['text', 'audio'],
     });
+    expect(response).not.toHaveProperty('instructions');
     expect(socket.messages('input_audio_buffer.commit')).toHaveLength(0);
     created(socket, 'continuation');
     text(socket, 'continuation', 'You mentioned green tea.');
@@ -241,20 +284,19 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
     const { socket, session } = await connect({ onFunctionCall });
     input(socket, 'input-1', 'Remember this.');
     created(socket, 'direct');
-    session.configure({ instructions: 'memory disabled', tools: [] });
+    session.configure({ tools: [] });
+    session.sendBackendContext(memoryContextMessage(2));
     call(socket, 'direct', 'late-memory', 'omnibio');
     expect(onFunctionCall).not.toHaveBeenCalled();
     expect(socket.messages('session.update')).toHaveLength(1);
     done(socket, 'direct');
+    socket.acknowledgeToolOutputs();
     await Promise.resolve();
     expect(socket.messages('session.update').at(-1)?.['session']).toEqual({
-      smooth_output: false,
-      instructions: 'memory disabled',
       tools: [],
     });
-    expect(
-      socket.messages('response.create').at(-1)?.['response'],
-    ).toMatchObject({ instructions: 'memory disabled' });
+    for (const request of socket.messages('response.create'))
+      expect(request['response']).not.toHaveProperty('instructions');
     session.close({ discardPendingInput: true });
   });
 
@@ -280,6 +322,7 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
       { callEpoch: 1, callId: 'retrieve' },
       '1 matched.',
     );
+    socket.acknowledgeToolOutputs();
     created(socket, 'continuation');
     text(socket, 'continuation', 'You like green tea.');
     done(socket, 'continuation');
@@ -494,15 +537,20 @@ describe('Memory Realtime publication and dialogue boundaries', () => {
     session.close({ discardPendingInput: true });
   });
 
-  it('deduplicates idle publication and rejects oversized updates before changing state', async () => {
+  it('deduplicates tool publication and rejects oversized context without changing system instructions', async () => {
     const { socket, session } = await connect();
-    session.configure({ instructions: 'new memory', tools: MEMORY_TOOLS });
-    session.configure({ instructions: 'new memory', tools: MEMORY_TOOLS });
+    session.configure({ tools: [] });
+    session.configure({ tools: [] });
     expect(socket.messages('session.update')).toHaveLength(2);
     expect(() =>
-      session.configure({ instructions: 'x'.repeat(100001), tools: [] }),
+      session.sendBackendContext(
+        'x'.repeat(QWEN_REALTIME_LIMITS.maxContextChars + 1),
+      ),
     ).toThrow(RangeError);
     expect(socket.messages('session.update')).toHaveLength(2);
+    expect(
+      socket.messages('session.update')[1]?.['session'],
+    ).not.toHaveProperty('instructions');
     session.close();
   });
 

@@ -247,7 +247,7 @@ describe('persistent Live orb and Settings', () => {
     });
     assert.equal(h.layouts.at(-1), 'setup');
   });
-  it('does not ask Screen Live Feed users for accessibility but preserves the On Demand requirement', () => {
+  it('requires Screen Recording without asking for accessibility in either Screen mode', () => {
     const h = setup();
     const state = h.state();
     h.update({
@@ -262,7 +262,8 @@ describe('persistent Live orb and Settings', () => {
       ...h.state(),
       visualInput: { ...state.visualInput!, mode: 'on-demand' },
     });
-    assert.equal(h.get('[data-permission="accessibility"]').hidden, false);
+    assert.equal(h.get('[data-permission="accessibility"]').hidden, true);
+    assert.equal(h.get('[data-permission="screenRecording"]').hidden, false);
   });
 
   it('opens the active config with no path argument, without dragging or changing the call', async () => {

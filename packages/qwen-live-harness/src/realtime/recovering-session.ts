@@ -31,7 +31,9 @@ export async function openRecoveringQwenRealtimeSession(
   callbacks: QwenRealtimeCallbacks = {},
   deps: QwenRealtimeDeps = {},
 ): Promise<QwenRealtimeSession> {
-  let config = { ...initialConfig };
+  // Keep one system prompt for the logical call, including replacement sockets.
+  // Runtime settings may only change the tool surface and conversation context.
+  let config = { ...initialConfig, tools: [...initialConfig.tools] };
   let generation = 1;
   let active: QwenRealtimeSession | undefined;
   let connecting: AbortController | undefined;
@@ -161,7 +163,8 @@ export async function openRecoveringQwenRealtimeSession(
       },
       onOutputTextDone: (event) => {
         if (!current()) return;
-        remember({ role: 'assistant', text: event.text });
+        if (!event.audioSuppressed)
+          remember({ role: 'assistant', text: event.text });
         callbacks.onOutputTextDone?.(event);
       },
     };
@@ -261,7 +264,6 @@ export async function openRecoveringQwenRealtimeSession(
       restoredHistory.shift();
     const restored =
       replacement.configure({
-        instructions: config.instructions,
         tools: config.tools,
       }) &&
       replacement.sendBackendContext(
@@ -375,11 +377,15 @@ export async function openRecoveringQwenRealtimeSession(
   const session: QwenRealtimeSession = {
     callEpoch: config.callEpoch,
     closed,
+    canDeliverExternalAudio: () =>
+      !recovering && !ended && (active?.canDeliverExternalAudio?.() ?? false),
     flushDialogue: () => active?.flushDialogue(),
     configure: (update) => {
       if (ended) return false;
-      config = { ...config, ...update };
-      return recovering ? true : (active?.configure(update) ?? false);
+      config = { ...config, tools: [...update.tools] };
+      return recovering
+        ? true
+        : (active?.configure({ tools: config.tools }) ?? false);
     },
     setInputMuted: (value) => {
       muted = value;
@@ -410,23 +416,6 @@ export async function openRecoveringQwenRealtimeSession(
     },
     pushImage: (image) =>
       recovering ? true : (active?.pushImage(image) ?? false),
-    submitToolImage: async (ref, image, isCurrent) => {
-      if (ended || recovering || retiredTools.has(ref.callId)) return false;
-      const transport = active;
-      const token = generation;
-      return (
-        (await transport?.submitToolImage(
-          ref,
-          image,
-          () =>
-            !ended &&
-            !recovering &&
-            generation === token &&
-            active === transport &&
-            (isCurrent?.() ?? true),
-        )) ?? false
-      );
-    },
     commitInputAudio: () => {
       if (recovering) {
         commitAfterRecovery = true;
@@ -436,7 +425,7 @@ export async function openRecoveringQwenRealtimeSession(
     },
     clearInputAudio: () => active?.clearInputAudio() ?? false,
     cancelResponse: () => active?.cancelResponse() ?? false,
-    submitFunctionOutput: (ref, output) => {
+    submitFunctionOutput: (ref, output, options) => {
       if (ended) return false;
       if (retiredTools.has(ref.callId)) {
         debug('tool.output_ignored', {
@@ -445,22 +434,34 @@ export async function openRecoveringQwenRealtimeSession(
         });
         return true;
       }
-      const accepted = active?.submitFunctionOutput(ref, output) ?? false;
+      const accepted =
+        active?.submitFunctionOutput(ref, output, options) ?? false;
       if (accepted) pendingTools.delete(ref.callId);
       return accepted;
     },
     sendBackendContext: (text) => {
       if (!recovering) return active?.sendBackendContext(text) ?? false;
+      // Memory is a replaceable snapshot, not an event log. In particular, the
+      // fresh snapshot published by onTransportRecovery('restoring') must not
+      // be followed by stale snapshots queued before the handshake finished.
+      const nextContext = text.startsWith('[MEMORY_CONTEXT] ')
+        ? queuedContext.filter(
+            (entry) => !entry.startsWith('[MEMORY_CONTEXT] '),
+          )
+        : [...queuedContext];
       if (
-        queuedContext.reduce((sum, entry) => sum + entry.length, 0) +
+        nextContext.reduce((sum, entry) => sum + entry.length, 0) +
           text.length >
-        64_000
+        QWEN_REALTIME_LIMITS.maxContextChars
       )
         return false;
-      queuedContext.push(text);
+      nextContext.push(text);
+      queuedContext = nextContext;
       return true;
     },
     speakToUser: (text) => active?.speakToUser(text) ?? false,
+    respondToVisualResult: (text, language) =>
+      active?.respondToVisualResult?.(text, language) ?? false,
     askPermission: (text, language) =>
       active?.askPermission?.(text, language) ?? false,
     respondToTaskResult: (text, language) =>

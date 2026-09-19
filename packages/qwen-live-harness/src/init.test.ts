@@ -999,7 +999,7 @@ describe('runInit', () => {
       },
       proactive: {
         enabled: true,
-        monitor: { chunkDurationSec: 1, sessionRecycleEvals: 60 },
+        monitor: { sessionRecycleEvals: 60 },
         scheduler: {
           evalIntervalSec: 1,
           maxFailuresPerTask: 3,
@@ -1010,7 +1010,6 @@ describe('runInit', () => {
           },
         },
         vision: {
-          fps: 2,
           windowSizeSec: 10,
           minEvalDurationSec: 0,
         },
@@ -1018,6 +1017,12 @@ describe('runInit', () => {
       },
       defaultCwd: '/tmp/qwen-live-harness-project',
     });
+    expect(JSON.parse(String(serialized)).proactive.monitor).not.toHaveProperty(
+      'chunkDurationSec',
+    );
+    expect(JSON.parse(String(serialized)).proactive.vision).not.toHaveProperty(
+      'fps',
+    );
   });
 
   it.each(['en', 'zh-CN'] as const)(

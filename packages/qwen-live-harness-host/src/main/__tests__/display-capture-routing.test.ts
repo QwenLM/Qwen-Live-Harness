@@ -48,6 +48,8 @@ function fixture() {
     details: Record<string, unknown>;
   }> = [];
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const encodings: unknown[][] = [];
+  const captureOptions: Array<{ nativeResolution?: boolean } | undefined> = [];
   const context = {
     Buffer,
     createHash,
@@ -75,8 +77,12 @@ function fixture() {
           accessibilityText: 'AX fixture',
         };
       },
-      captureDisplayFrame: async (id: string) => {
+      captureDisplayFrame: async (
+        id: string,
+        options?: { nativeResolution?: boolean },
+      ) => {
         calls.push({ kind: 'display', value: id });
+        captureOptions.push(options);
         return { screenshot: image, displayId: DISPLAY };
       },
       listDisplays: () => [
@@ -140,11 +146,10 @@ function fixture() {
     },
     appshotReadiness: { refresh() {}, requestPermission() {} },
     isHostReady: () => true,
-    encodeScreenFrame: () => ({
-      image: 'fixture-jpeg',
-      width: 1280,
-      height: 720,
-    }),
+    encodeScreenFrame: (...args: unknown[]) => {
+      encodings.push(args);
+      return { image: 'fixture-jpeg', width: 1280, height: 720 };
+    },
     writeLiveDiagnostic: (event: string, details: Record<string, unknown>) =>
       diagnostics.push({ event, details }),
     publishState: () => {},
@@ -156,25 +161,39 @@ function fixture() {
     hostReadinessBlocker: () => string | undefined;
     registerIpc: () => void;
   };
-  return { api, context, calls, handlers, diagnostics };
+  return {
+    api,
+    context,
+    calls,
+    handlers,
+    diagnostics,
+    encodings,
+    captureOptions,
+  };
 }
 
 describe('selected display capture routing', () => {
-  it('keeps foreground Appshot and its asset/AX separate from private monitor display capture', async () => {
+  it('captures the selected full display for Appshot and Monitor without requiring AX', async () => {
     const f = fixture();
+    f.context.permissions.accessibility = 'denied';
     const appshot = await f.api.captureOnDemandVisual({
       source: 'screen',
       persistAsset: true,
+      snapshotWidth: 1600,
+      snapshotHeight: 900,
     });
     assert.deepEqual(
       f.calls.map((call) => call.kind),
-      ['window', 'asset'],
+      ['display', 'asset'],
     );
-    assert.equal(appshot.accessibilityText, 'AX fixture');
+    assert.equal(appshot.accessibilityText, undefined);
+    assert.equal(appshot.displayId, DISPLAY);
+    assert.equal(appshot.screenScope, 'display');
     assert.equal(appshot.screenshotPath, '/fixture/image.png');
+    assert.equal(f.captureOptions[0]?.nativeResolution, true);
+    assert.deepEqual(f.encodings[0], [image, 1600, 900, false]);
     f.calls.length = 0;
     f.context.permissions.accessibility = 'denied';
-    f.context.selfChecks.appshot = false;
     const monitor = await f.api.captureOnDemandVisual({
       source: 'screen',
       screenScope: 'display',
@@ -186,6 +205,24 @@ describe('selected display capture routing', () => {
     assert.equal(monitor.screenScope, 'display');
     assert.equal(monitor.accessibilityText, undefined);
     assert.equal(monitor.screenshotPath, undefined);
+    assert.equal(f.captureOptions[1]?.nativeResolution, false);
+  });
+
+  it('keeps native snapshot size when no snapshot bounds are configured', async () => {
+    const f = fixture();
+    await f.api.captureOnDemandVisual({ source: 'screen', persistAsset: true });
+    assert.deepEqual(f.encodings[0], [image, undefined, undefined, false]);
+    assert.deepEqual(f.calls[0], { kind: 'display', value: DISPLAY });
+  });
+
+  it('does not show a ready On Demand source when native capture is unavailable', async () => {
+    const f = fixture();
+    f.context.selfChecks.appshot = false;
+    assert.equal(f.api.hostReadinessBlocker(), 'appshot');
+    await assert.rejects(
+      f.api.captureOnDemandVisual({ source: 'screen', persistAsset: true }),
+    );
+    assert.equal(f.calls.length, 0);
   });
 
   it('feeds the complete selected display with its identity and no foreground-window call', async () => {
@@ -291,11 +328,10 @@ describe('selected display capture routing', () => {
     );
   });
 
-  it('requires AX for the original window tool, but not for Screen Live Feed', () => {
+  it('requires Screen Recording but not AX for either Screen capture mode', () => {
     const f = fixture();
     f.context.permissions.accessibility = 'denied';
-    f.context.selfChecks.appshot = false;
-    assert.equal(f.api.hostReadinessBlocker(), 'accessibility_permission');
+    assert.equal(f.api.hostReadinessBlocker(), undefined);
     f.context.visualInput.mode = 'live-feed';
     assert.equal(f.api.hostReadinessBlocker(), undefined);
     f.context.permissions.screenRecording = 'denied';

@@ -8,6 +8,7 @@ import {
   contextTextOf,
   taskResultPayloadOf,
   permissionPayloadOf,
+  notificationOf,
   functionCallOutputOf,
   type FakeDashScopeServer,
   type FakeDashScopeConnection,
@@ -166,19 +167,22 @@ describe('standalone daemon with an external ACP process', () => {
       (message) => message['type'] === 'response.create',
       { fromIndex: fakeDash.inbox.indexOf(permission) + 1 },
     );
-    const instructions = (request['response'] as Record<string, unknown>)[
+    expect(request['response']).not.toHaveProperty('instructions');
+    expect(notificationOf(permission)).toMatchObject({
+      kind: 'permission',
+      output_language: 'en',
+      payload: expect.stringContaining('standalone write check'),
+    });
+    const initial = conn.inbox.find(
+      (message) => message['type'] === 'session.update',
+    );
+    const instructions = (initial?.['session'] as Record<string, unknown>)[
       'instructions'
     ];
     expect(instructions).toContain(
-      'OUTPUT LANGUAGE REQUIREMENT: The entire user-facing response MUST be in English (en).',
+      'Only a subsequent real user answer can authorize a vote',
     );
-    expect(instructions).toContain(
-      "selected by the runtime from the real user's conversation",
-    );
-    expect(instructions).toContain(
-      'not a real user request or permission vote',
-    );
-    expect(instructions).not.toContain('The task wants to');
+    expect(instructions).not.toContain('standalone write check');
     expect(
       fakeDash.inbox
         .slice(fromIndex)

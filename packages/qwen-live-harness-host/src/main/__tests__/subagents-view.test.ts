@@ -266,6 +266,43 @@ describe('Subagents read-only surfaces', () => {
     assert.equal(h.app.querySelector('[role="progressbar"], progress'), null);
   });
 
+  it('labels visual analysis and distinguishes preparing from actual playback or undelivered output', () => {
+    const entry = task({
+      id: 'visual:1',
+      kind: 'visual',
+      title: 'Read the picture',
+      status: 'delivering',
+    });
+    const h = setup(
+      {},
+      { mode: 'detail', selectedId: entry.id, snapshot: snapshot([entry]) },
+    );
+    for (const language of ['en', 'zh-CN'] as const) {
+      for (const [notification, key] of [
+        ['preparing', 'subagents.notificationPreparing'],
+        ['speaking', 'subagents.notificationSpeaking'],
+        ['undelivered', 'subagents.notificationUndelivered'],
+      ] as const) {
+        h.update({
+          language,
+          snapshot: snapshot([
+            { ...entry, notification, activity: liveMessage('visual.running') },
+          ]),
+        });
+        assert.ok(
+          h.app.textContent?.includes(
+            liveText(language, 'subagents.kind.visual'),
+          ),
+        );
+        assert.ok(h.app.textContent?.includes(liveText(language, key)));
+        assert.equal(
+          h.get('.subagent-latest').textContent,
+          liveText(language, 'visual.running'),
+        );
+      }
+    }
+  });
+
   it('keeps self-reported results separate from tasks and updates announcement state without interpreting report text', () => {
     const value = snapshot([]);
     value.omitted = 0;

@@ -298,6 +298,68 @@ describe('MonitorDebugStore', () => {
     ).not.toContain(key);
   });
 
+  it('archives manual task text only in the first response request, with two one-second media intervals', async () => {
+    const archive = await recorder();
+    archive.beginTransport(1);
+    archive.setProviderSessionId('sess-manual-clips');
+    const settings = {
+      type: 'session.update',
+      session: { instructions: 'Fixed monitor system prompt.' },
+    };
+    archive.sent(settings);
+    const silence = Buffer.alloc(32_000);
+    for (let turn = 1; turn <= 2; turn++) {
+      for (let frame = 0; frame < 2; frame++) {
+        sendAudio(archive, silence, 'protocol_silence');
+        sendImage(archive, Buffer.from([0xff, 0xd8, turn, frame, 0xff, 0xd9]));
+      }
+      commit(archive);
+      archive.sent({
+        type: 'response.create',
+        ...(turn === 1
+          ? {
+              response: { instructions: 'Tell me when the light turns green.' },
+            }
+          : {}),
+      });
+      archive.result({ status: 'completed', text: 'wait' });
+    }
+    await store.flush();
+
+    for (let turn = 1; turn <= 2; turn++) {
+      const directory = join(archive.directory, 'requests', `00000${turn}`);
+      const request = await readJson(join(directory, 'request.json'));
+      expect(request).toMatchObject({
+        providerSessionId: 'sess-manual-clips',
+        session: [settings],
+        audioSummary: { totalBytes: 64_000, protocolSilenceBytes: 64_000 },
+        ...(turn === 2 ? { previousRequest: '000001' } : {}),
+      });
+      const events = request['events'] as Array<Record<string, unknown>>;
+      expect(events.map((event) => event['type'])).toEqual([
+        'input_audio_buffer.append',
+        'input_image_buffer.append',
+        'input_audio_buffer.append',
+        'input_image_buffer.append',
+        'input_audio_buffer.commit',
+        'response.create',
+      ]);
+      expect(events[0]).toMatchObject({ byteOffset: 0, bytes: 32_000 });
+      expect(events[2]).toMatchObject({ byteOffset: 32_000, bytes: 32_000 });
+      expect(events[5]).toEqual(
+        turn === 1
+          ? {
+              type: 'response.create',
+              response: { instructions: 'Tell me when the light turns green.' },
+            }
+          : { type: 'response.create' },
+      );
+      expect((await readFile(join(directory, 'input.wav'))).byteLength).toBe(
+        64_044,
+      );
+    }
+  });
+
   it('archives exact sent media, WAV offsets and ordering with private permissions', async () => {
     const key = 'sk-connection-secret';
     const archive = await recorder(key);
