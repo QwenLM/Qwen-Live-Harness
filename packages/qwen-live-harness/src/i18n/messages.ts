@@ -20,6 +20,26 @@ export const LIVE_MESSAGES = {
   'theme.system': { en: 'System', 'zh-CN': '跟随系统' },
   'theme.light': { en: 'Light mode', 'zh-CN': '白天模式' },
   'theme.dark': { en: 'Dark mode', 'zh-CN': '黑暗模式' },
+  'theme.colorLabel': { en: 'Color palette', 'zh-CN': '配色' },
+  'theme.color.iris': { en: 'Iris', 'zh-CN': '雾紫' },
+  'theme.color.clay': { en: 'Clay', 'zh-CN': '暖陶' },
+  'theme.color.sage': { en: 'Sage', 'zh-CN': '鼠尾草' },
+  'theme.color.tide': { en: 'Tide', 'zh-CN': '潮汐' },
+  'theme.color.graphite': { en: 'Graphite', 'zh-CN': '石墨' },
+  'theme.color.rose': { en: 'Rose', 'zh-CN': '玫瑰' },
+  'theme.color.berry': { en: 'Berry', 'zh-CN': '莓果' },
+  'host.themeColor.invalid': {
+    en: 'Invalid color palette.',
+    'zh-CN': '无效的配色。',
+  },
+  'host.themeColor.unavailable': {
+    en: 'Connect to Qwen Live Harness before changing the color palette.',
+    'zh-CN': '请连接 Qwen Live Harness 后再修改配色。',
+  },
+  'host.themeColor.saveFailed': {
+    en: 'Could not save the color palette. Your current palette and configuration are unchanged.',
+    'zh-CN': '无法保存配色，当前配色和配置保持不变。',
+  },
   'host.theme.invalid': {
     en: 'Invalid theme setting.',
     'zh-CN': '无效的主题设置。',
@@ -58,6 +78,10 @@ export const LIVE_MESSAGES = {
   'ui.memoryOn': { en: 'On', 'zh-CN': '已开启' },
   'ui.memoryOff': { en: 'Off', 'zh-CN': '已关闭' },
   'ui.appearance': { en: 'Appearance', 'zh-CN': '外观' },
+  'ui.micAndSpeakerMutedCompact': {
+    en: 'Mic off · Muted',
+    'zh-CN': '麦克风关闭 · 静音',
+  },
   'ui.light': { en: 'Light', 'zh-CN': '浅色' },
   'ui.dark': { en: 'Dark', 'zh-CN': '深色' },
   'ui.configFile': { en: 'Open configuration', 'zh-CN': '打开配置文件' },
@@ -181,9 +205,8 @@ export const LIVE_MESSAGES = {
     'zh-CN': '显示器不可用（{id}）',
   },
   'ui.displayCaptureHint': {
-    en: 'Monitor and Live Feed capture the entire selected display, excluding Qwen Live Harness Host windows. Appshot still captures the foreground application window.',
-    'zh-CN':
-      'Monitor 和实时画面会采集所选显示器的完整画面，但不包含 Qwen Live Harness Host 窗口。Appshot 仍截取前台应用窗口。',
+    en: 'Captures the full selected display. Qwen Live Harness windows are excluded.',
+    'zh-CN': '采集所选显示器的完整画面，不包含 Qwen Live Harness 窗口。',
   },
   'host.error.displayUnavailable': {
     en: 'The selected display is unavailable. Reconnect it or choose another display.',
@@ -210,14 +233,12 @@ export const LIVE_MESSAGES = {
     'zh-CN': '无法保存显示器选择，已保留原设置。',
   },
   'ui.modeFeedHint': {
-    en: 'Live Feed sends frames from the selected video source continuously during a call, at your configured FPS and resolution.',
-    'zh-CN':
-      '实时画面会在通话期间，以配置的帧率和分辨率持续发送所选视频来源的画面。',
+    en: 'Shares frames continuously during the call, at the configured frame rate and resolution.',
+    'zh-CN': '通话期间，按配置的帧率和分辨率持续传入画面。',
   },
   'ui.modeDemandHint': {
-    en: 'On Demand lets the foreground model request an Appshot snapshot from the selected video source when visual context is needed.',
-    'zh-CN':
-      '按需截图会在前台模型需要视觉信息时，通过 Appshot 获取所选视频来源的截图。',
+    en: 'Captures and analyzes a snapshot only when your question needs visual context.',
+    'zh-CN': '仅在问题需要视觉信息时截图分析。',
   },
   'ui.modeUnavailable': {
     en: 'Video capture settings are unavailable for this connection.',

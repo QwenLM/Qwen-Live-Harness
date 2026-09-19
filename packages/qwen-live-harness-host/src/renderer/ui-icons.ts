@@ -8,7 +8,7 @@ const ICONS = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
   play: '<path d="m8 5 11 7-11 7z" fill="currentColor" stroke="none"/>',
   settings:
-    '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="5"/>',
+    '<path d="M9.93,4.79 L10.26,2.15 L13.74,2.15 L14.07,4.79 L15.64,5.44 L17.74,3.81 L20.19,6.26 L18.56,8.36 L19.21,9.93 L21.85,10.26 L21.85,13.74 L19.21,14.07 L18.56,15.64 L20.19,17.74 L17.74,20.19 L15.64,18.56 L14.07,19.21 L13.74,21.85 L10.26,21.85 L9.93,19.21 L8.36,18.56 L6.26,20.19 L3.81,17.74 L5.44,15.64 L4.79,14.07 L2.15,13.74 L2.15,10.26 L4.79,9.93 L5.44,8.36 L3.81,6.26 L6.26,3.81 L8.36,5.44 Z"/><circle cx="12" cy="12" r="3.1"/>',
   quit: '<path d="M12 2v10M6 5a9 9 0 1 0 12 0"/>',
   camera:
     '<rect x="2" y="5" width="14" height="14" rx="3"/><path d="m16 9 6-3v12l-6-3"/>',
@@ -17,6 +17,7 @@ const ICONS = {
   memory: '<path d="M6 3h12v18l-6-4-6 4z"/>',
   chevron: '<path d="m9 5 7 7-7 7"/>',
   x: '<path d="m6 6 12 12M18 6 6 18"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
   back: '<path d="m14 5-7 7 7 7"/>',
   task: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/><path d="M6 10v7h8"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',

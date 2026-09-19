@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -10,10 +10,18 @@ import { liveMessage, type LiveMessageKey } from 'qwen-live-harness/i18n';
 import type { HostPublicState } from '../../shared/host-api.ts';
 import {
   isLiveTheme,
+  isLiveThemeColor,
+  LIVE_THEME_COLORS,
   type LiveTheme,
+  type LiveThemeColor,
   type ResolvedTheme,
 } from '../../shared/theme.ts';
-import { readHostTheme, saveHostTheme } from '../theme-store.ts';
+import {
+  readHostTheme,
+  readHostThemeColor,
+  saveHostTheme,
+  saveHostThemeColor,
+} from '../theme-store.ts';
 
 const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
 const tree = ts.createSourceFile(
@@ -86,12 +94,16 @@ function fixture(saved?: LiveTheme, systemDark = false) {
   const handlers = new Map<string, Handler>();
   const states: HostPublicState[] = [];
   const subagentThemes: Array<[LiveTheme, ResolvedTheme]> = [];
+  const subagentColors: LiveThemeColor[] = [];
   const subagentUpdates: unknown[][] = [];
   const writes: LiveTheme[] = [];
+  const paletteWrites: LiveThemeColor[] = [];
   const flags = {
     failSave: false,
     destroyed: false,
     webContentsDestroyed: false,
+    configPath: undefined as string | undefined,
+    beforePaletteCommit: undefined as (() => void) | undefined,
   };
   class NativeTheme extends EventEmitter {
     private source: LiveTheme = 'system';
@@ -124,6 +136,7 @@ function fixture(saved?: LiveTheme, systemDark = false) {
     },
   };
   const context = {
+    diagnosticsEnabled: false,
     hostDiagnostics: undefined,
     createHostDiagnosticsLogger: () => ({ write: () => {} }),
     audioError: undefined,
@@ -144,11 +157,25 @@ function fixture(saved?: LiveTheme, systemDark = false) {
       saveHostTheme(savePath, theme);
       writes.push(theme);
     },
+    saveHostThemeColor: (
+      savePath: string,
+      color: LiveThemeColor,
+      isCurrent: () => boolean,
+    ) => {
+      if (flags.failSave) throw new Error('private-filesystem-detail');
+      let checks = 0;
+      saveHostThemeColor(savePath, color, () => {
+        if (++checks === 2) flags.beforePaletteCommit?.();
+        return isCurrent();
+      });
+      paletteWrites.push(color);
+    },
     isLiveTheme,
+    isLiveThemeColor,
     liveMessage,
     nativeTheme,
     overlay,
-    daemon: { getConfigFilePath: () => undefined },
+    daemon: { getConfigFilePath: () => flags.configPath },
     overlayReady: true,
     rendererEventsEnabled: true,
     screenDisplays: [],
@@ -156,6 +183,7 @@ function fixture(saved?: LiveTheme, systemDark = false) {
     theme: 'system',
     language: 'zh-CN',
     quitApproved: false,
+    quitting: false,
     quitState: undefined as HostPublicState['quitState'],
     overlayOffset: { x: 0, y: 0 },
     connection: {
@@ -193,8 +221,14 @@ function fixture(saved?: LiveTheme, systemDark = false) {
     }),
     themeColor: 'iris',
     subagents: {
-      setTheme: (theme: LiveTheme, appearance: ResolvedTheme) =>
-        subagentThemes.push([theme, appearance]),
+      setTheme: (
+        theme: LiveTheme,
+        appearance: ResolvedTheme,
+        color: LiveThemeColor,
+      ) => {
+        subagentThemes.push([theme, appearance]);
+        subagentColors.push(color);
+      },
       update: (...args: unknown[]) => subagentUpdates.push(args),
     },
     rebuildTrayMenu: () => {},
@@ -218,18 +252,32 @@ registerIpc();
   ) as { publishState: () => void; publicState: () => HostPublicState };
   const setTheme = handlers.get('live:set-theme');
   assert(setTheme);
+  const setThemeColor = handlers.get('live:set-theme-color');
+  assert(setThemeColor);
   return {
     context,
     controls,
     states,
     subagentThemes,
+    subagentColors,
     subagentUpdates,
     nativeTheme,
     flags,
     writes,
+    paletteWrites,
     path,
     setTheme: (theme: unknown, sender: unknown = overlay.webContents) =>
       setTheme({ sender }, theme),
+    setThemeColor: (color: unknown, sender: unknown = overlay.webContents) =>
+      setThemeColor({ sender }, color),
+    connectConfig: (
+      contents = '{"themeColor":"iris","realtimeApiKey":"test-only","memory":{"enabled":true}}',
+    ) => {
+      const configPath = join(directory, 'config.json');
+      writeFileSync(configPath, contents, { mode: 0o600 });
+      flags.configPath = configPath;
+      return configPath;
+    },
   };
 }
 
@@ -367,5 +415,186 @@ describe('native theme ownership and broadcast', () => {
     h.nativeTheme.systemAppearance(false);
     assert.deepEqual(h.states, []);
     assert.deepEqual(h.subagentThemes, []);
+  });
+});
+
+describe('connected config palette IPC', () => {
+  it('saves all seven palettes and publishes to main and Subagents without changing appearance, language or media', () => {
+    const h = fixture('dark');
+    const configPath = h.connectConfig();
+    const before = JSON.parse(
+      JSON.stringify(h.controls.publicState()),
+    ) as HostPublicState;
+    assert.equal(before.canSetThemeColor, true);
+    for (const color of LIVE_THEME_COLORS) {
+      h.setThemeColor(color);
+      assert.equal(readHostThemeColor(configPath), color);
+      assert.equal(h.context.themeColor, color);
+      assert.deepEqual(h.states.at(-1), { ...before, themeColor: color });
+      assert.deepEqual(h.subagentThemes.at(-1), ['dark', 'dark']);
+      assert.equal(h.subagentColors.at(-1), color);
+      assert.equal(h.nativeTheme.themeSource, 'dark');
+      assert.equal(readHostTheme(h.path), 'dark');
+    }
+    assert.deepEqual(h.paletteWrites, [...LIVE_THEME_COLORS]);
+    assert.deepEqual(h.writes, []);
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    assert.equal(config.realtimeApiKey, 'test-only');
+    assert.deepEqual(config.memory, { enabled: true });
+  });
+
+  it('rejects invalid values, foreign and stale senders, reloads and destroyed renderers before writing', () => {
+    const h = fixture('light');
+    const configPath = h.connectConfig();
+    const before = readFileSync(configPath, 'utf8');
+    for (const value of [
+      undefined,
+      null,
+      true,
+      1,
+      'Iris',
+      ' iris ',
+      'auto',
+      [],
+      {},
+    ])
+      assert.throws(
+        () => h.setThemeColor(value),
+        errorCode('host.themeColor.invalid'),
+      );
+    assert.throws(
+      () => h.setThemeColor('sage', {}),
+      errorCode('host.themeColor.invalid'),
+    );
+    const stale = h.context.overlay.webContents;
+    h.context.overlay = { ...h.context.overlay, webContents: { ...stale } };
+    assert.throws(
+      () => h.setThemeColor('sage', stale),
+      errorCode('host.themeColor.invalid'),
+    );
+    const current = h.context.overlay.webContents;
+    h.context.rendererEventsEnabled = false;
+    assert.throws(
+      () => h.setThemeColor('sage', current),
+      errorCode('host.themeColor.invalid'),
+    );
+    h.context.rendererEventsEnabled = true;
+    h.flags.destroyed = true;
+    assert.throws(
+      () => h.setThemeColor('sage', current),
+      errorCode('host.themeColor.invalid'),
+    );
+    h.flags.destroyed = false;
+    h.flags.webContentsDestroyed = true;
+    assert.throws(
+      () => h.setThemeColor('sage', current),
+      errorCode('host.themeColor.invalid'),
+    );
+    assert.equal(readFileSync(configPath, 'utf8'), before);
+    assert.deepEqual(h.paletteWrites, []);
+    assert.deepEqual(h.states, []);
+  });
+
+  it('disables and rejects unavailable configurations, disconnected daemons and pending or failed Quit', () => {
+    const h = fixture();
+    assert.equal(h.controls.publicState().canSetThemeColor, false);
+    assert.throws(
+      () => h.setThemeColor('tide'),
+      errorCode('host.themeColor.unavailable'),
+    );
+    const configPath = h.connectConfig();
+    const before = readFileSync(configPath, 'utf8');
+    for (const phase of ['connecting', 'disconnected', 'error']) {
+      h.context.connection.phase = phase;
+      assert.equal(h.controls.publicState().canSetThemeColor, false);
+      assert.throws(
+        () => h.setThemeColor('tide'),
+        errorCode('host.themeColor.unavailable'),
+      );
+    }
+    h.context.connection.phase = 'ready';
+    for (const quitState of ['pending', 'failed'] as const) {
+      h.context.quitState = quitState;
+      assert.equal(h.controls.publicState().canSetThemeColor, false);
+      assert.throws(
+        () => h.setThemeColor('tide'),
+        errorCode('host.themeColor.unavailable'),
+      );
+    }
+    h.context.quitState = undefined;
+    h.context.quitting = true;
+    assert.equal(h.controls.publicState().canSetThemeColor, false);
+    assert.throws(
+      () => h.setThemeColor('tide'),
+      errorCode('host.themeColor.unavailable'),
+    );
+    h.context.quitting = false;
+    h.context.connection.instanceId = '';
+    assert.throws(
+      () => h.setThemeColor('tide'),
+      errorCode('host.themeColor.unavailable'),
+    );
+    assert.equal(readFileSync(configPath, 'utf8'), before);
+    assert.deepEqual(h.paletteWrites, []);
+  });
+
+  it('revalidates daemon instance, path and renderer identity before committing', () => {
+    for (const change of [
+      'instance',
+      'path',
+      'renderer',
+      'quitting',
+    ] as const) {
+      const h = fixture();
+      const configPath = h.connectConfig();
+      const before = readFileSync(configPath, 'utf8');
+      h.flags.beforePaletteCommit = () => {
+        if (change === 'instance')
+          h.context.connection.instanceId = 'next-daemon';
+        if (change === 'path') h.flags.configPath = `${configPath}.other`;
+        if (change === 'renderer')
+          h.context.overlay = {
+            ...h.context.overlay,
+            webContents: { ...h.context.overlay.webContents },
+          };
+        if (change === 'quitting') h.context.quitting = true;
+      };
+      assert.throws(
+        () => h.setThemeColor('rose'),
+        errorCode('host.themeColor.unavailable'),
+      );
+      assert.equal(readFileSync(configPath, 'utf8'), before);
+      assert.equal(h.context.themeColor, 'iris');
+      assert.deepEqual(h.paletteWrites, []);
+      assert.deepEqual(h.states, []);
+      assert.deepEqual(h.subagentColors, []);
+    }
+  });
+
+  it('returns localized failures without exposing private data or optimistically publishing failed writes', () => {
+    const h = fixture();
+    const configPath = h.connectConfig();
+    const before = JSON.stringify(h.controls.publicState());
+    const contents = readFileSync(configPath, 'utf8');
+    h.flags.failSave = true;
+    assert.throws(
+      () => h.setThemeColor('berry'),
+      errorCode('host.themeColor.saveFailed'),
+    );
+    assert.equal(JSON.stringify(h.controls.publicState()), before);
+    assert.equal(readFileSync(configPath, 'utf8'), contents);
+    h.flags.failSave = false;
+    writeFileSync(configPath, '{"realtimeApiKey":"test-secret",');
+    assert.throws(
+      () => h.setThemeColor('berry'),
+      errorCode('host.themeColor.saveFailed'),
+    );
+    assert.equal(
+      readFileSync(configPath, 'utf8'),
+      '{"realtimeApiKey":"test-secret",',
+    );
+    assert.deepEqual(h.paletteWrites, []);
+    assert.deepEqual(h.states, []);
+    assert.deepEqual(h.subagentColors, []);
   });
 });

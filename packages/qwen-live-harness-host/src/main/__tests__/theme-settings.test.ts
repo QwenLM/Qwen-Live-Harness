@@ -8,7 +8,11 @@ import { SubagentsView } from '../../renderer/subagents-view.ts';
 import { applyTheme } from '../../renderer/theme.ts';
 import type { HostPublicState, LiveHostApi } from '../../shared/host-api.ts';
 import type { SubagentsWindowState } from '../../shared/subagents-api.ts';
-import type { LiveTheme } from '../../shared/theme.ts';
+import {
+  LIVE_THEME_COLORS,
+  type LiveTheme,
+  type LiveThemeColor,
+} from '../../shared/theme.ts';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -39,6 +43,7 @@ function host(overrides: Partial<LiveHostApi> = {}) {
   const state: HostPublicState = {
     language: 'en',
     connection: 'ready',
+    canSetThemeColor: true,
     live: { v: 1, available: true, state: 'idle', shortcut: 'Command+E' },
     permissions: {
       microphone: 'granted',
@@ -70,6 +75,7 @@ function host(overrides: Partial<LiveHostApi> = {}) {
     visualReady: true,
   };
   const themes: LiveTheme[] = [];
+  const colors: LiveThemeColor[] = [];
   let previews = 0;
   const api: LiveHostApi = {
     toggle: async () => {},
@@ -89,6 +95,9 @@ function host(overrides: Partial<LiveHostApi> = {}) {
     },
     setTheme: async (theme) => {
       themes.push(theme);
+    },
+    setThemeColor: async (color) => {
+      colors.push(color);
     },
     setSettingsOpen: async () => {},
     openSubagents: async () => {},
@@ -121,10 +130,174 @@ function host(overrides: Partial<LiveHostApi> = {}) {
     Object.assign(state, next);
     view.update({ ...state });
   };
-  return { dom, app, get, update, themes, previews: () => previews };
+  return { dom, app, get, update, themes, colors, previews: () => previews };
 }
 
 describe('Qwen Live Harness Host theme settings', () => {
+  it('offers seven named color choices with a visible selection indicator and bilingual labels', async () => {
+    const h = host();
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const choices = h.app.querySelectorAll<HTMLButtonElement>(
+      '.theme-palette-option',
+    );
+    assert.deepEqual(
+      Array.from(choices, (choice) => choice.dataset.color),
+      [...LIVE_THEME_COLORS],
+    );
+    assert.equal(
+      h.get('.theme-palette-options').getAttribute('aria-label'),
+      'Color palette',
+    );
+    for (const color of LIVE_THEME_COLORS) {
+      const choice = h.get<HTMLButtonElement>(`[data-color="${color}"]`);
+      assert.equal(
+        choice.getAttribute('aria-pressed'),
+        String(color === 'iris'),
+      );
+      assert(
+        choice.querySelector('.theme-palette-swatch .theme-palette-check'),
+      );
+      assert(choice.querySelector('.theme-palette-name')?.textContent);
+      assert.equal(choice.disabled, false);
+    }
+    h.update({ language: 'zh-CN', themeColor: 'sage' });
+    assert.equal(
+      h.get('[data-color="sage"]').getAttribute('aria-label'),
+      '鼠尾草',
+    );
+    assert.equal(
+      h.get('[data-color="sage"] .theme-palette-name').textContent,
+      '鼠尾草',
+    );
+    assert.equal(
+      h.get('[data-color="sage"]').getAttribute('aria-pressed'),
+      'true',
+    );
+    assert.equal(
+      h.get('[data-color="iris"]').getAttribute('aria-pressed'),
+      'false',
+    );
+    assert.equal(
+      h.get('.theme-palette-options').getAttribute('aria-label'),
+      '配色',
+    );
+  });
+
+  it('applies only confirmed palette state and preserves the open settings, preview and drafts', async () => {
+    const h = host();
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const panel = h.get('.settings-panel');
+    const body = h.get('.settings-body');
+    const camera = h.get('.camera-preview-slot');
+    const video = h.dom.window.document.createElement('video');
+    camera.append(video);
+    const draft = h.get<HTMLInputElement>('.memory-model-form input');
+    draft.value = 'Unsubmitted model draft';
+    draft.dispatchEvent(new h.dom.window.Event('input', { bubbles: true }));
+    body.scrollTop = 87;
+    h.get<HTMLButtonElement>('[data-color="iris"]').click();
+    assert.deepEqual(h.colors, []);
+    const tide = h.get<HTMLButtonElement>('[data-color="tide"]');
+    tide.focus();
+    tide.click();
+    await settled();
+    assert.deepEqual(h.colors, ['tide']);
+    assert.equal(tide.getAttribute('aria-pressed'), 'false');
+    h.update({ themeColor: 'tide', resolvedTheme: 'light' });
+    assert.equal(
+      h.dom.window.document.documentElement.dataset.themeColor,
+      'tide',
+    );
+    assert.equal(h.get('.settings-panel'), panel);
+    assert.equal(h.get('.settings-layer').hidden, false);
+    assert.equal(h.get('.settings-body').scrollTop, 87);
+    assert.equal(h.get('.camera-preview-slot').firstChild, video);
+    assert.equal(draft.value, 'Unsubmitted model draft');
+    assert.equal(h.dom.window.document.activeElement, tide);
+    assert.equal(tide.getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(h.themes, []);
+    assert.equal(h.previews(), 1);
+  });
+
+  it('restores controls and the saved selection when a palette cannot be saved', async () => {
+    const h = host({
+      setThemeColor: async () => {
+        throw new Error(liveMessage('host.themeColor.saveFailed'));
+      },
+    });
+    h.update({ language: 'zh-CN', themeColor: 'berry' });
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const clay = h.get<HTMLButtonElement>('[data-color="clay"]');
+    clay.click();
+    assert.equal(clay.disabled, true);
+    await settled();
+    assert.equal(clay.disabled, false);
+    assert.equal(
+      h.get('[data-color="berry"]').getAttribute('aria-pressed'),
+      'true',
+    );
+    assert.equal(
+      h.get('.settings-status.error').textContent,
+      liveText('zh-CN', 'host.themeColor.saveFailed'),
+    );
+    assert.equal(h.get('.settings-status').hidden, false);
+    assert.equal(
+      h.dom.window.document.documentElement.dataset.themeColor,
+      'berry',
+    );
+  });
+
+  it('requires a connected writable configuration and blocks palette actions during Quit', async () => {
+    const h = host();
+    for (const state of [
+      { canSetThemeColor: false },
+      { canSetThemeColor: true, connection: 'disconnected' as const },
+      { connection: 'ready' as const, quitState: 'pending' as const },
+    ]) {
+      h.update(state);
+      const clay = h.get<HTMLButtonElement>('[data-color="clay"]');
+      assert.equal(clay.disabled, true);
+      clay.click();
+    }
+    assert.deepEqual(h.colors, []);
+  });
+
+  it('supports keyboard navigation without changing the palette until activation', async () => {
+    const h = host();
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const iris = h.get<HTMLButtonElement>('[data-color="iris"]');
+    iris.focus();
+    iris.dispatchEvent(
+      new h.dom.window.KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const clay = h.get<HTMLButtonElement>('[data-color="clay"]');
+    assert.equal(h.dom.window.document.activeElement, clay);
+    clay.dispatchEvent(
+      new h.dom.window.KeyboardEvent('keydown', {
+        key: 'End',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    assert.equal(
+      h.dom.window.document.activeElement,
+      h.get('[data-color="berry"]'),
+    );
+    assert.deepEqual(h.colors, []);
+    assert.equal(
+      h.get('[data-color="iris"]').getAttribute('aria-pressed'),
+      'true',
+    );
+  });
+
   it('offers a persistent display choice without changing Camera or init and retains unavailable selections', async () => {
     const selections: string[] = [];
     const h = host({
@@ -183,18 +356,22 @@ describe('Qwen Live Harness Host theme settings', () => {
     assert.equal(display.closest<HTMLElement>('.settings-field')?.hidden, true);
   });
 
-  it('places Theme after Language, defaults to System and sends each preference', async () => {
+  it('places Appearance and Color palette after Language and sends each appearance preference', async () => {
     const h = host();
     h.get<HTMLButtonElement>('.settings-control').click();
     await settled();
     const fields = h.app.querySelectorAll('.settings-group > .settings-field');
     assert.equal(
-      fields[fields.length - 2]?.firstChild?.textContent,
+      fields[fields.length - 3]?.firstChild?.textContent,
       'Language',
     );
     assert.equal(
-      fields[fields.length - 1]?.firstChild?.textContent,
+      fields[fields.length - 2]?.firstChild?.textContent,
       'Appearance',
+    );
+    assert.equal(
+      fields[fields.length - 1]?.firstChild?.textContent,
+      'Color palette',
     );
     assert.equal(
       h.get('[data-theme="system"]').getAttribute('aria-pressed'),

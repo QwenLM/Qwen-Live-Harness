@@ -40,6 +40,8 @@ export type HostPublicState = {
     'disconnected' | 'connecting' | 'ready' | 'incompatible' | 'error';
   connectionError?: string;
   canOpenConfig?: boolean;
+  /** Saving still revalidates the connected configuration and filesystem. */
+  canSetThemeColor?: boolean;
   quitState?: 'pending' | 'failed';
   audioError?: string;
   audioRetrying?: boolean;
@@ -71,6 +73,7 @@ export type LiveHostApi = {
   memoryAction: (action: MemoryAction) => Promise<MemoryState>;
   setLanguage: (language: LiveLanguage) => Promise<void>;
   setTheme: (theme: LiveTheme) => Promise<void>;
+  setThemeColor: (color: LiveThemeColor) => Promise<void>;
   setSettingsOpen: (open: boolean) => Promise<void>;
   openConfig: () => Promise<void>;
   openSubagents: () => Promise<void>;

@@ -15,7 +15,7 @@
 | 让模型持续看画面                 | Settings → Capture Mode → Live Feed                |
 | 选择要看的显示器                 | Settings → Video Source → Display                  |
 | 开关记忆、换记忆库、修改记忆名字 | Settings → Personalization → Memory                |
-| 更换主题配色                     | 配置文件顶层 `themeColor`                          |
+| 更换主题配色                     | 设置 → 个性化 → 配色                               |
 | 切换中文／英文、浅色／深色       | Settings → Personalization → Language / Appearance |
 | 修改模型、API key、分辨率、帧率  | Settings → Open configuration                      |
 | 开始或结束交互                   | UI 上的 Start / End call，或 `Command+E`           |
@@ -93,6 +93,8 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 
 ## 主题配色
 
+在 **设置 → 个性化 → 配色** 中选择带名称的色样，主 UI 和任务窗口会立即应用，并保存到下次启动；无需结束通话或重启。默认配色为 Iris 雾紫。
+
 默认使用 Iris 雾紫。在配置文件顶层设置：
 
 ```json
@@ -101,7 +103,7 @@ Memory 和 Proactive 默认也使用所选地域的服务。通常不需要给�
 }
 ```
 
-支持 `iris`（雾紫）、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。保存后重启 Host 或重新连接 daemon，交互卡片和任务窗口会应用相同配色。缺省或非法值使用 Iris；浅色／深色／跟随系统在 **Personalization → Appearance / 个性化 → 外观** 中独立设置。
+支持 `iris`（雾紫）、`clay`（暖陶）、`sage`（鼠尾草）、`tide`（潮汐）、`graphite`（石墨）、`rose`（玫瑰）和 `berry`（莓果）。手动修改配置文件后，重启 Host 或重新连接 daemon 生效；通过设置界面选择则立即生效。缺省或非法值使用 Iris；浅色／深色／跟随系统在 **Personalization → Appearance / 个性化 → 外观** 中独立设置。
 
 ## 视觉输入
 

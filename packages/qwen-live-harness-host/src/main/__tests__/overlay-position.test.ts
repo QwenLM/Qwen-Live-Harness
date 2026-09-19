@@ -62,7 +62,7 @@ describe('overlayPosition', () => {
         area,
         OVERLAY_GEOMETRY.bounds.orb,
       ),
-      { x: 951, y: 209 },
+      { x: 931, y: 216 },
     );
     assert.deepEqual(
       clampOverlayPosition(
@@ -70,7 +70,7 @@ describe('overlayPosition', () => {
         area,
         OVERLAY_GEOMETRY.bounds.orb,
       ),
-      { x: -25, y: -204 },
+      { x: -5, y: -180 },
     );
     assert.deepEqual(
       clampOverlayPosition(
@@ -78,7 +78,37 @@ describe('overlayPosition', () => {
         area,
         OVERLAY_GEOMETRY.bounds['orb-preview'],
       ),
-      { x: -25, y: -87 },
+      { x: -5, y: -63 },
     );
+  });
+
+  it('keeps complete painted bounds inside normal, negative-coordinate and compact work areas', () => {
+    for (const area of [
+      { x: 0, y: 23, width: 1280, height: 777 },
+      { x: -1920, y: -200, width: 1920, height: 1080 },
+      { x: 100, y: 50, width: 700, height: 620 },
+    ]) {
+      for (const visible of [
+        ...Object.values(OVERLAY_GEOMETRY.bounds),
+        OVERLAY_GEOMETRY.settingsBounds,
+      ]) {
+        for (const point of [
+          { x: -10000, y: -10000 },
+          { x: 10000, y: 10000 },
+        ]) {
+          const before = { ...point };
+          const result = clampOverlayPosition(point, area, visible);
+          assert(result.x + visible.x >= area.x);
+          assert(result.y + visible.y >= area.y);
+          assert(result.x + visible.x + visible.width <= area.x + area.width);
+          assert(result.y + visible.y + visible.height <= area.y + area.height);
+          assert.deepEqual(point, before);
+        }
+      }
+      assert.deepEqual(
+        overlayPosition(area, OVERLAY_GEOMETRY.bounds.orb),
+        overlayPosition(area, OVERLAY_GEOMETRY.bounds['orb-preview']),
+      );
+    }
   });
 });

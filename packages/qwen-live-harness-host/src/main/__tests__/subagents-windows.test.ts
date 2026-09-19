@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
 import ts from 'typescript';
 import * as geometry from '../subagents-position.ts';
+import { SUBAGENTS_GEOMETRY } from '../../shared/subagents-geometry.ts';
 import {
   parseSubagentsControlRequest,
   type SubagentsControlRequest,
@@ -172,6 +173,7 @@ function fixture(
       getCursorScreenPoint: () => ({ ...cursor }),
     },
     ...geometry,
+    SUBAGENTS_GEOMETRY,
     parseSubagentsControlRequest,
     join: (...values: string[]) => values.join('/'),
     Date: class extends Date {
@@ -325,7 +327,7 @@ describe('Subagents native lifecycle', () => {
     assert.equal(requests.length, 0);
     f.invoke('live:subagents:expand', window);
     assert.equal(requests.length, 1);
-    window.setBounds({ x: 240, y: 150, width: 330, height: 430 });
+    window.setBounds({ x: 240, y: 150, ...SUBAGENTS_GEOMETRY.expanded });
     const moves = window.moves.length;
     for (let revision = 2; revision <= 20; revision++)
       f.controller.update('en', true, { ...snapshot, revision }, 'one', true);
@@ -506,7 +508,7 @@ describe('Subagents native lifecycle', () => {
     const start = f.events.length;
     f.invoke('live:subagents:expand', window);
     assert.equal(f.state(window).mode, 'list');
-    assert.equal(window.bounds.width, 320);
+    assert.equal(window.bounds.width, SUBAGENTS_GEOMETRY.expanded.width);
     assert.deepEqual(
       f.events.slice(start).map((event) => event.action),
       ['place', 'publish', 'show', 'focus'],
@@ -515,17 +517,17 @@ describe('Subagents native lifecycle', () => {
     assert.equal(f.windows.length, 1);
     assert.equal(f.state(window).mode, 'detail');
     assert.equal(f.state(window).selectedId, 'harness:1');
-    assert.equal(window.bounds.width, 320);
-    assert.equal(window.bounds.height, 460);
+    assert.equal(window.bounds.width, SUBAGENTS_GEOMETRY.expanded.width);
+    assert.equal(window.bounds.height, SUBAGENTS_GEOMETRY.expanded.height);
     assert(window.bounds.x + window.bounds.width < f.anchor.x);
-    window.setBounds({ x: 240, y: 150, width: 330, height: 430 });
+    window.setBounds({ x: 240, y: 150, ...SUBAGENTS_GEOMETRY.expanded });
     const moves = window.moves.length;
     f.controller.update('zh-CN', true, { ...snapshot, revision: 2 }, 'one');
     assert.equal(window.moves.length, moves);
     f.invoke('live:subagents:back', window);
     assert.equal(f.state(window).mode, 'list');
     assert.equal(f.state(window).selectedId, undefined);
-    assert.equal(window.bounds.width, 320);
+    assert.equal(window.bounds.width, SUBAGENTS_GEOMETRY.expanded.width);
     assert.equal(window.bounds.x, 240);
     assert.equal(window.bounds.y, 150);
     assert.equal(f.windows.length, 1);
@@ -651,7 +653,10 @@ describe('Subagents native lifecycle', () => {
         assert.equal(f.state(window).mode, 'list');
         assert.deepEqual(
           [window.bounds.width, window.bounds.height],
-          [320, 460],
+          [
+            SUBAGENTS_GEOMETRY.expanded.width,
+            SUBAGENTS_GEOMETRY.expanded.height,
+          ],
         );
         f.controller.setTheme('dark', 'dark', 'rose');
         assert.equal(f.state(window).themeColor, 'rose');

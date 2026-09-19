@@ -9,6 +9,17 @@ import {
 } from 'qwen-live-harness/i18n';
 import { uiText, uiLabel, localizeUi } from './ui-text.ts';
 import { makeOverlayDraggable } from './overlay-drag.ts';
+import { LIVE_THEME_COLORS, type LiveThemeColor } from '../shared/theme.ts';
+
+const PALETTE_LABELS: Record<LiveThemeColor, LiveMessageKey> = {
+  iris: 'theme.color.iris',
+  clay: 'theme.color.clay',
+  sage: 'theme.color.sage',
+  tide: 'theme.color.tide',
+  graphite: 'theme.color.graphite',
+  rose: 'theme.color.rose',
+  berry: 'theme.color.berry',
+};
 
 function button(label: LiveMessageKey, action: () => void): HTMLButtonElement {
   const element = document.createElement('button');
@@ -84,6 +95,10 @@ export class SettingsPanel {
     'ui.dark',
     () => void this.run(() => this.api.setTheme('dark')),
   );
+  private readonly paletteOptions = new Map<
+    LiveThemeColor,
+    HTMLButtonElement
+  >();
   private state?: HostPublicState;
   private busy = false;
   private loadingDevices = false;
@@ -96,6 +111,7 @@ export class SettingsPanel {
   private opening = false;
   private openingGeneration = 0;
   private disposed = false;
+  private readonly removeDrag: () => void;
   private readonly dismissPending = (event: KeyboardEvent) => {
     if (this.isOpen && event.key === 'Escape') {
       event.preventDefault();
@@ -141,7 +157,7 @@ export class SettingsPanel {
     setIcon(this.close, 'x');
     this.close.className = 'settings-close';
     header.append(uiIcon('settings'), title, this.close);
-    makeOverlayDraggable(header, api);
+    this.removeDrag = makeOverlayDraggable(header, api);
     const body = document.createElement('div');
     body.className = 'settings-body';
     const config = document.createElement('footer');
@@ -231,10 +247,69 @@ export class SettingsPanel {
       this.darkTheme,
     );
     appearance.classList.add('settings-appearance');
+    const palette = field('theme.colorLabel');
+    palette.classList.add('settings-palette');
+    const paletteGroup =
+      palette.querySelector<HTMLElement>('.settings-options')!;
+    paletteGroup.classList.add('theme-palette-options');
+    for (const color of LIVE_THEME_COLORS) {
+      const option = button(PALETTE_LABELS[color], () => {
+        if (
+          (this.state?.themeColor ?? 'iris') === color ||
+          !this.state?.canSetThemeColor ||
+          this.state.quitState
+        )
+          return;
+        void this.run(() => this.api.setThemeColor(color));
+      });
+      option.className = 'theme-palette-option';
+      option.dataset.color = color;
+      delete option.dataset.liveText;
+      uiLabel(option, PALETTE_LABELS[color]);
+      const swatch = document.createElement('span');
+      swatch.className = 'theme-palette-swatch';
+      swatch.setAttribute('aria-hidden', 'true');
+      const check = uiIcon('check');
+      check.classList.add('theme-palette-check');
+      swatch.append(check);
+      const name = uiText(
+        document.createElement('span'),
+        PALETTE_LABELS[color],
+      );
+      name.className = 'theme-palette-name';
+      option.replaceChildren(swatch, name);
+      option.addEventListener('keydown', (event) => {
+        const colors = [...this.paletteOptions.values()].filter(
+          (item) => !item.disabled,
+        );
+        const index = colors.indexOf(option);
+        if (
+          index < 0 ||
+          !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)
+        )
+          return;
+        event.preventDefault();
+        const next =
+          event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? colors.length - 1
+              : (index +
+                  (event.key === 'ArrowRight' ? 1 : -1) +
+                  colors.length) %
+                colors.length;
+        colors[next]?.focus();
+      });
+      this.paletteOptions.set(color, option);
+      paletteGroup.append(option);
+    }
     for (const [name, children] of [
       ['ui.sound', [audio]],
       ['ui.visual', [source, this.displayField, capture]],
-      ['ui.personalization', [this.memory.element, languageField, appearance]],
+      [
+        'ui.personalization',
+        [this.memory.element, languageField, appearance, palette],
+      ],
     ] as const) {
       const group = document.createElement('div');
       group.className = 'settings-group';
@@ -303,6 +378,7 @@ export class SettingsPanel {
   }
 
   dispose(): void {
+    this.removeDrag();
     this.hide();
     this.disposed = true;
     this.openingGeneration++;
@@ -413,6 +489,8 @@ export class SettingsPanel {
             ? 'ui.displayCaptureHint'
             : 'ui.displayCaptureUnavailable',
         );
+    this.display.title = this.display.selectedOptions[0]?.textContent ?? '';
+    this.device.title = this.device.selectedOptions[0]?.textContent ?? '';
     for (const [control, selected] of [
       [this.sourceScreen, state.visualInput?.source === 'screen'],
       [this.sourceCamera, state.visualInput?.source === 'camera'],
@@ -436,6 +514,16 @@ export class SettingsPanel {
       control.setAttribute('aria-pressed', String(selected));
       control.disabled = this.busy || unavailable;
     }
+    for (const [color, control] of this.paletteOptions) {
+      const selected = color === (state.themeColor ?? 'iris');
+      control.classList.toggle('selected', selected);
+      control.setAttribute('aria-pressed', String(selected));
+      control.disabled =
+        this.busy ||
+        unavailable ||
+        !state.canSetThemeColor ||
+        Boolean(state.quitState);
+    }
     this.status.textContent =
       displayLiveMessage(
         language,
@@ -450,6 +538,7 @@ export class SettingsPanel {
       'error',
       Boolean(this.error || state.visualSettingsError),
     );
+    this.status.hidden = !this.status.textContent;
   }
 
   private async openConfigFile(): Promise<void> {

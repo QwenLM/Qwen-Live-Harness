@@ -8,8 +8,8 @@
   --live-border: var(--live-divider);
   --live-divider: #e7d9fa19;
   --live-control-border: var(--live-divider);
-  --live-control-bg: var(--live-surface);
-  --live-control-hover: var(--live-well);
+  --live-control-bg: var(--live-tonal-surface);
+  --live-control-hover: var(--live-tonal-well);
   --live-focus: var(--live-accent);
   --live-accent: #c9b2f0;
   --live-accent-text: var(--live-accent);
@@ -34,13 +34,13 @@
   --live-warning-bg: #40372c;
   --live-status-bg: var(--live-panel-bg);
   --live-status-border: var(--live-divider);
-  --live-panel-bg: rgba(43, 38, 51, 0.97);
+  --live-panel-bg: rgba(43, 38, 51, 0.95);
   --live-surface: #2b2633;
-  --live-surface-hover: var(--live-well);
+  --live-surface-hover: var(--live-tonal-well);
   --live-well: #36303f;
-  --live-field-bg: var(--live-surface);
+  --live-field-bg: var(--live-tonal-surface);
   --live-caption-bg: var(--live-panel-bg);
-  --live-preview-bg: var(--live-surface);
+  --live-preview-bg: var(--live-panel-bg);
   --live-preview-badge-bg: var(--live-surface);
   --live-preview-badge-text: var(--live-muted);
   --live-scroll-track: var(--live-well);
@@ -53,11 +53,54 @@
   --live-idle-bottom: #4d445a;
   --live-idle-ink: #e8dff2;
   --live-shadow:
-    0 0 0 1px #ffffff16, 0 1px 0 #ffffff08 inset, 0 17px 40px #2524204d;
+    0 0 0 1px #ffffff16, 0 1px 0 #ffffff08 inset, 0 4px 12px -4px #00000040,
+    0 8px 24px -8px #00000060;
+  --live-subagents-bg: var(--live-panel-bg);
+  --live-subagents-gutter: 40px;
+  --live-subagents-shadow: var(--live-shadow);
+  --live-tonal-surface: color-mix(
+    in srgb,
+    var(--live-surface) 82%,
+    transparent
+  );
+  --live-tonal-well: color-mix(in srgb, var(--live-well) 80%, transparent);
+  --live-tonal-selected: color-mix(
+    in srgb,
+    var(--live-selected-bg) 88%,
+    transparent
+  );
+  --live-tonal-success: color-mix(
+    in srgb,
+    var(--live-success-bg) 85%,
+    transparent
+  );
+  --live-tonal-warning: color-mix(
+    in srgb,
+    var(--live-warning-bg) 85%,
+    transparent
+  );
   --live-disc-shadow: inset 0 1px 1px #ffffff55, 0 1px 3px #00000015;
   --live-switch-off: #999aa440;
   --live-switch-thumb: #fff;
   --live-switch-shadow: 0 1px 2px #0002;
+  --live-type-caption: 11px;
+  --live-type-body: 12px;
+  --live-type-label: 13px;
+  --live-type-heading: 14px;
+  --live-control-radius: 7px;
+  --live-selection-ring: color-mix(
+    in srgb,
+    var(--live-accent) 60%,
+    transparent
+  );
+  --live-palette-iris: #7050a6;
+  --live-palette-clay: #995238;
+  --live-palette-sage: #3f7058;
+  --live-palette-tide: #3c6d92;
+  --live-palette-graphite: #535b66;
+  --live-palette-rose: #a44653;
+  --live-palette-berry: #a12f47;
+  --live-palette-check: #fff;
 }
 
 :root[data-theme='light'] {
@@ -70,8 +113,8 @@
   --live-border: var(--live-divider);
   --live-divider: #6e5a8b19;
   --live-control-border: var(--live-divider);
-  --live-control-bg: var(--live-surface);
-  --live-control-hover: var(--live-well);
+  --live-control-bg: var(--live-tonal-surface);
+  --live-control-hover: var(--live-tonal-well);
   --live-focus: var(--live-accent);
   --live-accent: #7050a6;
   --live-accent-text: var(--live-accent);
@@ -96,13 +139,13 @@
   --live-warning-bg: #f6eee1;
   --live-status-bg: var(--live-panel-bg);
   --live-status-border: var(--live-divider);
-  --live-panel-bg: rgba(252, 250, 255, 0.97);
+  --live-panel-bg: rgba(252, 250, 255, 0.95);
   --live-surface: #fcfaff;
-  --live-surface-hover: var(--live-well);
+  --live-surface-hover: var(--live-tonal-well);
   --live-well: #efecf5;
-  --live-field-bg: var(--live-surface);
+  --live-field-bg: var(--live-tonal-surface);
   --live-caption-bg: var(--live-panel-bg);
-  --live-preview-bg: var(--live-surface);
+  --live-preview-bg: var(--live-panel-bg);
   --live-preview-badge-bg: var(--live-surface);
   --live-preview-badge-text: var(--live-muted);
   --live-scroll-track: var(--live-well);
@@ -115,12 +158,54 @@
   --live-idle-bottom: #bbb2cd;
   --live-idle-ink: #494053;
   --live-shadow:
-    0 0 0 1px #77766d20, 0 1px 0 #fff inset, 0 10px 22px -10px #514c4329,
-    0 25px 50px -25px #38342e40;
+    0 0 0 1px #77766d20, 0 1px 0 #fff inset, 0 4px 12px -4px #514c4324,
+    0 8px 24px -8px #38342e38;
+  --live-subagents-bg: var(--live-panel-bg);
+  --live-subagents-gutter: 40px;
+  --live-subagents-shadow: var(--live-shadow);
+  --live-tonal-surface: color-mix(
+    in srgb,
+    var(--live-surface) 82%,
+    transparent
+  );
+  --live-tonal-well: color-mix(in srgb, var(--live-well) 80%, transparent);
+  --live-tonal-selected: color-mix(
+    in srgb,
+    var(--live-selected-bg) 88%,
+    transparent
+  );
+  --live-tonal-success: color-mix(
+    in srgb,
+    var(--live-success-bg) 85%,
+    transparent
+  );
+  --live-tonal-warning: color-mix(
+    in srgb,
+    var(--live-warning-bg) 85%,
+    transparent
+  );
   --live-disc-shadow: inset 0 1px 1px #ffffff55, 0 1px 3px #00000015;
   --live-switch-off: #999aa440;
   --live-switch-thumb: #fff;
   --live-switch-shadow: 0 1px 2px #0002;
+  --live-type-caption: 11px;
+  --live-type-body: 12px;
+  --live-type-label: 13px;
+  --live-type-heading: 14px;
+  --live-control-radius: 7px;
+  --live-selection-ring: color-mix(
+    in srgb,
+    var(--live-accent) 60%,
+    transparent
+  );
+  --live-palette-iris: #7050a6;
+  --live-palette-clay: #995238;
+  --live-palette-sage: #3f7058;
+  --live-palette-tide: #3c6d92;
+  --live-palette-graphite: #535b66;
+  --live-palette-rose: #a44653;
+  --live-palette-berry: #a12f47;
+  --live-palette-check: #fff;
 }
 
 :root[data-theme-color='clay'][data-theme='dark'] {
@@ -130,7 +215,7 @@
   --live-accent: #e8b095;
   --live-selected-bg: #513b31;
   --live-primary-text: #302c28;
-  --live-panel-bg: rgba(49, 45, 41, 0.97);
+  --live-panel-bg: rgba(49, 45, 41, 0.95);
   --live-surface: #302c28;
   --live-well: #3c3731;
   --live-disc-top: #b48062;
@@ -148,7 +233,7 @@
   --live-accent: #995238;
   --live-selected-bg: #f3e5dc;
   --live-primary-text: #fffdf8;
-  --live-panel-bg: rgba(255, 252, 245, 0.97);
+  --live-panel-bg: rgba(255, 252, 245, 0.95);
   --live-surface: #fffdf8;
   --live-well: #f1eee7;
   --live-disc-top: #e7b18e;
@@ -166,7 +251,7 @@
   --live-accent: #a8d4b4;
   --live-selected-bg: #304939;
   --live-primary-text: #252e28;
-  --live-panel-bg: rgba(37, 46, 40, 0.97);
+  --live-panel-bg: rgba(37, 46, 40, 0.95);
   --live-surface: #252e28;
   --live-well: #2f3a32;
   --live-disc-top: #8fac8b;
@@ -184,7 +269,7 @@
   --live-accent: #3f7058;
   --live-selected-bg: #e3eee4;
   --live-primary-text: #f9fcf7;
-  --live-panel-bg: rgba(249, 252, 247, 0.97);
+  --live-panel-bg: rgba(249, 252, 247, 0.95);
   --live-surface: #f9fcf7;
   --live-well: #eaf0e8;
   --live-disc-top: #b9d0b5;
@@ -202,7 +287,7 @@
   --live-accent: #a3cdeb;
   --live-selected-bg: #2f4352;
   --live-primary-text: #252c33;
-  --live-panel-bg: rgba(37, 44, 51, 0.97);
+  --live-panel-bg: rgba(37, 44, 51, 0.95);
   --live-surface: #252c33;
   --live-well: #303a44;
   --live-disc-top: #88aec8;
@@ -220,7 +305,7 @@
   --live-accent: #3c6d92;
   --live-selected-bg: #e3edf6;
   --live-primary-text: #f8fcff;
-  --live-panel-bg: rgba(248, 252, 255, 0.97);
+  --live-panel-bg: rgba(248, 252, 255, 0.95);
   --live-surface: #f8fcff;
   --live-well: #eaf0f5;
   --live-disc-top: #b1d2e7;
@@ -238,7 +323,7 @@
   --live-accent: #d2d6de;
   --live-selected-bg: #3f444c;
   --live-primary-text: #292c31;
-  --live-panel-bg: rgba(41, 44, 49, 0.97);
+  --live-panel-bg: rgba(41, 44, 49, 0.95);
   --live-surface: #292c31;
   --live-well: #33373d;
   --live-disc-top: #b6bbc2;
@@ -256,7 +341,7 @@
   --live-accent: #535b66;
   --live-selected-bg: #e8ebee;
   --live-primary-text: #fcfcfd;
-  --live-panel-bg: rgba(252, 252, 253, 0.97);
+  --live-panel-bg: rgba(252, 252, 253, 0.95);
   --live-surface: #fcfcfd;
   --live-well: #eeeff1;
   --live-disc-top: #798086;
@@ -274,7 +359,7 @@
   --live-accent: #edb1bb;
   --live-selected-bg: #51343c;
   --live-primary-text: #302529;
-  --live-panel-bg: rgba(48, 37, 41, 0.97);
+  --live-panel-bg: rgba(48, 37, 41, 0.95);
   --live-surface: #302529;
   --live-well: #3d2e34;
   --live-disc-top: #c8828a;
@@ -292,7 +377,7 @@
   --live-accent: #a44653;
   --live-selected-bg: #f6e5e8;
   --live-primary-text: #fffafb;
-  --live-panel-bg: rgba(255, 250, 250, 0.97);
+  --live-panel-bg: rgba(255, 250, 250, 0.95);
   --live-surface: #fffafa;
   --live-well: #f4ecec;
   --live-disc-top: #e8b3b5;
@@ -310,7 +395,7 @@
   --live-accent: #f0a5bc;
   --live-selected-bg: #512b3c;
   --live-primary-text: #2d2028;
-  --live-panel-bg: rgba(45, 32, 40, 0.97);
+  --live-panel-bg: rgba(45, 32, 40, 0.95);
   --live-surface: #2d2028;
   --live-well: #3b2933;
   --live-disc-top: #b8465c;
@@ -328,7 +413,7 @@
   --live-accent: #a12f47;
   --live-selected-bg: #f7e2e8;
   --live-primary-text: #fff9fb;
-  --live-panel-bg: rgba(255, 249, 251, 0.97);
+  --live-panel-bg: rgba(255, 249, 251, 0.95);
   --live-surface: #fff9fb;
   --live-well: #f3e9ee;
   --live-disc-top: #c54f62;

@@ -11,6 +11,7 @@ import {
   type Stats,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { windowDiagnosticDetails } from './window-diagnostics.ts';
 
 const MAX_LOG_BYTES = 1024 * 1024;
 const FAILURE_EVENTS = new Set([
@@ -244,14 +245,22 @@ function privateDirectory(directory: string): boolean {
 /** Small, bounded failure logs are retained independently of verbose --debug output. */
 export function createHostDiagnosticsLogger(
   logDirectory: string,
+  options: { windowTrace?: boolean } = {},
 ): HostDiagnosticsLogger {
-  const activePath = join(logDirectory, 'host-errors.log');
-  const rotatedPath = `${activePath}.1`;
   return {
     write(event, details = {}) {
       let descriptor: number | undefined;
       try {
-        if (!FAILURE_EVENTS.has(event)) return;
+        const windowDetails = options.windowTrace
+          ? windowDiagnosticDetails(event, details)
+          : undefined;
+        if (!FAILURE_EVENTS.has(event) && !windowDetails) return;
+        const activePath = join(
+          logDirectory,
+          windowDetails ? 'host-window-trace.jsonl' : 'host-errors.log',
+        );
+        const rotatedPath = `${activePath}.1`;
+        const maxBytes = windowDetails ? 4 * MAX_LOG_BYTES : MAX_LOG_BYTES;
         if (
           event === 'daemon_connection' &&
           (details['intentional'] === true ||
@@ -265,7 +274,7 @@ export function createHostDiagnosticsLogger(
           details['code'] === 'AbortError'
         )
           return;
-        const safeDetails: Record<string, string | number | boolean> = {};
+        const safeDetails: Record<string, unknown> = windowDetails ?? {};
         for (const field of NUMERIC_FIELDS) {
           const value = details[field];
           if (typeof value === 'number' && Number.isSafeInteger(value))
@@ -284,6 +293,7 @@ export function createHostDiagnosticsLogger(
           `${JSON.stringify({
             timestamp: new Date().toISOString(),
             source: 'qwen-live-harness-host',
+            ...(windowDetails ? { pid: process.pid } : {}),
             event,
             ...safeDetails,
           })}\n`,
@@ -292,10 +302,10 @@ export function createHostDiagnosticsLogger(
         const previous = optionalStat(activePath);
         if (
           previous &&
-          (!regularPrivateFile(previous) || previous.size > MAX_LOG_BYTES)
+          (!regularPrivateFile(previous) || previous.size > maxBytes)
         )
           return;
-        if (previous && previous.size + entry.length > MAX_LOG_BYTES) {
+        if (previous && previous.size + entry.length > maxBytes) {
           const rotated = optionalStat(rotatedPath);
           if (rotated) {
             if (!regularPrivateFile(rotated)) return;
@@ -314,7 +324,7 @@ export function createHostDiagnosticsLogger(
         const opened = fstatSync(descriptor);
         if (
           !regularPrivateFile(opened) ||
-          opened.size + entry.length > MAX_LOG_BYTES
+          opened.size + entry.length > maxBytes
         )
           return;
         writeSync(descriptor, entry);

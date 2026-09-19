@@ -6,13 +6,14 @@ import {
 } from '../subagents-position.ts';
 import { OVERLAY_GEOMETRY } from '../../shared/overlay-geometry.ts';
 import { overlayPosition } from '../overlay-position.ts';
+import { SUBAGENTS_GEOMETRY } from '../../shared/subagents-geometry.ts';
 
 const primary = { x: 0, y: 30, width: 2048, height: 1028 };
 const right = { x: 2048, y: 33, width: 1728, height: 1084 };
 const sizes = [
-  { width: 132, height: 62 },
-  { width: 330, height: 430 },
-  { width: 330, height: 430 },
+  SUBAGENTS_GEOMETRY.summary,
+  SUBAGENTS_GEOMETRY.expanded,
+  SUBAGENTS_GEOMETRY.expanded,
 ];
 describe('Subagents floating panel geometry', () => {
   it('keeps expanded panels clear of the complete dock including its wider status bar', () => {

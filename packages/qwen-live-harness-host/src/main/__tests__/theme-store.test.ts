@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
+  existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +20,7 @@ import {
   readHostTheme,
   readHostThemeColor,
   saveHostTheme,
+  saveHostThemeColor,
 } from '../theme-store.ts';
 import {
   isLiveTheme,
@@ -164,6 +170,225 @@ describe('config.json themeColor preference', () => {
     ]) {
       writeFileSync(path, config);
       assert.equal(readHostThemeColor(path), 'iris');
+    }
+  });
+
+  it('changes only the root palette and preserves credentials, backend, Memory and unknown JSON bytes', () => {
+    const root = directory();
+    const path = join(root, 'config.json');
+    const original =
+      '\uFEFF{\r\n  "theme\\u0043olor" : "iris",\r\n  "realtimeApiKey": "test-secret-not-a-real-key",\r\n  "backend": {"kind":"codex","args":["--flag"]},\r\n  "memory":{"enabled":true,"themeColor":"nested"},\r\n  "unknown": [900719925474099312345, {"text":"a,}\\"b"}]\r\n}\r\n';
+    writeFileSync(path, original, { mode: 0o644 });
+    for (const color of LIVE_THEME_COLORS) {
+      saveHostThemeColor(path, color);
+      assert.equal(
+        readFileSync(path, 'utf8'),
+        original.replace('"iris"', JSON.stringify(color)),
+      );
+      assert.equal(readHostThemeColor(path), color);
+      assert.deepEqual(readdirSync(root), ['config.json']);
+      if (process.platform !== 'win32')
+        assert.equal(statSync(path).mode & 0o777, 0o600);
+    }
+  });
+
+  it('adds a missing root preference without changing nested values or the source data', () => {
+    const path = join(directory(), 'config.json');
+    for (const original of [
+      '{}',
+      ' { } \n',
+      '\uFEFF{\n}\n',
+      '{"memory":{"themeColor":"sage"},"unknown":[true,null,{}]}',
+      '{\n  "language": "zh-CN"\n}\n',
+      '{"themeColor":{"previous":"invalid"}}',
+    ]) {
+      writeFileSync(path, original);
+      saveHostThemeColor(path, 'tide');
+      const before = JSON.parse(original.replace(/^\uFEFF/, ''));
+      const after = JSON.parse(
+        readFileSync(path, 'utf8').replace(/^\uFEFF/, ''),
+      );
+      assert.deepEqual(after, { ...before, themeColor: 'tide' });
+    }
+  });
+
+  it('rejects invalid IPC-like palette values without creating or modifying a file', () => {
+    const root = directory();
+    const path = join(root, 'config.json');
+    const original = '{"themeColor":"clay"}';
+    writeFileSync(path, original);
+    for (const color of [
+      undefined,
+      null,
+      1,
+      true,
+      '',
+      'Iris',
+      'auto',
+      ' iris ',
+      [],
+      {},
+    ]) {
+      assert.throws(() => saveHostThemeColor(path, color as never), TypeError);
+      assert.equal(readFileSync(path, 'utf8'), original);
+      assert.deepEqual(readdirSync(root), ['config.json']);
+    }
+    assert.throws(
+      () =>
+        saveHostThemeColor(
+          join(root, 'missing', 'config.json'),
+          'wrong' as never,
+        ),
+      TypeError,
+    );
+    assert.deepEqual(readdirSync(root), ['config.json']);
+  });
+
+  it('never creates missing configurations or repairs invalid JSON and duplicate root keys', () => {
+    const root = directory();
+    const path = join(root, 'config.json');
+    for (const missing of [path, join(root, 'missing', 'config.json')]) {
+      assert.throws(() => saveHostThemeColor(missing, 'rose'));
+      assert.equal(existsSync(missing), false);
+    }
+    assert.deepEqual(readdirSync(root), []);
+    for (const invalid of [
+      '{"key":"test-secret",',
+      'null',
+      'true',
+      '2',
+      '[]',
+      '"iris"',
+      '{"themeColor":"iris","themeColor":"sage"}',
+      '{"themeColor":"iris","theme\\u0043olor":"sage"}',
+      Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]),
+      JSON.stringify({ extra: 'x'.repeat(1024 * 1024) }),
+    ]) {
+      writeFileSync(path, invalid);
+      const original = readFileSync(path);
+      assert.throws(
+        () => saveHostThemeColor(path, 'berry'),
+        (error: unknown) => {
+          assert(error instanceof Error);
+          assert.doesNotMatch(error.message, /test-secret/);
+          return true;
+        },
+      );
+      assert.deepEqual(readFileSync(path), original);
+      assert.deepEqual(readdirSync(root), ['config.json']);
+    }
+  });
+
+  it('rejects unsafe paths and non-regular targets without touching their data', () => {
+    const root = directory();
+    const path = join(root, 'config.json');
+    writeFileSync(path, '{}');
+    for (const invalid of [
+      'config.json',
+      join(root, 'other.json'),
+      `${root}/../${root.split('/').at(-1)}/config.json`,
+      `${root}/config.json\n`,
+    ])
+      assert.throws(() => saveHostThemeColor(invalid, 'graphite'));
+    assert.equal(readFileSync(path, 'utf8'), '{}');
+    const folder = join(root, 'folder');
+    mkdirSync(folder);
+    mkdirSync(join(folder, 'config.json'));
+    assert.throws(() =>
+      saveHostThemeColor(join(folder, 'config.json'), 'graphite'),
+    );
+    assert.equal(statSync(join(folder, 'config.json')).isDirectory(), true);
+  });
+
+  it(
+    'rejects symlinks, hardlinks, readonly files and unsafe directories',
+    { skip: process.platform === 'win32' },
+    () => {
+      const root = directory();
+      const targetDirectory = join(root, 'real');
+      mkdirSync(targetDirectory, { mode: 0o700 });
+      const path = join(targetDirectory, 'config.json');
+      writeFileSync(path, '{}', { mode: 0o600 });
+      const aliasDirectory = join(root, 'alias');
+      symlinkSync(targetDirectory, aliasDirectory);
+      assert.throws(() =>
+        saveHostThemeColor(join(aliasDirectory, 'config.json'), 'rose'),
+      );
+      const symlinkDirectory = join(root, 'symlinks');
+      mkdirSync(symlinkDirectory, { mode: 0o700 });
+      symlinkSync(path, join(symlinkDirectory, 'config.json'));
+      assert.throws(() =>
+        saveHostThemeColor(join(symlinkDirectory, 'config.json'), 'rose'),
+      );
+      const hardlink = join(root, 'hardlink');
+      linkSync(path, hardlink);
+      assert.throws(() => saveHostThemeColor(path, 'rose'));
+      rmSync(hardlink);
+      chmodSync(path, 0o400);
+      assert.throws(() => saveHostThemeColor(path, 'rose'));
+      chmodSync(path, 0o600);
+      chmodSync(targetDirectory, 0o770);
+      assert.throws(() => saveHostThemeColor(path, 'rose'));
+      chmodSync(targetDirectory, 0o700);
+      assert.equal(readFileSync(path, 'utf8'), '{}');
+      assert.deepEqual(readdirSync(targetDirectory), ['config.json']);
+    },
+  );
+
+  it('rechecks the live connection before replacing and cleans its private temporary file', () => {
+    const root = directory();
+    const path = join(root, 'config.json');
+    const original = '{"themeColor":"iris"}';
+    writeFileSync(path, original);
+    let checks = 0;
+    assert.throws(
+      () =>
+        saveHostThemeColor(path, 'sage', () => {
+          checks++;
+          if (checks === 2) {
+            const temporary = readdirSync(root).find((file) =>
+              file.endsWith('.tmp'),
+            );
+            assert(temporary);
+            assert.equal(statSync(join(root, temporary)).mode & 0o777, 0o600);
+          }
+          return checks < 2;
+        }),
+      /no longer connected/,
+    );
+    assert.equal(checks, 2);
+    assert.equal(readFileSync(path, 'utf8'), original);
+    assert.deepEqual(readdirSync(root), ['config.json']);
+    assert.throws(
+      () => saveHostThemeColor(path, 'sage', () => false),
+      /no longer connected/,
+    );
+    assert.deepEqual(readdirSync(root), ['config.json']);
+  });
+
+  it('does not overwrite another writer or a replaced inode before the final check', () => {
+    for (const replace of [false, true]) {
+      const root = directory();
+      const path = join(root, 'config.json');
+      writeFileSync(path, '{"themeColor":"iris"}');
+      const newer = '{"themeColor":"clay","keep":"new external edit"}';
+      let checks = 0;
+      assert.throws(
+        () =>
+          saveHostThemeColor(path, 'sage', () => {
+            if (++checks === 2) {
+              if (replace) {
+                const nextPath = join(root, 'new-config');
+                writeFileSync(nextPath, newer);
+                renameSync(nextPath, path);
+              } else writeFileSync(path, newer);
+            }
+            return true;
+          }),
+        /changed before saving/,
+      );
+      assert.equal(readFileSync(path, 'utf8'), newer);
+      assert.deepEqual(readdirSync(root), ['config.json']);
     }
   });
 });

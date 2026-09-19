@@ -19,6 +19,7 @@ function fixture() {
     'handleDisplayChange',
     'clampOverlayToDisplays',
     'overlayWorkArea',
+    'overlayContentBounds',
     'positionOverlay',
     'dragOverlay',
     'syncPointerInteractivity',
@@ -30,7 +31,7 @@ function fixture() {
   );
   assert.equal(declarations.length, names.size);
   const registrations = source.match(
-    /^  screen\.on\('display-(?:added|removed|metrics-changed)',[\s\S]*?^  \}\);/gm,
+    /^ {2}screen\.on\('display-(?:added|removed|metrics-changed)',[\s\S]*?^ {2}\}\);/gm,
   );
   assert.equal(registrations?.length, 3);
   const area = { x: 0, y: 25, width: 1440, height: 875 };
@@ -50,6 +51,10 @@ function fixture() {
   const counters = { capture: 0, restart: 0, refresh: 0, publish: 0 };
   let finishCapture: (() => void) | undefined;
   const context = {
+    overlayCapturePlacement: {
+      invalidate: () => {},
+      capture: (operation: () => Promise<unknown>) => operation(),
+    },
     ...positions,
     ...policy,
     OVERLAY_GEOMETRY,
@@ -62,6 +67,7 @@ function fixture() {
     overlay: {
       isDestroyed: () => false,
       getBounds: () => ({ ...bounds }),
+      getContentBounds: () => ({ ...bounds }),
       setPosition: (x: number, y: number) => {
         Object.assign(bounds, { x, y });
         moves.push({ x, y });

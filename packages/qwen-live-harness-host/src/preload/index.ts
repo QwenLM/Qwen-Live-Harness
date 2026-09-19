@@ -67,6 +67,7 @@ const api: LiveHostApi = {
     ipcRenderer.invoke('live:memory-action', action) as Promise<MemoryState>,
   setLanguage: (language) => invoke('live:set-language', language),
   setTheme: (theme) => invoke('live:set-theme', theme),
+  setThemeColor: (color) => invoke('live:set-theme-color', color),
   setSettingsOpen: (open) => invoke('live:settings-open', open),
   openConfig: () => invoke('live:open-config'),
   openSubagents: () => invoke('live:subagents:open'),
@@ -80,7 +81,31 @@ const api: LiveHostApi = {
     const handler = (
       _event: Electron.IpcRendererEvent,
       offset: OverlayOffset,
-    ) => listener(offset);
+    ) => {
+      listener(offset);
+      if (diagnosticsEnabled) {
+        try {
+          const card = document
+            .querySelector('.voice-card')
+            ?.getBoundingClientRect();
+          ipcRenderer.send('live:overlay-offset-applied', {
+            offset,
+            ...(card
+              ? {
+                  cardBounds: {
+                    x: card.x,
+                    y: card.y,
+                    width: card.width,
+                    height: card.height,
+                  },
+                }
+              : {}),
+          });
+        } catch {
+          /* Geometry diagnostics never affect the rendered position. */
+        }
+      }
+    };
     ipcRenderer.on('live:overlay-offset', handler);
     return () => ipcRenderer.removeListener('live:overlay-offset', handler);
   },
@@ -253,6 +278,7 @@ let pointerRafPending = false;
 let pointerX = 0;
 let pointerY = 0;
 let pointerPresent = false;
+const capturedPointers = new Set<number>();
 function refreshPointerInteractivity(): void {
   if (pointerRafPending) return;
   pointerRafPending = true;
@@ -262,6 +288,7 @@ function refreshPointerInteractivity(): void {
       ? document.elementFromPoint(pointerX, pointerY)
       : null;
     const interactive = Boolean(
+      capturedPointers.size ||
       element?.closest('[data-live-interactive], [data-live-drag]'),
     );
     if (interactive === lastPointerInteractive) return;
@@ -275,11 +302,31 @@ window.addEventListener('mousemove', (event) => {
   pointerPresent = true;
   refreshPointerInteractivity();
 });
+document.addEventListener('gotpointercapture', (event) => {
+  if (
+    !(event.target instanceof Element) ||
+    !event.target.hasAttribute('data-live-drag')
+  )
+    return;
+  capturedPointers.add(event.pointerId);
+  refreshPointerInteractivity();
+});
+for (const type of [
+  'lostpointercapture',
+  'pointerup',
+  'pointercancel',
+] as const) {
+  document.addEventListener(type, (event) => {
+    capturedPointers.delete(event.pointerId);
+    refreshPointerInteractivity();
+  });
+}
 window.addEventListener('mouseleave', () => {
   pointerPresent = false;
   refreshPointerInteractivity();
 });
 window.addEventListener('blur', () => {
+  capturedPointers.clear();
   pointerPresent = false;
   lastPointerInteractive = undefined;
   refreshPointerInteractivity();
@@ -300,6 +347,9 @@ pointerObserver.observe(document, {
   ],
 });
 window.addEventListener('beforeunload', () => {
+  capturedPointers.clear();
+  pointerPresent = false;
+  ipcRenderer.send('live:pointer-interactivity', false);
   pointerObserver.disconnect();
   camera.dispose();
   void audio.dispose();

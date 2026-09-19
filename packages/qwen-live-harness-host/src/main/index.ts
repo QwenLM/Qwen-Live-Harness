@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream, lstatSync, mkdirSync } from 'node:fs';
+import { createWriteStream, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   isLiveLanguage,
@@ -14,9 +14,11 @@ import {
   readHostTheme,
   readHostThemeColor,
   saveHostTheme,
+  saveHostThemeColor,
 } from './theme-store.ts';
 import {
   isLiveTheme,
+  isLiveThemeColor,
   type LiveTheme,
   type LiveThemeColor,
   type ResolvedTheme,
@@ -40,6 +42,7 @@ import { StartupInteraction } from './startup-interaction.ts';
 import { HostDaemonBootstrap } from './daemon-bootstrap.ts';
 import { HostDaemonLifecycle, parseDaemonOwner } from './daemon-lifecycle.ts';
 import { CaptureReadinessDeadline } from './capture-readiness.ts';
+import { CapturePlacementGuard } from './capture-placement.ts';
 import {
   createHostDiagnosticsLogger,
   daemonConnectionDiagnostic,
@@ -174,6 +177,47 @@ let pointerInteractive = false;
 let pointerOverInteractive = false;
 let overlayDrag:
   { pointer: OverlayPosition; origin: OverlayPosition } | undefined;
+const overlayCapturePlacement = new CapturePlacementGuard(
+  () => {
+    if (
+      !overlay ||
+      overlay.isDestroyed() ||
+      !overlayReady ||
+      overlayDrag ||
+      quitting
+    )
+      return undefined;
+    const nativeBounds = overlay.getBounds();
+    const contentBounds = overlayContentBounds(overlay);
+    const logical = {
+      x: contentBounds.x + overlayOffset.x,
+      y: contentBounds.y + overlayOffset.y,
+    };
+    return {
+      owner: overlay,
+      nativeBounds,
+      contentBounds,
+      logical,
+      offset: { ...overlayOffset },
+      workArea: { ...overlayWorkArea(logical) },
+      visible: {
+        ...(settingsOpen
+          ? OVERLAY_GEOMETRY.settingsBounds
+          : OVERLAY_GEOMETRY.bounds[overlayLayout]),
+      },
+      layout: overlayLayout,
+      settingsOpen,
+      visualGeneration,
+    };
+  },
+  (before, offset) => {
+    if (before.owner !== overlay || overlay?.isDestroyed() || overlayDrag)
+      return;
+    overlayOffset = offset;
+    sendRendererCommand('live:overlay-offset', offset);
+  },
+  writeLiveDiagnostic,
+);
 const OVERLAY_WIDTH = OVERLAY_GEOMETRY.canvas.width;
 const OVERLAY_HEIGHT = OVERLAY_GEOMETRY.canvas.height;
 const startupInteraction = new StartupInteraction();
@@ -527,6 +571,11 @@ function publicState(): HostPublicState {
       connection.phase === 'ready' &&
       !quitState &&
       Boolean(daemon.getConfigFilePath()),
+    canSetThemeColor:
+      connection.phase === 'ready' &&
+      !quitting &&
+      !quitState &&
+      Boolean(daemon.getConfigFilePath()),
     ...(quitState ? { quitState } : {}),
     ...(audioError && !permissionBlocked ? { audioError } : {}),
     ...(audioRetryPending && !permissionBlocked ? { audioRetrying: true } : {}),
@@ -616,15 +665,22 @@ function maybeStartStartupInteraction(): void {
     toggleLive();
 }
 
+function overlayContentBounds(window: BrowserWindow): Electron.Rectangle {
+  return window.getContentBounds();
+}
+
 function showOverlay(): void {
-  if (!overlay || overlay.isDestroyed()) return;
-  const before = overlay.getBounds();
+  // Status and transcript refreshes also reach this function. Re-showing an
+  // already visible macOS window can reapply native frame constraints; it is
+  // not a visibility operation and must not disturb the user's placement.
+  if (!overlay || overlay.isDestroyed() || overlay.isVisible()) return;
+  const before = overlayContentBounds(overlay);
   const logical = {
     x: before.x + overlayOffset.x,
     y: before.y + overlayOffset.y,
   };
   overlay.showInactive();
-  const after = overlay.getBounds();
+  const after = overlayContentBounds(overlay);
   if (before.x !== after.x || before.y !== after.y)
     positionOverlay(logical, 'window-shown');
 }
@@ -664,7 +720,10 @@ function handleDisplayChange(
     geometryChanged,
     visualGeneration,
   });
-  if (geometryChanged) clampOverlayToDisplays(reason);
+  if (geometryChanged) {
+    overlayCapturePlacement.invalidate(reason);
+    clampOverlayToDisplays(reason);
+  }
 }
 
 function clampOverlayToDisplays(reason = 'display-change'): void {
@@ -677,7 +736,7 @@ function clampOverlayToDisplays(reason = 'display-change'): void {
   publishState();
   subagents?.displaysChanged();
   if (!overlay || overlay.isDestroyed()) return;
-  const bounds = overlay.getBounds();
+  const bounds = overlayContentBounds(overlay);
   const current = {
     x: bounds.x + overlayOffset.x,
     y: bounds.y + overlayOffset.y,
@@ -725,7 +784,7 @@ function subagentsAnchor(): DisplayWorkArea | undefined {
     quitState
   )
     return undefined;
-  const bounds = overlay.getBounds();
+  const bounds = overlayContentBounds(overlay);
   const visible = OVERLAY_GEOMETRY.bounds[overlayLayout];
   return {
     x: bounds.x + overlayOffset.x + visible.x,
@@ -737,7 +796,7 @@ function subagentsAnchor(): DisplayWorkArea | undefined {
 
 function subagentsHoverRegions(): DisplayWorkArea[] {
   if (!subagentsAnchor() || !overlay) return [];
-  const bounds = overlay.getBounds();
+  const bounds = overlayContentBounds(overlay);
   return [
     OVERLAY_GEOMETRY.orbMotion,
     OVERLAY_GEOMETRY.toolbar,
@@ -756,19 +815,31 @@ function positionOverlay(
   window = overlay,
 ): void {
   if (!window || window.isDestroyed()) return;
+  overlayCapturePlacement.invalidate(reason);
   const before = window.getBounds();
-  if (position.x !== before.x || position.y !== before.y) {
-    window.setPosition(position.x, position.y, false);
+  const beforeContent = overlayContentBounds(window);
+  const requestedFrame = {
+    x: position.x - (beforeContent.x - before.x),
+    y: position.y - (beforeContent.y - before.y),
+  };
+  if (requestedFrame.x !== before.x || requestedFrame.y !== before.y) {
+    window.setPosition(requestedFrame.x, requestedFrame.y, false);
   }
   const actual = window.getBounds();
-  const offset = { x: position.x - actual.x, y: position.y - actual.y };
+  const contentBounds = overlayContentBounds(window);
+  const offset = {
+    x: position.x - contentBounds.x,
+    y: position.y - contentBounds.y,
+  };
   writeLiveDiagnostic('overlay_position', {
     reason,
     layout: overlayLayout,
     settingsOpen,
     before,
+    beforeContent,
     requested: position,
     after: actual,
+    contentBounds,
     offset,
   });
   if (offset.x !== overlayOffset.x || offset.y !== overlayOffset.y) {
@@ -780,11 +851,22 @@ function positionOverlay(
 
 function setOverlayLayout(layout: OverlayLayout): void {
   if (overlayLayout === layout) return;
-  if (overlayDrag) persistOverlayPosition();
-  overlayDrag = undefined;
-  subagents?.setDragging(false);
+  writeLiveDiagnostic('overlay_layout_changed', {
+    previousLayout: overlayLayout,
+    layout,
+    settingsOpen,
+    dragging: Boolean(overlayDrag),
+  });
+  overlayCapturePlacement.invalidate('layout-changed');
   subagents?.dismissPeek();
   overlayLayout = layout;
+  // A preview/layout update must not terminate a pointer gesture. The
+  // next move/end clamps against the new visible bounds using the same anchor.
+  if (overlayDrag) {
+    syncPointerInteractivity();
+    return;
+  }
+  subagents?.setDragging(false);
   if (overlayReady) applyOverlayPosition('layout-changed');
   syncPointerInteractivity();
 }
@@ -807,8 +889,9 @@ function dragOverlay(
 ): void {
   if (!overlay || overlay.isDestroyed()) return;
   if (phase === 'start') {
+    overlayCapturePlacement.invalidate('drag-start');
     subagents?.setDragging(true);
-    const bounds = overlay.getBounds();
+    const bounds = overlayContentBounds(overlay);
     overlayDrag = {
       pointer: { x, y },
       origin: { x: bounds.x + overlayOffset.x, y: bounds.y + overlayOffset.y },
@@ -982,6 +1065,8 @@ function sendRendererCommand(channel: string, value?: unknown): void {
   }
   try {
     overlay.webContents.send(channel, value);
+    if (channel === 'live:overlay-offset')
+      writeLiveDiagnostic('overlay_offset_sent', { offset: value });
   } catch {
     overlayReady = false;
   }
@@ -1115,8 +1200,8 @@ async function captureScreenFeed(generation: number): Promise<void> {
   }
   screenFeedInFlight = true;
   try {
-    const capture = await appshotCapture.captureDisplayFrame(
-      settings.screenDisplayId ?? 'primary',
+    const capture = await overlayCapturePlacement.capture(() =>
+      appshotCapture.captureDisplayFrame(settings.screenDisplayId ?? 'primary'),
     );
     if (generation !== screenFeedGeneration) return;
     const frame = encodeScreenFrame(
@@ -1817,9 +1902,11 @@ async function captureOnDemandVisual(request: {
       screenDisplayId !== (visualInput?.screenDisplayId ?? 'primary')
     )
       throw new Error(liveMessage('host.error.displayCapture'));
-    const capture = await appshotCapture.captureDisplayFrame(screenDisplayId, {
-      nativeResolution: request.persistAsset !== false,
-    });
+    const capture = await overlayCapturePlacement.capture(() =>
+      appshotCapture.captureDisplayFrame(screenDisplayId, {
+        nativeResolution: request.persistAsset !== false,
+      }),
+    );
     if (epoch !== daemon.getEpoch() || generation !== visualGeneration)
       throw new Error('stale_visual_capture');
     const frame = encodeScreenFrame(
@@ -1918,6 +2005,43 @@ function registerIpc(): void {
     nativeTheme.themeSource = value;
     publishState();
   });
+  ipcMain.handle('live:set-theme-color', (event, value: unknown) => {
+    if (
+      !isTrustedSender(event) ||
+      event.sender.isDestroyed() ||
+      !rendererEventsEnabled ||
+      !isLiveThemeColor(value)
+    )
+      throw new Error(liveMessage('host.themeColor.invalid'));
+    const configPath = daemon.getConfigFilePath();
+    const instanceId = connection.instanceId;
+    const isCurrent = () =>
+      isTrustedSender(event) &&
+      !event.sender.isDestroyed() &&
+      rendererEventsEnabled &&
+      !quitting &&
+      !quitState &&
+      connection.phase === 'ready' &&
+      connection.instanceId === instanceId &&
+      daemon.getConfigFilePath() === configPath;
+    if (!configPath || !instanceId || !isCurrent())
+      throw new Error(liveMessage('host.themeColor.unavailable'));
+    try {
+      saveHostThemeColor(configPath, value, isCurrent);
+    } catch {
+      throw new Error(
+        liveMessage(
+          isCurrent()
+            ? 'host.themeColor.saveFailed'
+            : 'host.themeColor.unavailable',
+        ),
+      );
+    }
+    if (!isCurrent())
+      throw new Error(liveMessage('host.themeColor.unavailable'));
+    themeColor = value;
+    publishState();
+  });
   ipcMain.on('live:subagents:orb-hover', (event, hovered: unknown) => {
     if (
       !isTrustedSender(event) ||
@@ -1954,6 +2078,40 @@ function registerIpc(): void {
     )
       return;
     setOverlayLayout(layout);
+  });
+  ipcMain.on('live:overlay-offset-applied', (event, value: unknown) => {
+    if (
+      !diagnosticsEnabled ||
+      !isTrustedSender(event) ||
+      !value ||
+      typeof value !== 'object'
+    )
+      return;
+    const message = value as Record<string, unknown>;
+    if (!isOverlayPosition(message['offset'])) return;
+    const offset = { x: message['offset'].x, y: message['offset'].y };
+    const card = message['cardBounds'];
+    let cardBounds: Electron.Rectangle | undefined;
+    if (isOverlayPosition(card) && typeof card === 'object' && card !== null) {
+      const dimensions = card as Record<string, unknown>;
+      const width = dimensions['width'];
+      const height = dimensions['height'];
+      if (
+        typeof width === 'number' &&
+        Number.isFinite(width) &&
+        width >= 0 &&
+        width <= 10_000 &&
+        typeof height === 'number' &&
+        Number.isFinite(height) &&
+        height >= 0 &&
+        height <= 10_000
+      )
+        cardBounds = { x: card.x, y: card.y, width, height };
+    }
+    writeLiveDiagnostic('overlay_offset_applied', {
+      offset,
+      ...(cardBounds ? { cardBounds } : {}),
+    });
   });
   ipcMain.handle('live:quit', (event) => {
     if (!isTrustedSender(event))
@@ -2600,6 +2758,7 @@ function registerIpc(): void {
 }
 
 function createOverlay(): BrowserWindow {
+  overlayCapturePlacement.invalidate('window-created');
   if (!desiredOverlayPosition) {
     const saved = readOverlayPosition(
       join(app.getPath('userData'), 'overlay-position.json'),
@@ -2663,13 +2822,61 @@ function createOverlay(): BrowserWindow {
   window.on('blur', () => {
     if (window === overlay) resetOverlayInteraction(true);
   });
+  const traceNativeGeometry = (
+    event: string,
+    reason: string,
+    requested?: Electron.Rectangle,
+  ) => {
+    try {
+      if (!diagnosticsEnabled || window !== overlay || window.isDestroyed())
+        return;
+      const bounds = window.getBounds();
+      const contentBounds = overlayContentBounds(window);
+      writeLiveDiagnostic(event, {
+        reason,
+        bounds,
+        contentBounds,
+        offset: { ...overlayOffset },
+        logical: {
+          x: contentBounds.x + overlayOffset.x,
+          y: contentBounds.y + overlayOffset.y,
+        },
+        nativeSize: window.getSize?.() ?? [bounds.width, bounds.height],
+        contentSize: window.getContentSize?.() ?? [
+          contentBounds.width,
+          contentBounds.height,
+        ],
+        requestedCanvas: { width: OVERLAY_WIDTH, height: OVERLAY_HEIGHT },
+        isFullScreen: window.isFullScreen?.() ?? false,
+        isSimpleFullScreen: window.isSimpleFullScreen?.() ?? false,
+        isMaximized: window.isMaximized?.() ?? false,
+        ...(requested ? { requested } : {}),
+      });
+    } catch {
+      /* A diagnostic snapshot must not interfere with native events. */
+    }
+  };
   window.on('move', () => {
-    if (!diagnosticsEnabled || window !== overlay || window.isDestroyed())
-      return;
-    writeLiveDiagnostic('overlay_native_moved', {
-      bounds: window.getBounds(),
-      offset: { ...overlayOffset },
-    });
+    if (window !== overlay || window.isDestroyed()) return;
+    overlayCapturePlacement.nativeMoved(window);
+    traceNativeGeometry('overlay_native_moved', 'native-move');
+  });
+  const onNativeResize = (reason: string) => {
+    if (window !== overlay || window.isDestroyed()) return;
+    overlayCapturePlacement.nativeResized(window);
+    traceNativeGeometry('overlay_native_resized', reason);
+  };
+  window.on('resize', () => onNativeResize('native-resize'));
+  window.on('resized', () => onNativeResize('native-resized'));
+  window.on('will-resize', (_event, requested) => {
+    traceNativeGeometry(
+      'overlay_native_will_resize',
+      'native-will-resize',
+      requested,
+    );
+  });
+  window.on('closed', () => {
+    if (window === overlay) overlayCapturePlacement.invalidate('window-closed');
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -2677,6 +2884,7 @@ function createOverlay(): BrowserWindow {
   window.webContents.on('did-start-loading', () => {
     rendererLoadHealthy = true;
     if (window === overlay) {
+      overlayCapturePlacement.invalidate('renderer-reload');
       overlayReady = false;
       rendererEventsEnabled = false;
       resetOverlayInteraction();
@@ -2956,7 +3164,23 @@ app.on('before-quit', (event) => {
 void app.whenReady().then(() => {
   hostDiagnostics = createHostDiagnosticsLogger(
     join(app.getPath('userData'), 'logs'),
+    { windowTrace: diagnosticsEnabled },
   );
+  if (diagnosticsEnabled) {
+    let buildId: string | undefined;
+    try {
+      buildId = createHash('sha256')
+        .update(readFileSync(__filename))
+        .digest('hex');
+    } catch {
+      /* Trace still identifies the process if build hashing is unavailable. */
+    }
+    writeLiveDiagnostic('host_window_trace_started', {
+      traceVersion: 1,
+      pid: process.pid,
+      buildId,
+    });
+  }
   theme = readHostTheme(join(app.getPath('userData'), 'theme.json'));
   nativeTheme.themeSource = theme;
   nativeTheme.on('updated', () => {

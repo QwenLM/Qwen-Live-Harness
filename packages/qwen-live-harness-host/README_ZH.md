@@ -74,9 +74,9 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 
 修改布局时检查贴边、多显示器、负坐标、缩放、显示器移除以及设置／预览展开。临时避让不能覆盖用户拖动保存的位置，状态刷新或截图不能重新定位窗口。媒体和编辑控件应保持挂载，避免字幕更新丢失焦点、预览或草稿。子任务面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情不能遮挡主界面和状态条。
 
-Pebble UI 使用 234 × 194 px 交互卡片，包含常驻通话控件和任务摘要。设置显示在卡片旁，任务摘要打开任务窗口；终端会话、指令投递、会话报告、搜索、视觉分析和 Monitor 分别展示状态与详情。
+Pebble UI 使用 234 × 171 px 交互卡片，包含常驻通话控件和任务摘要。拖动卡片背景、状态文字、波形或摄像头预览可移动 UI，按钮仍执行各自操作。无字幕时，预览与主卡相距 12 px；字幕拥有独立的安全区域。设置显示在卡片旁，任务摘要打开任务窗口；终端会话、指令投递、会话报告、搜索、视觉分析和 Monitor 分别展示状态与详情。
 
-默认主题为 Iris 雾紫。Host 在连接或重连时，从已认证 daemon 提供的配置路径读取顶层 `themeColor`，支持 `iris`、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`；缺省或非法值使用 Iris，不影响通话。浅色／深色／跟随系统独立持久化，见[配置指南](../../docs/configuration_ZH.md#主题配色)。
+默认主题为 Iris 雾紫。**设置 → 个性化 → 配色** 提供七种带名称的色样：`iris`、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。选择时，经校验的 IPC 只修改已认证 daemon 配置文件的顶层 `themeColor`，保留其他配置，并同步更新主 UI 与任务窗口，不重新创建媒体、移动窗口或丢失编辑状态。Host 也会在连接或重连时读取此字段；缺省或非法值使用 Iris。浅色／深色／跟随系统独立持久化，见[配置指南](../../docs/configuration_ZH.md#主题配色)。
 
 ## 与 daemon 的边界
 
@@ -132,7 +132,9 @@ Host 偏好和常态故障日志位于 Electron `userData`，默认路径为：
 ├── theme.json
 └── logs/
     ├── host-errors.log
-    └── host-errors.log.1
+    ├── host-errors.log.1
+    ├── host-window-trace.jsonl     # 仅 debug
+    └── host-window-trace.jsonl.1
 ```
 
 未开启 debug 时也会记录精选故障事件。日志仅包含白名单错误码、阶段、epoch 等元信息，文件权限为 `0600`；每份上限 1 MiB，最多保留当前文件与一份轮转。日志写入失败不能中断音视频或退出流程，见 [`host-diagnostics.ts`](src/main/host-diagnostics.ts)。
@@ -140,6 +142,8 @@ Host 偏好和常态故障日志位于 Electron `userData`，默认路径为：
 `--live-harness-debug` 记录 Host 状态、设备和帧传输诊断。daemon 的 `--debug` 在 `<dataDir>/debug/run-*` 归档主模型、Monitor、搜索、视觉分析、通知播报五类连接，以及运行／控制事件，包含私密 Prompt、Memory 上下文、工具和媒体；凭据脱敏不能去除音视频里的秘密。逐 Monitor 媒体归档独立保存。无需执行记录中的任务即可检查／导出归档，见[运行归档与离线检查](../qwen-live-harness/README_ZH.md#运行归档与离线检查)；普通用户的诊断开关与数据路径见[配置指南](../../docs/configuration_ZH.md)。
 
 固定展示文本统一放在 [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts)，每个键包含 `en` 与 `zh-CN`。Host 构建通过别名编入共用的文案、启动和子任务模块，不在运行时依赖已安装的 daemon npm 包。修改共用文件后应重建并验证两个包。
+
+窗口 trace 保存截图 ID、原生外框与内容区域坐标、布局／尺寸事件，以及偏移的发送和应用结果。各行记录进程，启动记录还包含 Host 构建哈希。仅 debug 开启，每份上限 4 MiB，保留当前文件和一份轮转；只存有界几何及固定状态标签，不含画面、对话、配置或凭据。用它区分外框变化与实际内容移动，不能仅凭外框增高就判定 UI 发生了位移。
 
 ## 测试与打包
 

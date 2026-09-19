@@ -13,6 +13,7 @@
 | 会话事件 `SessionLog` | `<dataDir>/sessions/live-*.jsonl`                     | 会话、工具、回答、后台事件，以及已接入的 `failure` 记录；默认每 32 MiB 轮转为 `.1`、`.2` 等。一个事件文件不应被假定为只对应一个 `callId`                      |
 | 常态运行错误          | `<dataDir>/logs/runtime-errors-<时间>-<随机ID>.jsonl` | 错误专用 JSONL，启动前后及退出阶段也可使用；当前文件达到 1 MiB 前轮转到同名 `.1`。每个实例使用独立文件，多次启动的整个目录并非总共只保留两份                  |
 | Host 常态错误         | Electron `userData/logs/host-errors.log`              | 精选设备、权限、连接、renderer 等故障事件；当前文件和 `.1` 各最多 1 MiB，独立于 daemon 日志格式                                                               |
+| Host 窗口 trace       | Electron `userData/logs/host-window-trace.jsonl`      | 仅 debug；截图 ID、外框／内容区域坐标、resize、偏移发送／应用结果及构建标识；当前文件和 `.1` 各最多 4 MiB，不保存图像或对话                                   |
 | Debug 运行归档        | `<dataDir>/debug/run-*`                               | 模型 wire 请求／响应、媒体和运行／控制事件；默认每次 512 MiB，保留最近 10 次已结束归档，活跃归档不清理                                                        |
 | Monitor 媒体归档      | 系统临时目录 `qwen-live-harness-monitor-debug/`       | 仅 debug 开启时记录逐轮 JPEG／WAV／JSON；跨模态共同保留最近 10 个 Monitor，见 [Monitor 诊断归档](../packages/qwen-live-harness/README_ZH.md#monitor-诊断归档) |
 

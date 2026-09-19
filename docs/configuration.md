@@ -15,7 +15,7 @@ After initialization, most everyday options are available in **Settings** beside
 | Continuously share the current view                | Settings → Capture Mode → Live Feed                |
 | Choose a display                                   | Settings → Video Source → Display                  |
 | Enable memory, select a library, or rename it      | Settings → Personalization → Memory                |
-| Change the color palette                           | Top-level `themeColor` in the configuration        |
+| Change the color palette                           | Settings → Personalization → Color palette         |
 | Switch language or light/dark theme                | Settings → Personalization → Language / Appearance |
 | Change a model, API key, resolution, or frame rate | Settings → Open configuration                      |
 | Start or end an interaction                        | Start / End call in the UI, or `Command+E`         |
@@ -93,7 +93,9 @@ Memory and Proactive also use the selected region by default. Separate endpoints
 
 ## Theme palette
 
-Iris is the default palette. Set the top-level field in your configuration:
+Choose a color under **Settings → Personalization → Color palette**. The seven named swatches apply immediately to the main UI and task window, and your choice is saved for the next launch. Iris is the default.
+
+You can also set the top-level field in your configuration:
 
 ```json
 {
@@ -101,7 +103,7 @@ Iris is the default palette. Set the top-level field in your configuration:
 }
 ```
 
-Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. Restart Host or reconnect the daemon after saving; the interaction card and task window use the same palette. Missing or invalid values use Iris. Light, dark, and system appearance are separate settings under **Personalization → Appearance**.
+Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. If you edit the file manually, restart Host or reconnect the daemon to apply it; changing the palette in Settings needs no restart. Missing or invalid values use Iris. Light, dark, and system appearance are separate settings under **Personalization → Appearance**.
 
 ## Visual input
 

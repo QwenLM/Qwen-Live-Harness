@@ -22,6 +22,8 @@ describe('preload overlay pointer routing', () => {
           listeners.set(type, listener),
       },
       document: {
+        addEventListener: (type: string, listener: (event: unknown) => void) =>
+          listeners.set(`document:${type}`, listener),
         elementFromPoint: () =>
           overDragRegion
             ? {

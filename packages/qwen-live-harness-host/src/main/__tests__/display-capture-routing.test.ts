@@ -51,6 +51,9 @@ function fixture() {
   const encodings: unknown[][] = [];
   const captureOptions: Array<{ nativeResolution?: boolean } | undefined> = [];
   const context = {
+    overlayCapturePlacement: {
+      capture: (operation: () => Promise<unknown>) => operation(),
+    },
     Buffer,
     createHash,
     diagnosticsEnabled: true,

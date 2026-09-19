@@ -150,7 +150,7 @@ export class LiveView {
     uiText(title, 'ui.appName');
     this.setupShortcut.className = 'shortcut';
     header.append(title, this.setupShortcut);
-    makeOverlayDraggable(header, api);
+    this.removers.push(makeOverlayDraggable(header, api));
     this.setupMessage.className = 'setup-message';
     const sources = document.createElement('div');
     sources.className = 'setup-source settings-options';
@@ -210,7 +210,7 @@ export class LiveView {
     const brand = uiText(document.createElement('span'), 'ui.appName');
     this.header.append(uiIcon('qwen'), brand, this.shortcut);
     place(this.header, OVERLAY_GEOMETRY.header);
-    makeOverlayDraggable(this.header, api);
+    this.removers.push(makeOverlayDraggable(this.dock, api));
     this.orb.className = 'voice-orb idle';
     this.orb.setAttribute('aria-hidden', 'true');
     const core = document.createElement('span');
@@ -288,6 +288,7 @@ export class LiveView {
     this.caption.setAttribute('role', 'status');
     place(this.caption, OVERLAY_GEOMETRY.caption);
     this.preview.className = 'camera-preview';
+    this.removers.push(makeOverlayDraggable(this.preview, api));
     place(this.preview, OVERLAY_GEOMETRY.preview);
     const slot = document.createElement('div');
     slot.className = 'camera-preview-slot';
@@ -300,8 +301,9 @@ export class LiveView {
     this.preview.id = 'camera-preview';
     place(this.previewToggle, OVERLAY_GEOMETRY.previewToggle);
     icon(this.previewToggle, 'eye');
-    this.dock.append(this.previewToggle);
-    this.dock.append(this.status);
+    // Keep the preview control above the status hit box as well as its text.
+    // A single centered status line can overlap the control's upper edge.
+    this.dock.append(this.status, this.previewToggle);
     this.surface.append(this.preview, this.caption, this.dock);
     this.settings = new SettingsPanel(
       api,
@@ -465,13 +467,19 @@ export class LiveView {
     text(
       this.statusAudio,
       audioStatusKey
-        ? liveText(language, audioStatusKey)
-        : state.visualInput
-          ? `${liveText(language, state.visualInput.source === 'camera' ? 'ui.camera' : 'ui.screen')} · ${liveText(language, state.visualInput.mode === 'live-feed' ? 'ui.liveFeed' : 'ui.onDemand')}`
-          : '',
+        ? liveText(
+            language,
+            audioStatusKey === 'ui.micAndSpeakerMuted'
+              ? 'ui.micAndSpeakerMutedCompact'
+              : audioStatusKey,
+          )
+        : '',
     );
     this.statusAudio.hidden = !this.statusAudio.textContent;
-    this.statusAudio.title = this.statusAudio.textContent;
+    this.statusAudio.title = audioStatusKey
+      ? liveText(language, audioStatusKey)
+      : this.statusAudio.textContent;
+    this.statusAudio.setAttribute('aria-label', this.statusAudio.title);
     this.status.classList.toggle('has-audio-status', Boolean(audioStatusKey));
     this.status.classList.toggle(
       'error',
@@ -505,6 +513,7 @@ export class LiveView {
         state.connection === 'ready',
       );
     const preview = cameraAvailable && this.previewExpanded;
+    this.status.classList.toggle('has-preview-control', cameraAvailable);
     this.preview.hidden = !preview;
     this.preview.style.top = `${caption ? OVERLAY_GEOMETRY.previewWithCaption.y : OVERLAY_GEOMETRY.preview.y}px`;
     this.previewToggle.hidden = !cameraAvailable;

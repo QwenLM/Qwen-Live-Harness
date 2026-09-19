@@ -74,9 +74,9 @@ Geometry constants live in [`overlay-geometry.ts`](src/shared/overlay-geometry.t
 
 When changing layout, test screen edges, multiple displays, negative coordinates, scaling, display removal, and expanded settings/previews. Temporary repositioning must not overwrite saved user positions. State updates and snapshots must not move windows. Keep media and editing controls mounted so subtitle updates do not discard focus, previews, or drafts. [`subagents-windows.ts`](src/main/subagents-windows.ts) manages subagent panels; expanded details must not cover the main UI or status bar.
 
-The Pebble UI uses a 234 × 194 px interaction card with persistent call controls and a task summary. Settings appear beside the card; the task summary opens the task window. Terminal sessions, instruction deliveries, session reports, searches, visual analyses, and monitors have their own status and detail views.
+The Pebble UI uses a 234 × 171 px interaction card with persistent call controls and a task summary. Drag the card's background, status or waveform, or the camera preview to move the UI; buttons keep their normal actions. The preview sits 12 px above the card when captions are hidden, while captions have their own reserved space. Settings appear beside the card; the task summary opens the task window. Terminal sessions, instruction deliveries, session reports, searches, visual analyses, and monitors have their own status and detail views.
 
-Iris is the default palette. On connection or reconnection, Host reads top-level `themeColor` from the configuration path supplied by the authenticated daemon. Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`; missing or invalid values use Iris without affecting calls. Light/dark/system appearance is independently persisted. See the [configuration guide](../../docs/configuration.md#theme-palette).
+Iris is the default palette. **Settings → Personalization → Color palette** provides seven named swatches: `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. Selecting a palette saves only the top-level `themeColor` field through a validated IPC call, preserving the rest of the authenticated daemon's configuration, and updates both UI surfaces without rebuilding media, moving windows, or losing editing state. Host also reads this field on connection or reconnection; missing or invalid values use Iris. Light/dark/system appearance is independently persisted. See the [configuration guide](../../docs/configuration.md#theme-palette).
 
 ## Boundary with the daemon
 
@@ -132,7 +132,9 @@ Host preferences and routine failure logs are stored under Electron `userData`, 
 ├── theme.json
 └── logs/
     ├── host-errors.log
-    └── host-errors.log.1
+    ├── host-errors.log.1
+    ├── host-window-trace.jsonl     # debug only
+    └── host-window-trace.jsonl.1
 ```
 
 Selected failure events are recorded even without debug. Logs contain allowlisted error codes, stages, epochs, and related metadata. Files use mode `0600`, rotate at 1 MiB, and retain the current file plus one backup. Logging failures must not interrupt media or shutdown. See [`host-diagnostics.ts`](src/main/host-diagnostics.ts).
@@ -140,6 +142,8 @@ Selected failure events are recorded even without debug. Logs contain allowliste
 `--live-harness-debug` records Host state, device, and frame-transport diagnostics. The daemon's `--debug` archives the five model-connection kinds—main, Monitor, search, visual analysis, and notification speech—plus runtime/control events under `<dataDir>/debug/run-*`. Those archives include private prompts, Memory context, tools, and media; credential redaction does not remove secrets inside audio or images. Per-Monitor media archives are separate. See [Run archives and offline inspection](../qwen-live-harness/README.md#run-archives-and-offline-inspection) for verification/export without executing recorded tasks, and [Configuration and features](../../docs/configuration.md) for user-facing options and data locations.
 
 Fixed UI strings are centralized in [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts), with paired `en` and `zh-CN` entries. Host bundles shared messages, startup, and subagent modules through build aliases rather than depending on an installed daemon npm package at runtime. Rebuild and verify both packages after changing shared files.
+
+Window traces retain capture IDs, native frame and content bounds, layout changes, resize events, and sent/applied renderer offsets. Each record identifies the process; startup also records the Host build hash. The debug-only trace rotates at 4 MiB and retains one previous file. It contains bounded geometry and owned state labels, not screen pixels, dialogue, configuration, or credentials. Use it to distinguish a changed native frame from actual content movement; a frame height change alone does not prove the UI moved.
 
 ## Tests and packaging
 

@@ -134,6 +134,7 @@ function setup(overrides: Partial<LiveHostApi> = {}) {
     setTheme: async (theme) => {
       calls.push(['theme', theme]);
     },
+    setThemeColor: async () => {},
     openWebShellForPermission: async () => {},
     getState: async () => current,
     onInputLevel: () => () => {},
@@ -150,7 +151,7 @@ function setup(overrides: Partial<LiveHostApi> = {}) {
   };
   const click = (label: string) =>
     get<HTMLButtonElement>(`[aria-label="${label}"]`).click();
-  const pointer = (element: HTMLElement, type: string, x = 0, y = 0) => {
+  const pointer = (element: EventTarget, type: string, x = 0, y = 0) => {
     const event = new dom.window.MouseEvent(type, {
       bubbles: type !== 'pointerenter' && type !== 'pointerleave',
       button: 0,
@@ -298,8 +299,8 @@ describe('persistent Live orb and Settings', () => {
       h.app.querySelectorAll('.settings-field > strong'),
     );
     assert.deepEqual(
-      groups.slice(-2).map((group) => group.textContent),
-      ['语言', '外观'],
+      groups.slice(-3).map((group) => group.textContent),
+      ['语言', '外观', '配色'],
     );
   });
 
@@ -382,19 +383,13 @@ describe('persistent Live orb and Settings', () => {
     const h = setup();
     for (const language of ['en', 'zh-CN'] as const) {
       for (const [inputMuted, outputMuted, expected] of [
-        [
-          false,
-          false,
-          language === 'en' ? 'Screen · On Demand' : '屏幕 · 按需截图',
-        ],
+        [false, false, ''],
         [true, false, language === 'en' ? 'Mic off' : '麦克风已关闭'],
         [false, true, language === 'en' ? 'Speaker muted' : '播报已静音'],
         [
           true,
           true,
-          language === 'en'
-            ? 'Mic off · Speaker muted'
-            : '麦克风已关闭 · 播报已静音',
+          language === 'en' ? 'Mic off · Muted' : '麦克风关闭 · 静音',
         ],
       ] as const) {
         h.update({
@@ -414,12 +409,56 @@ describe('persistent Live orb and Settings', () => {
         );
         assert.equal(h.get('.voice-status-audio').textContent, expected);
         assert.equal(h.get('.voice-status-audio').hidden, !expected);
+        if (inputMuted && outputMuted) {
+          const full = liveText(language, 'ui.micAndSpeakerMuted');
+          assert.equal(h.get('.voice-status-audio').title, full);
+          assert.equal(
+            h.get('.voice-status-audio').getAttribute('aria-label'),
+            full,
+          );
+        }
         assert.equal(
           h.get('.voice-controls').getAttribute('aria-hidden'),
           null,
         );
       }
     }
+  });
+
+  it('keeps ordinary source and capture mode out of the main status while preserving Settings and preview controls', () => {
+    const h = setup();
+    for (const language of ['en', 'zh-CN'] as const) {
+      for (const source of ['screen', 'camera'] as const) {
+        for (const mode of ['on-demand', 'live-feed'] as const) {
+          h.update({
+            ...h.state(),
+            language,
+            live: { ...baseline.live, state: 'listening' },
+            visualInput: { ...baseline.visualInput!, source, mode },
+          });
+          assert.equal(
+            h.get('.voice-status-primary').textContent,
+            liveText(language, 'ui.listening'),
+          );
+          assert.equal(h.get('.voice-status-audio').hidden, true);
+          assert.equal(h.get('.voice-status-audio').textContent, '');
+          assert.equal(
+            h.get('.voice-status-audio').getAttribute('aria-label'),
+            '',
+          );
+          assert.equal(h.get('.preview-toggle').hidden, source !== 'camera');
+          const dockChildren = Array.from(h.get('.orb-dock').children);
+          assert(
+            dockChildren.indexOf(h.get('.preview-toggle')) >
+              dockChildren.indexOf(h.get('.voice-status')),
+          );
+        }
+      }
+    }
+    const gear = h.get('.settings-control svg');
+    assert.equal(gear.querySelector('circle')?.getAttribute('r'), '3.1');
+    assert.match(gear.querySelector('path')?.getAttribute('d') ?? '', /Z$/);
+    assert.equal(h.get('.settings-control').getAttribute('aria-label'), '设置');
   });
 
   it('preserves mute indicators with permissions, errors and quit states and retains the full primary text', () => {
@@ -439,10 +478,7 @@ describe('persistent Live orb and Settings', () => {
     assert.equal(h.get('.permission-link').hidden, false);
     assert.equal(status.contains(h.get('.permission-link')), true);
     assert.equal(h.get('.voice-status-primary').hidden, true);
-    assert.equal(
-      h.get('.voice-status-audio').textContent,
-      'Mic off · Speaker muted',
-    );
+    assert.equal(h.get('.voice-status-audio').textContent, 'Mic off · Muted');
     for (const quitState of ['pending', 'failed'] as const) {
       h.update({ ...h.state(), quitState });
       assert.equal(h.get('.permission-link').hidden, true);
@@ -479,14 +515,16 @@ describe('persistent Live orb and Settings', () => {
     h.pointer(h.get('.voice-status-primary'), 'pointerdown', 100, 100);
     h.pointer(h.get('.voice-status-primary'), 'pointermove', 150, 150);
     h.pointer(h.get('.voice-status-primary'), 'pointerup', 150, 150);
-    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.calls, [
+      ['drag', 'start', 100, 100],
+      ['drag', 'move', 150, 150],
+      ['drag', 'end', 150, 150],
+    ]);
     assert.equal(status.classList.contains('error'), true);
     assert.equal(h.get('.voice-status-audio').hidden, false);
     h.update({ ...h.state(), live: baseline.live });
-    assert.equal(
-      h.get('.voice-status-audio').textContent,
-      'Screen · On Demand',
-    );
+    assert.equal(h.get('.voice-status-audio').textContent, '');
+    assert.equal(h.get('.voice-status-audio').hidden, true);
     assert.equal(status.classList.contains('has-audio-status'), false);
   });
 
@@ -683,7 +721,7 @@ describe('persistent Live orb and Settings', () => {
     const groups = Array.from(
       panel.querySelectorAll('.settings-group > .settings-field > strong'),
     );
-    assert.equal(groups.at(-2)?.textContent, 'Language');
+    assert.equal(groups.at(-3)?.textContent, 'Language');
     const chinese = h.get<HTMLSelectElement>(
       'select[data-live-label="language.label"]',
     );
@@ -764,12 +802,12 @@ describe('persistent Live orb and Settings', () => {
         'Capture Mode',
         'Language',
         'Appearance',
+        'Color palette',
       ],
     );
     const description = h.get('.capture-mode-description');
     const original = description.textContent;
-    assert.match(original ?? '', /On Demand/);
-    assert.doesNotMatch(original ?? '', /Live Feed/);
+    assert.equal(original, liveText('en', 'ui.modeDemandHint'));
     const feed = Array.from(h.app.querySelectorAll('button')).find(
       (element) => element.textContent === 'Live Feed',
     )!;
@@ -781,8 +819,7 @@ describe('persistent Live orb and Settings', () => {
       visualInput: { ...baseline.visualInput!, mode: 'live-feed' },
     });
     assert.equal(h.get('.capture-mode-description'), description);
-    assert.match(description.textContent ?? '', /Live Feed/);
-    assert.doesNotMatch(description.textContent ?? '', /On Demand/);
+    assert.equal(description.textContent, liveText('en', 'ui.modeFeedHint'));
   });
 
   it('toggles camera preview visibility without changing source or reattaching video', () => {
@@ -848,6 +885,7 @@ describe('persistent Live orb and Settings', () => {
     assert.deepEqual(h.layouts, ['orb', 'orb-preview']);
     h.click('Hide camera preview');
     assert.equal(h.layouts.at(-1), 'orb');
+    assert.equal(h.calls.filter(([name]) => name === 'preview').length, 1);
   });
 
   it('preserves orb, controls, focus, input scale and preview slot across state updates', () => {
@@ -1001,6 +1039,104 @@ describe('persistent Live orb and Settings', () => {
         ['drag', 'end', 125, 140],
       ]);
     }
+  });
+
+  it('drags the visible card, waveform and status without a duplicate header handler', () => {
+    const h = setup();
+    assert.equal(h.get('.voice-header').hasAttribute('data-live-drag'), false);
+    assert.equal(h.get('.orb-dock').hasAttribute('data-live-drag'), true);
+    for (const selector of [
+      '.voice-card',
+      '.voice-header > span',
+      '.voice-wave i',
+      '.voice-status-primary',
+      '.voice-status-audio',
+    ]) {
+      const target = h.get(selector);
+      h.pointer(target, 'pointerdown', 100, 100);
+      h.pointer(target, 'pointermove', 125, 140);
+      h.pointer(target, 'pointerup', 125, 140);
+      target.click();
+      assert.deepEqual(h.calls.splice(0), [
+        ['drag', 'start', 100, 100],
+        ['drag', 'move', 125, 140],
+        ['drag', 'end', 125, 140],
+      ]);
+    }
+  });
+
+  it('drags the preview image and label, while preview and call controls remain clickable', async () => {
+    const h = setup();
+    h.update({
+      ...h.state(),
+      visualInput: { ...baseline.visualInput!, source: 'camera' },
+    });
+    const image = h.dom.window.document.createElement('video');
+    image.className = 'camera-preview-video';
+    h.get('.camera-preview-slot').append(image);
+    h.calls.length = 0;
+    for (const target of [image, h.get('.camera-preview-badge')]) {
+      h.pointer(target, 'pointerdown', 100, 100);
+      h.pointer(h.app, 'pointermove', 125, 140);
+      h.pointer(h.app, 'pointerup', 125, 140);
+      target.click();
+      assert.deepEqual(h.calls.splice(0), [
+        ['drag', 'start', 100, 100],
+        ['drag', 'move', 125, 140],
+        ['drag', 'end', 125, 140],
+      ]);
+    }
+    for (const label of [
+      'Mute microphone',
+      liveText('en', 'ui.muteOutput'),
+      'Start call',
+      'Hide camera preview',
+    ]) {
+      const control = h.get<HTMLButtonElement>(`[aria-label="${label}"]`);
+      h.pointer(
+        control.querySelector('svg') ?? control,
+        'pointerdown',
+        100,
+        100,
+      );
+      h.pointer(control, 'pointermove', 125, 140);
+      h.pointer(control, 'pointerup', 125, 140);
+      control.click();
+      await settled();
+    }
+    assert.equal(
+      h.calls.some(([name]) => name === 'drag'),
+      false,
+    );
+    assert(h.calls.some(([name]) => name === 'input'));
+    assert(h.calls.some(([name]) => name === 'output'));
+    assert(h.calls.some(([name]) => name === 'toggle'));
+    assert.equal(h.get('.camera-preview').hidden, true);
+  });
+
+  it('does not close Settings on a card drag click, but still closes with Escape and a real outside click', async () => {
+    const h = setup();
+    h.click('Settings');
+    await settled();
+    const card = h.get('.voice-card');
+    h.pointer(card, 'pointerdown', 100, 100);
+    h.pointer(h.app, 'pointermove', 125, 140);
+    h.pointer(h.app, 'pointerup', 125, 140);
+    card.click();
+    assert.equal(h.get('.settings-layer').hidden, false);
+    h.app.dispatchEvent(
+      new h.dom.window.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+      }),
+    );
+    assert.equal(h.get('.settings-layer').hidden, true);
+    h.click('Settings');
+    await settled();
+    h.pointer(card, 'pointerdown', 100, 100);
+    h.pointer(card, 'pointerup', 100, 100);
+    card.click();
+    assert.equal(h.get('.settings-layer').hidden, true);
   });
 
   it('keeps the orb and failure feedback for native tray Quit across disconnects', () => {

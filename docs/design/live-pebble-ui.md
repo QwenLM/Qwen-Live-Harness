@@ -19,17 +19,17 @@ from Pebble and cannot be corrected by recoloring alone.
 
 ## Presentation and geometry
 
-| Component      | Target                                                   |
-| -------------- | -------------------------------------------------------- |
-| Voice card     | 234 × 194 px; 26 px radius; 15 px inset                  |
-| Header         | 204 × 12 px at card offset 15, 15; 9 px text             |
-| Voice disc     | 51 × 51 px at offset 18, 47                              |
-| Status         | 12 px / 16 px, weight 550; secondary source/mode at 9 px |
-| Toolbar        | 204 × 41 px at offset 15, 116; five 31 × 30 px buttons   |
-| Task summary   | Centered below card, 13 px gap, 30 px height             |
-| Camera preview | 161 × 107 px; 14 px radius; 5 px image inset             |
-| Settings       | 306 × 532 px; 17 px radius; 48 px header                 |
-| Tasks          | 280 px content width; bounded scrollable list/detail     |
+| Component      | Target                                                 |
+| -------------- | ------------------------------------------------------ |
+| Voice card     | 234 × 171 px; 26 px radius; 15 px inset                |
+| Header         | 204 × 12 px at card offset 15, 15; 11 px text          |
+| Voice disc     | 51 × 51 px at offset 18, 47                            |
+| Status         | 13 px / 17 px; optional mute indicators at 10.5 px     |
+| Toolbar        | 204 × 41 px at offset 15, 116; five 31 × 30 px buttons |
+| Task summary   | Centered below card, 13 px gap, 30 px height           |
+| Camera preview | 161 × 107 px; 14 px radius; 5 px image inset           |
+| Settings       | 306 × 532 px; 17 px radius; 48 px header               |
+| Tasks          | 280 px content width; bounded scrollable list/detail   |
 
 All dimensions are CSS pixels, independent of display scale. A larger transparent
 native canvas accommodates the card and settings together without shrinking the
@@ -39,7 +39,7 @@ renderer. Showing captions moves the preview upward while retaining the card's
 anchor; captions cannot overlap the preview or card. Transparent canvas regions
 remain click-through.
 
-The title header is the drag handle. The right-hand slot displays the actual
+The visible card background, title, waveform, status and camera preview are drag handles; buttons and other controls retain their own actions. Pointer capture and native input routing stay active until release or cancellation, and a layout change does not interrupt an ongoing drag. Without captions, the preview sits 12 px above the card; the toolbar leaves 14 px below it. The right-hand slot displays the actual
 daemon-provided shortcut, replacing the prototype's fictional timer; the protocol
 does not provide a call start timestamp. Source, status, captions and task counts
 come from existing Host state. Controls stay mounted and visible. No fabricated

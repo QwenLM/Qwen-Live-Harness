@@ -20,6 +20,7 @@ import {
   type SubagentsSide,
 } from './subagents-position.ts';
 import type { DisplayWorkArea } from './overlay-position.ts';
+import { SUBAGENTS_GEOMETRY } from '../shared/subagents-geometry.ts';
 
 type Options = {
   baseDirectory: string;
@@ -390,8 +391,7 @@ export class SubagentsWindows {
   }
   private createWindow(): BrowserWindow {
     const window = new BrowserWindow({
-      width: 132,
-      height: 62,
+      ...SUBAGENTS_GEOMETRY.summary,
       show: false,
       frame: false,
       resizable: false,
@@ -482,8 +482,8 @@ export class SubagentsWindows {
     if (!anchor || !this.window || this.window.isDestroyed()) return;
     const size =
       this.mode === 'summary'
-        ? { width: 132, height: 62 }
-        : { width: 320, height: 460 };
+        ? SUBAGENTS_GEOMETRY.summary
+        : SUBAGENTS_GEOMETRY.expanded;
     if (preservePosition) {
       const bounds = this.window.getBounds();
       this.window.setBounds(
