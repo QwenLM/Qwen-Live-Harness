@@ -14,6 +14,7 @@ import type {
   SubagentPermission,
   SubagentStatus,
   SubagentTask,
+  SubagentFilter,
   SubagentsControlRequest,
 } from 'qwen-live-harness/subagents';
 import type {
@@ -107,6 +108,25 @@ function sourceLabel(language: LiveLanguage, source: string): string {
     : source;
 }
 
+function taskMatchesFilter(
+  task: SubagentTask,
+  filter: SubagentFilter,
+): boolean {
+  if (filter === 'needsAttention') return task.status === 'waiting';
+  if (filter === 'running')
+    return !['completed', 'failed', 'cancelled', 'interrupted'].includes(
+      task.status,
+    );
+  if (filter === 'completed')
+    return (
+      task.status === 'completed' ||
+      (task.status === 'cancelled' &&
+        task.kind === 'proactive' &&
+        task.source !== 'timer')
+    );
+  return true;
+}
+
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className: string,
@@ -160,6 +180,9 @@ export class SubagentsView {
   private readonly back = element('button', 'subagents-back');
   private readonly notice = element('p', 'subagents-notice');
   private readonly counts = element('div', 'subagents-counts');
+  private readonly filterBar = element('div', 'subagents-filter-bar');
+  private readonly filterLabel = element('span', 'subagents-filter-label');
+  private readonly clearFilter = element('button', 'subagents-clear-filter');
   private readonly summaryCounts = element('span', 'subagents-counts');
   private readonly summaryWaiting = element(
     'span',
@@ -234,6 +257,7 @@ export class SubagentsView {
       element: HTMLElement;
       title: HTMLElement;
       origin: HTMLElement;
+      details: HTMLElement;
       unavailable: HTMLElement;
       choices: HTMLElement;
       buttons: Map<string, HTMLButtonElement>;
@@ -278,6 +302,7 @@ export class SubagentsView {
   private actionGeneration = 0;
   private errorMessage: unknown = '';
   private feedbackKey?: LiveMessageKey;
+  private feedbackMessage?: string;
   private feedbackTaskId?: string;
   private readonly previousOffsets = new Map<number, number>();
   private readonly keydown = (event: KeyboardEvent) => {
@@ -317,13 +342,34 @@ export class SubagentsView {
       'click',
       () => void this.run(() => this.api.expand()),
     );
+    this.list.id = 'subagents-task-list';
+    this.counts.setAttribute('role', 'group');
+    uiLabel(this.counts, 'subagents.filterTasks');
     for (const key of ['running', 'completed', 'needsAttention'] as const) {
-      const count = element('span', `subagents-count ${key}`);
+      const count = element(
+        'button',
+        `subagents-count subagents-filter ${key}`,
+      );
+      count.type = 'button';
+      count.dataset.filter = key;
+      count.setAttribute('aria-pressed', 'false');
+      count.setAttribute('aria-controls', this.list.id);
+      count.addEventListener('click', () => {
+        const selected =
+          this.state?.filter ?? this.state?.page?.filter ?? 'all';
+        this.changeFilter(selected === key ? 'all' : key);
+      });
       const value = element('b', 'subagents-count-value');
       value.dataset.count = key;
       count.append(value, uiText(element('span', ''), `subagents.${key}`));
       this.counts.append(count);
     }
+    this.clearFilter.type = 'button';
+    this.clearFilter.setAttribute('aria-controls', this.list.id);
+    uiText(this.clearFilter, 'subagents.showAllTasks');
+    this.clearFilter.addEventListener('click', () => this.changeFilter('all'));
+    this.filterLabel.setAttribute('role', 'status');
+    this.filterBar.append(this.filterLabel, this.clearFilter);
     for (const key of ['running', 'completed'] as const) {
       const count = element('span', `subagents-count ${key}`);
       const symbol = element('span', `subagents-count-symbol ${key}`);
@@ -447,6 +493,7 @@ export class SubagentsView {
       header,
       this.notice,
       this.counts,
+      this.filterBar,
       this.otherCounts,
       this.empty,
       this.list,
@@ -492,6 +539,7 @@ export class SubagentsView {
       this.pending = false;
       this.errorMessage = '';
       this.feedbackKey = undefined;
+      this.feedbackMessage = undefined;
       for (const row of this.rows.values()) row.element.remove();
       this.rows.clear();
       for (const row of this.sessionRows.values()) row.element.remove();
@@ -508,13 +556,23 @@ export class SubagentsView {
       priorMode !== state.mode
     ) {
       this.feedbackKey = undefined;
+      this.feedbackMessage = undefined;
       this.errorMessage = '';
     }
     if (priorMode !== state.mode) this.focused = false;
     if (state.mode === 'summary') this.previousOffsets.clear();
+    const filter = state.filter ?? state.page?.filter ?? 'all';
+    const priorFilter = this.state?.filter ?? this.state?.page?.filter ?? 'all';
+    const filterChanged = priorFilter !== filter;
+    const restoreFilterFocus =
+      filterChanged &&
+      filter === 'all' &&
+      this.app.ownerDocument.activeElement === this.clearFilter;
+    if (filterChanged) this.previousOffsets.clear();
     const previousOffset = this.state?.page?.offset;
     if (
       previousOffset !== undefined &&
+      !filterChanged &&
       state.page &&
       state.page.offset > previousOffset
     )
@@ -550,6 +608,35 @@ export class SubagentsView {
     this.summary.hidden = !summary;
     this.panel.hidden = summary;
     this.counts.hidden = detail;
+    const filterDisabled =
+      this.pending ||
+      Boolean(state.loading) ||
+      !state.connected ||
+      !state.controlsAvailable;
+    for (const button of this.counts.querySelectorAll<HTMLButtonElement>(
+      '[data-filter]',
+    )) {
+      button.setAttribute(
+        'aria-pressed',
+        String(button.dataset.filter === filter),
+      );
+      // Keep the keyboard focus while a page refresh is in flight. A native
+      // disabled button loses focus in Chromium and cannot be toggled back.
+      button.disabled = !state.connected || !state.controlsAvailable;
+      button.setAttribute('aria-disabled', String(filterDisabled));
+      button.title = liveText(language, 'subagents.filterHint');
+    }
+    this.filterBar.hidden = summary || detail || filter === 'all';
+    this.clearFilter.disabled = !state.connected || !state.controlsAvailable;
+    this.clearFilter.setAttribute('aria-disabled', String(filterDisabled));
+    text(
+      this.filterLabel,
+      filter === 'all'
+        ? ''
+        : liveText(language, 'subagents.filteredTasks', {
+            category: liveText(language, `subagents.${filter}`),
+          }),
+    );
     this.summary.disabled = this.pending || !state.connected || !state.snapshot;
     text(
       this.heading,
@@ -600,6 +687,7 @@ export class SubagentsView {
     );
     this.otherCounts.hidden =
       detail ||
+      filter !== 'all' ||
       !counts ||
       !(counts.failed || counts.cancelled || counts.interrupted);
     if (counts)
@@ -645,31 +733,37 @@ export class SubagentsView {
     if (detail) this.renderDetail(state);
     else {
       this.renderList(state);
-      this.empty.hidden = Boolean(
-        (page?.snapshot ?? state.snapshot)?.tasks.length ||
-        page?.unassignedPermissions?.length ||
-        page?.discoveredSessions !== undefined ||
-        page?.instructionDeliveries !== undefined ||
-        page?.sessionReports !== undefined,
-      );
+      this.empty.hidden =
+        this.list.childElementCount > 0 || Boolean(state.loading);
       text(
         this.empty,
         liveText(
           language,
           !state.snapshot
             ? 'subagents.unavailable'
-            : state.snapshot.omitted
-              ? 'subagents.noRetained'
-              : 'subagents.empty',
+            : filter !== 'all'
+              ? 'subagents.filterEmpty'
+              : state.snapshot.omitted
+                ? 'subagents.noRetained'
+                : 'subagents.empty',
         ),
       );
     }
     this.feedback.hidden = !this.feedbackKey;
     text(
       this.feedback,
-      this.feedbackKey ? liveText(language, this.feedbackKey) : '',
+      this.feedbackMessage
+        ? displayLiveMessage(language, this.feedbackMessage)
+        : this.feedbackKey
+          ? liveText(language, this.feedbackKey)
+          : '',
     );
     this.renderError();
+    if (restoreFilterFocus && !summary && !detail) {
+      this.counts
+        .querySelector<HTMLButtonElement>(`[data-filter="${priorFilter}"]`)
+        ?.focus();
+    }
     if (
       priorMode === 'summary' &&
       state.mode === 'list' &&
@@ -702,7 +796,11 @@ export class SubagentsView {
   }
 
   private renderList(state: SubagentsWindowState): void {
-    const tasks = (state.page?.snapshot ?? state.snapshot)?.tasks ?? [];
+    const filter = state.filter ?? state.page?.filter ?? 'all';
+    const tasks = [...((state.page?.snapshot ?? state.snapshot)?.tasks ?? [])]
+      .filter((task) => taskMatchesFilter(task, filter))
+      // Preserve the server's newest-arrival order for equal clock timestamps.
+      .sort((a, b) => b.createdAt - a.createdAt);
     const ids = new Set(tasks.map((task) => task.id));
     for (const [id, row] of this.rows) {
       if (ids.has(id)) continue;
@@ -768,7 +866,10 @@ export class SubagentsView {
         `${task.kind === 'search' || task.kind === 'visual' ? `${kind} · ` : ''}${liveText(state.language, 'subagents.openTask', { title: task.title })}`,
       );
     }
-    const permissions = state.page?.unassignedPermissions ?? [];
+    const permissions =
+      filter === 'all' || filter === 'needsAttention'
+        ? (state.page?.unassignedPermissions ?? [])
+        : [];
     this.renderPermissions(
       this.unassigned,
       permissions,
@@ -780,9 +881,33 @@ export class SubagentsView {
       if (this.list.firstElementChild !== this.unassigned)
         this.list.prepend(this.unassigned);
     } else this.unassigned.remove();
-    this.renderDiscoveredSessions(state);
-    this.renderInstructionDeliveries(state);
-    this.renderSessionReports(state);
+    const auxiliaryState =
+      filter === 'all'
+        ? state
+        : {
+            ...state,
+            page: state.page
+              ? {
+                  ...state.page,
+                  discoveredSessions: undefined,
+                  instructionDeliveries: undefined,
+                  sessionReports: undefined,
+                }
+              : undefined,
+          };
+    this.renderDiscoveredSessions(auxiliaryState);
+    this.renderInstructionDeliveries(auxiliaryState);
+    this.renderSessionReports(auxiliaryState);
+    // New tasks must appear at the top even when existing DOM rows are reused.
+    const focus = this.app.ownerDocument.activeElement as HTMLElement | null;
+    for (const [index, task] of tasks.entries()) {
+      const row = this.rows.get(task.id)!.element;
+      const before =
+        this.list.children[index + (permissions.length ? 1 : 0)] ?? null;
+      if (before !== row) this.list.insertBefore(row, before);
+    }
+    if (focus?.isConnected && this.app.ownerDocument.activeElement !== focus)
+      focus.focus({ preventScroll: true });
   }
 
   private renderDiscoveredSessions(state: SubagentsWindowState): void {
@@ -1229,11 +1354,18 @@ export class SubagentsView {
           element: element('section', 'subagent-permission'),
           title: element('p', 'subagent-permission-title'),
           origin: element('p', 'subagent-permission-origin'),
+          details: element('pre', 'subagent-permission-details'),
           unavailable: element('p', 'subagents-stop-reason'),
           choices: element('div', 'subagent-permission-choices'),
           buttons: new Map(),
         };
-        row.element.append(row.origin, row.title, row.choices, row.unavailable);
+        row.element.append(
+          row.origin,
+          row.title,
+          row.details,
+          row.choices,
+          row.unavailable,
+        );
         this.permissionRows.set(permission.requestHandle, row);
       }
       if (row.element.parentElement !== container)
@@ -1244,8 +1376,16 @@ export class SubagentsView {
         [permission.backend, permission.sessionId].filter(Boolean).join(' · '),
       );
       row.origin.hidden = !row.origin.textContent;
-      row.unavailable.hidden =
-        permission.choices.length > 0 && !permission.titleTruncated;
+      text(row.details, permission.details ?? '');
+      row.details.hidden = !permission.details;
+      row.details.tabIndex = 0;
+      row.details.setAttribute('aria-label', permission.title);
+      const choices = permission.choices.filter(
+        (choice) =>
+          choice.scope !== 'always' &&
+          !(permission.titleTruncated && choice.decision === 'allow'),
+      );
+      row.unavailable.hidden = choices.length > 0 && !permission.titleTruncated;
       text(
         row.unavailable,
         liveText(
@@ -1256,7 +1396,7 @@ export class SubagentsView {
         ),
       );
       const choiceIds = new Set<string>();
-      for (const choice of permission.choices) {
+      for (const choice of choices) {
         const key = `${choice.decision}:${choice.scope ?? ''}`;
         choiceIds.add(key);
         let button = row.buttons.get(key);
@@ -1268,27 +1408,28 @@ export class SubagentsView {
         }
         const label =
           choice.decision === 'allow'
-            ? choice.scope === 'once'
-              ? 'subagents.allowOnce'
-              : choice.scope === 'always'
-                ? 'subagents.allowAlways'
-                : 'subagents.allow'
-            : choice.scope === 'once'
-              ? 'subagents.denyOnce'
-              : choice.scope === 'always'
-                ? 'subagents.denyAlways'
-                : 'subagents.deny';
+            ? 'subagents.allowOnce'
+            : 'subagents.deny';
         text(button, liveText(state.language, label));
-        button.title = liveText(state.language, 'subagents.permissionScope');
+        button.title = liveText(
+          state.language,
+          choice.decision === 'allow'
+            ? 'permissionMode.allowOnceHint'
+            : 'subagents.deny',
+        );
         button.disabled =
           this.pending || !state.connected || !state.controlsAvailable;
         button.dataset.decision = choice.decision;
+        button.dataset.scope = choice.scope ?? '';
         button.onclick = () =>
           this.control(
             {
               action: 'permission',
               requestHandle: permission.requestHandle,
               decision: choice.decision,
+              ...(choice.decision === 'allow'
+                ? { scope: 'once' as const }
+                : {}),
             },
             state.instanceId,
           );
@@ -1322,7 +1463,25 @@ export class SubagentsView {
           ? (this.previousOffsets.get(page?.offset ?? 0) ??
             Math.max(0, (page?.offset ?? 0) - 32))
           : (page?.offset ?? 0);
-    this.control({ action: 'list', offset }, this.state?.instanceId);
+    this.control(
+      {
+        action: 'list',
+        offset,
+        ...(this.state?.filter
+          ? { filter: this.state.filter }
+          : this.state?.page?.filter
+            ? { filter: this.state.page.filter }
+            : {}),
+      },
+      this.state?.instanceId,
+    );
+  }
+
+  private changeFilter(filter: SubagentFilter): void {
+    if (this.pending || this.state?.loading) return;
+    this.previousOffsets.clear();
+    this.list.scrollTop = 0;
+    this.control({ action: 'list', offset: 0, filter }, this.state?.instanceId);
   }
 
   private control(request: SubagentsControlRequest, instanceId?: string): void {
@@ -1341,6 +1500,7 @@ export class SubagentsView {
       else if (result.type === 'outcome') {
         this.feedbackTaskId = result.taskId;
         this.feedbackKey = `subagents.outcome.${result.outcome}`;
+        this.feedbackMessage = result.message;
       }
     });
   }
@@ -1438,6 +1598,7 @@ export class SubagentsView {
     this.pending = true;
     this.errorMessage = '';
     this.feedbackKey = undefined;
+    this.feedbackMessage = undefined;
     const generation = ++this.actionGeneration;
     this.summary.disabled = true;
     this.renderError();

@@ -116,6 +116,22 @@ export type ContentBlock =
 
 export type PermissionOptionKind = 'proceed' | 'reject' | 'other';
 
+/** Backend operation facts, not instructions or proof that execution started. */
+export interface PermissionDetails {
+  toolCallId?: string;
+  toolName?: string;
+  command?: string;
+  /** Bounded JSON input, retaining exact strings for conservative policy matching. */
+  rawInput?: unknown;
+  cwd?: string;
+  /** Set only by the adaptor for its locally verified session working directory. */
+  cwdVerified?: boolean;
+  operation?: string;
+  resources?: readonly string[];
+  /** Incomplete/oversized input must never authorize an exact-action rule. */
+  incomplete?: boolean;
+}
+
 export interface PermissionOption {
   optionId: string;
   label?: string;
@@ -128,6 +144,8 @@ export interface PermissionOption {
    * signal.
    */
   escalation?: 'once' | 'always';
+  /** Explicit backend-defined persistent scope, displayed without narrowing it. */
+  persistentScope?: string;
 }
 
 export type BackendEvent =
@@ -138,6 +156,9 @@ export type BackendEvent =
       jobRef?: string;
       kind: 'message' | 'plan' | 'tool';
       text: string;
+      toolCallId?: string;
+      toolStatus?: 'pending' | 'in_progress' | 'completed' | 'failed';
+      details?: PermissionDetails;
     }
   | { type: 'progress'; jobRef?: string; summary: string }
   | { type: 'speak'; text: string }
@@ -148,6 +169,7 @@ export type BackendEvent =
       requestId: string;
       title: string;
       options: readonly PermissionOption[];
+      details?: PermissionDetails;
       payload?: unknown;
     }
   | {

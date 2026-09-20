@@ -5,6 +5,7 @@ import type {
   SubagentsControlResult,
   SubagentsPage,
   SubagentsSnapshot,
+  SubagentFilter,
 } from 'qwen-live-harness/subagents';
 import type { LiveTheme, LiveThemeColor, ResolvedTheme } from './theme.ts';
 
@@ -22,6 +23,7 @@ export type SubagentsWindowState = {
   pageError?: SubagentsControlErrorCode;
   mode: 'summary' | 'list' | 'detail';
   selectedId?: string;
+  filter?: SubagentFilter;
 };
 
 export type SubagentsWindowApi = {

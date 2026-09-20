@@ -36,6 +36,10 @@ import {
 } from './paths.js';
 import { registerCurrentRuntime } from './startup-registration.js';
 import { isIP } from 'node:net';
+import {
+  isPermissionMode,
+  type PermissionMode,
+} from './permission-preferences.js';
 import { resolveQwenHome } from './vendor/qwen-code-peer/registry.js';
 import {
   displayLiveError,
@@ -59,6 +63,7 @@ interface RawBackend extends Record<string, unknown> {
 interface RawConfig {
   themeColor?: string;
   language?: LiveLanguage;
+  permissionMode?: PermissionMode;
   realtimeApiKey?: string;
   realtimeEndpoint?: string;
   realtimeModel?: string;
@@ -117,12 +122,18 @@ export async function runInit(
   const configPath = join(configDirectory, 'config.json');
   let previousLanguage: LiveLanguage | undefined;
   let previousEndpoint: string | undefined;
+  let previousPermissionMode: PermissionMode = 'ask';
   if (existsSync(configPath)) {
     try {
       const existing: unknown = JSON.parse(
         readFileSync(configPath, 'utf8').replace(/^\uFEFF/u, ''),
       );
       if (existing && typeof existing === 'object') {
+        if (
+          'permissionMode' in existing &&
+          isPermissionMode(existing.permissionMode)
+        )
+          previousPermissionMode = existing.permissionMode;
         if ('language' in existing && isLiveLanguage(existing.language))
           previousLanguage = existing.language;
         if (
@@ -356,6 +367,28 @@ export async function runInit(
     if (idx !== -1) available.splice(idx, 1);
   }
 
+  // Ask after all selected Harnesses have been configured, before writing anything.
+  let permissionMode: PermissionMode = 'ask';
+  if (backends.length > 0) {
+    console.log(`\n  ${t('permissionMode.hint')}\n`);
+    const permissionAnswer = await prompts({
+      type: 'select',
+      ...selectLabels,
+      name: 'value',
+      message: t('permissionMode.initQuestion'),
+      choices: [
+        { title: t('permissionMode.ask'), value: 'ask' },
+        { title: t('permissionMode.allowAll'), value: 'allow-all' },
+      ],
+      initial: previousPermissionMode === 'allow-all' ? 1 : 0,
+    });
+    if (!isPermissionMode(permissionAnswer.value)) {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    permissionMode = permissionAnswer.value;
+  }
+
   // 5. API key
   const envKeyName = process.env['DASHSCOPE_API_KEY']
     ? 'DASHSCOPE_API_KEY'
@@ -556,6 +589,7 @@ export async function runInit(
   const config: RawConfig = {
     themeColor: 'iris',
     language,
+    permissionMode,
     realtimeApiKey: apiKey,
     realtimeEndpoint,
     realtimeModel,
@@ -596,6 +630,10 @@ export async function runInit(
     `  ✓ ${defaultAgent ? t('init.backendSummary', { name: defaultAgent.label }) : t('init.noBackendSummary')}`,
   );
   console.log(`  ✓ ${t('init.apiSummary', { name: realtimeModel })}`);
+  if (backends.length > 0)
+    console.log(
+      `  ✓ ${t('permissionMode.initSummary', { mode: t(permissionMode === 'ask' ? 'permissionMode.ask' : 'permissionMode.allowAll') })}`,
+    );
   console.log(
     `  ✓ ${t('init.endpointSummary', { endpoint: realtimeEndpoint })}`,
   );

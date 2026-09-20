@@ -119,6 +119,247 @@ function setup(
 }
 
 describe('Subagents read-only surfaces', () => {
+  it('hides legacy persistent scopes while localizing once-only outcomes and preserving raw command details', async () => {
+    const scope = liveMessage('subagents.permissionScope');
+    const message = liveMessage('subagents.allowOnce');
+    const selected = task({
+      status: 'waiting',
+      permissions: [
+        {
+          requestHandle: 'req_once',
+          title: 'Run tests',
+          details: 'npm test -- --runInBand',
+          alwaysScope: scope,
+          choices: [
+            { decision: 'allow', scope: 'once' },
+            { decision: 'allow', scope: 'always' },
+            { decision: 'deny' },
+          ],
+        },
+      ],
+    });
+    const h = setup(
+      {
+        control: async (_instance, request) => {
+          h.calls.push(['control', request]);
+          return {
+            type: 'outcome',
+            outcome: 'allowed',
+            requestHandle: 'req_once',
+            scope: 'once',
+            message,
+          };
+        },
+      },
+      {
+        mode: 'detail',
+        instanceId: 'one',
+        controlsAvailable: true,
+        selectedId: selected.id,
+        page: { snapshot: snapshot([selected]), selected, offset: 0, total: 1 },
+      },
+    );
+    assert.equal(h.app.querySelector('.subagent-permission-scope'), null);
+    assert.equal(h.app.querySelector('[data-scope="always"]'), null);
+    assert.equal(h.get('.subagent-permission-details').tabIndex, 0);
+    h.get<HTMLButtonElement>(
+      '[data-decision="allow"][data-scope="once"]',
+    ).click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), [
+      'control',
+      {
+        action: 'permission',
+        requestHandle: 'req_once',
+        decision: 'allow',
+        scope: 'once',
+      },
+    ]);
+    assert.equal(
+      h.get('.subagents-feedback').textContent,
+      liveText('en', 'subagents.allowOnce'),
+    );
+    h.update({ language: 'zh-CN' });
+    assert.equal(
+      h.get('.subagents-feedback').textContent,
+      liveText('zh-CN', 'subagents.allowOnce'),
+    );
+    assert.equal(h.app.querySelector('.subagent-permission-scope'), null);
+    assert.equal(
+      h.get('.subagent-permission-details').textContent,
+      'npm test -- --runInBand',
+    );
+  });
+
+  it('filters from count buttons, resets paging, and offers a visible return to all tasks', async () => {
+    const entries = [
+      task({ id: 'new-done', status: 'completed', createdAt: 5 }),
+      task({ id: 'old-waiting', status: 'waiting', createdAt: 1 }),
+    ];
+    const h = setup(
+      {},
+      {
+        mode: 'list',
+        instanceId: 'daemon-one',
+        controlsAvailable: true,
+        snapshot: snapshot(entries),
+        page: { snapshot: snapshot(entries), offset: 32, total: 34 },
+      },
+    );
+    const filter = h.get<HTMLButtonElement>('[data-filter="needsAttention"]');
+    assert.equal(filter.tagName, 'BUTTON');
+    assert.equal(filter.type, 'button');
+    assert.equal(
+      filter.getAttribute('aria-controls'),
+      h.get('.subagents-list').id,
+    );
+    assert.equal(filter.getAttribute('aria-pressed'), 'false');
+    filter.focus();
+    filter.click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), [
+      'control',
+      'daemon-one',
+      { action: 'list', offset: 0, filter: 'needsAttention' },
+    ]);
+    h.update({
+      filter: 'needsAttention',
+      page: {
+        snapshot: snapshot([entries[1]!]),
+        offset: 0,
+        total: 1,
+        filter: 'needsAttention',
+      },
+    });
+    assert.equal(filter.getAttribute('aria-pressed'), 'true');
+    assert.equal(h.get('.subagents-filter-bar').hidden, false);
+    assert.equal(h.app.querySelector('[data-task-id="new-done"]'), null);
+    h.update({ language: 'zh-CN' });
+    assert.equal(h.get('[data-filter="needsAttention"]'), filter);
+    assert.equal(document.activeElement, filter);
+    assert.equal(
+      h.get('.subagents-clear-filter').textContent,
+      liveText('zh-CN', 'subagents.showAllTasks'),
+    );
+    filter.click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), [
+      'control',
+      'daemon-one',
+      { action: 'list', offset: 0, filter: 'all' },
+    ]);
+    h.get<HTMLButtonElement>('.subagents-clear-filter').click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), [
+      'control',
+      'daemon-one',
+      { action: 'list', offset: 0, filter: 'all' },
+    ]);
+    h.get<HTMLButtonElement>('.subagents-clear-filter').focus();
+    h.update({
+      filter: 'all',
+      page: { snapshot: snapshot(entries), offset: 0, total: 2 },
+    });
+    assert.equal(document.activeElement, filter);
+    h.update({ loading: true });
+    assert.equal(filter.getAttribute('aria-disabled'), 'true');
+    assert.equal(filter.disabled, false);
+    const beforeBlockedClick = h.calls.length;
+    filter.click();
+    await settled();
+    assert.equal(h.calls.length, beforeBlockedClick);
+    h.update({ loading: false, connected: false });
+    assert.equal(filter.disabled, true);
+  });
+
+  it('keeps filtered pagination and shows a truthful empty category while hiding unrelated sections', async () => {
+    const entry = task({ status: 'completed' });
+    const h = setup(
+      {},
+      {
+        mode: 'list',
+        instanceId: 'daemon-one',
+        controlsAvailable: true,
+        filter: 'completed',
+        page: {
+          snapshot: snapshot([entry]),
+          filter: 'completed',
+          offset: 3,
+          total: 8,
+          discoveredSessions: [],
+          instructionDeliveries: [],
+          sessionReports: [],
+        },
+      },
+    );
+    h.get<HTMLButtonElement>(
+      '.subagents-pagination button:nth-of-type(2)',
+    ).click();
+    await settled();
+    assert.deepEqual(h.calls.at(-1), [
+      'control',
+      'daemon-one',
+      { action: 'list', offset: 4, filter: 'completed' },
+    ]);
+    h.update({
+      page: {
+        snapshot: snapshot([]),
+        filter: 'completed',
+        offset: 0,
+        total: 0,
+        discoveredSessions: [],
+        unassignedPermissions: [
+          { requestHandle: 'other', title: 'Approval', choices: [] },
+        ],
+      },
+    });
+    assert.equal(h.get('.subagents-empty').hidden, false);
+    assert.equal(
+      h.get('.subagents-empty').textContent,
+      liveText('en', 'subagents.filterEmpty'),
+    );
+    assert.equal(h.app.querySelector('.discovered-sessions'), null);
+    assert.equal(h.app.querySelector('.subagent-unassigned'), null);
+  });
+
+  it('orders all task rows by creation time across status changes and preserves focus when new tasks arrive', () => {
+    const old = task({ id: 'old-running', createdAt: 1 });
+    const newer = task({
+      id: 'new-completed',
+      createdAt: 5,
+      status: 'completed',
+    });
+    const h = setup({}, { mode: 'list', snapshot: snapshot([old, newer]) });
+    const order = () =>
+      [...h.app.querySelectorAll<HTMLElement>('[data-task-id]')].map(
+        (node) => node.dataset.taskId,
+      );
+    assert.deepEqual(order(), ['new-completed', 'old-running']);
+    const oldButton = h.get<HTMLButtonElement>('[data-task-id="old-running"]');
+    oldButton.focus();
+    h.update({
+      snapshot: snapshot([
+        old,
+        newer,
+        task({ id: 'newest-failed', createdAt: 10, status: 'failed' }),
+      ]),
+    });
+    assert.deepEqual(order(), [
+      'newest-failed',
+      'new-completed',
+      'old-running',
+    ]);
+    assert.equal(document.activeElement, oldButton);
+    h.update({
+      snapshot: snapshot([
+        { ...old, status: 'waiting', updatedAt: 999 },
+        newer,
+      ]),
+    });
+    assert.deepEqual(order(), ['new-completed', 'old-running']);
+    assert.equal(document.activeElement, oldButton);
+  });
+
   it('localizes only an explicit owned outputMessage and never interprets markers in external output', () => {
     const original = liveMessage('visual.failed');
     const value = task({
@@ -921,7 +1162,11 @@ describe('Subagents read-only surfaces', () => {
         {
           requestHandle: 'req_12',
           title: '<script>Write file outside project</script>',
+          details:
+            '<img src=x onerror=alert(1)>\nnode scripts/build-report.mjs',
+          alwaysScope: 'Only report generation in /tmp/report-project',
           choices: [
+            { decision: 'allow', scope: 'once' },
             { decision: 'allow', scope: 'always' },
             { decision: 'deny', scope: 'once' },
           ],
@@ -948,22 +1193,39 @@ describe('Subagents read-only surfaces', () => {
         page: { snapshot: snapshot([selected]), offset: 0, total: 1, selected },
       },
     );
-    const allow = h.get<HTMLButtonElement>('[data-decision="allow"]');
-    assert.equal(allow.textContent, 'Always allow');
-    assert.equal(h.get('[data-decision="deny"]').textContent, 'Deny once');
+    const allow = h.get<HTMLButtonElement>(
+      '[data-decision="allow"][data-scope="once"]',
+    );
+    assert.equal(allow.textContent, liveText('en', 'subagents.allowOnce'));
+    assert.equal(
+      h.get('[data-decision="deny"]').textContent,
+      liveText('en', 'subagents.deny'),
+    );
     assert.equal(h.app.querySelector('script'), null);
+    assert.equal(h.app.querySelector('img'), null);
+    assert.equal(
+      h.get('.subagent-permission-details').textContent,
+      selected.permissions![0]!.details,
+    );
+    assert.equal(h.app.querySelector('.subagent-permission-scope'), null);
+    assert.equal(h.app.querySelector('[data-scope="always"]'), null);
     allow.focus();
     h.update({ language: 'zh-CN' });
-    assert.equal(h.get('[data-decision="allow"]'), allow);
+    assert.equal(h.get('[data-decision="allow"][data-scope="once"]'), allow);
     assert.equal(document.activeElement, allow);
-    assert.equal(allow.textContent, '始终允许');
+    assert.equal(allow.textContent, liveText('zh-CN', 'subagents.allowOnce'));
     assert.match(h.get('.subagents-more-permissions').textContent ?? '', /3/);
     allow.click();
     await settled();
     assert.deepEqual(h.calls.at(-1), [
       'control',
       'daemon-one',
-      { action: 'permission', requestHandle: 'req_12', decision: 'allow' },
+      {
+        action: 'permission',
+        requestHandle: 'req_12',
+        decision: 'allow',
+        scope: 'once',
+      },
     ]);
     assert.equal(
       h.get('.subagents-feedback').textContent,
@@ -1379,7 +1641,7 @@ describe('Subagents read-only surfaces', () => {
   });
 
   it('keeps task rows, click identity, focus and list scroll stable across updates', async () => {
-    const first = task();
+    const first = task({ createdAt: 1_788_790_000_002 });
     const second = task({
       id: 'task-2',
       title: 'Read docs',

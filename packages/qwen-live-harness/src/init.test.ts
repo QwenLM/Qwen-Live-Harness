@@ -67,6 +67,7 @@ function answerSetupPrompts(
       [liveText('en', 'init.overwrite'), true],
       [liveText('en', 'init.defaultAgent'), 'qwen'],
       [liveText('en', 'init.qwenMode'), 'acp'],
+      [liveText('en', 'permissionMode.initQuestion'), 'ask'],
       [liveText('en', 'init.addAgent', { count: 1 }), false],
       [liveText('en', 'init.endpoint'), international],
       [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
@@ -166,6 +167,218 @@ afterEach(() => {
 });
 
 describe('runInit', () => {
+  it.each([
+    ['en', 'ask'],
+    ['en', 'allow-all'],
+    ['zh-CN', 'ask'],
+    ['zh-CN', 'allow-all'],
+  ] as const)(
+    'offers exactly two localized permission modes and saves %s / %s',
+    async (language, permissionMode) => {
+      const key = 'private-init-key-fixture';
+      vi.stubEnv('DASHSCOPE_API_KEY', key);
+      const t = (name: Parameters<typeof liveText>[1]) =>
+        liveText(language, name);
+      const answers = new Map<string, unknown>([
+        [liveText('en', 'language.choose'), language === 'en'],
+        [t('init.defaultAgent'), 'qwen'],
+        [t('init.qwenMode'), 'acp'],
+        [t('permissionMode.initQuestion'), permissionMode],
+        [
+          liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
+          true,
+        ],
+        [t('init.apiName'), 'fixture-model'],
+        [t('init.endpoint'), true],
+        [t('init.memoryEnabled'), false],
+        [t('init.cwd'), '/tmp/permission-init'],
+      ]);
+      mocks.prompt.mockImplementation(async (question: { message: string }) => {
+        expect(answers.has(question.message)).toBe(true);
+        return { value: answers.get(question.message) };
+      });
+      await runInit({ source: true });
+      const question = mocks.prompt.mock.calls.find(
+        ([item]) => item.message === t('permissionMode.initQuestion'),
+      )?.[0];
+      expect(question).toMatchObject({
+        type: 'select',
+        initial: 0,
+        name: 'value',
+        choices: [
+          { title: t('permissionMode.ask'), value: 'ask' },
+          { title: t('permissionMode.allowAll'), value: 'allow-all' },
+        ],
+      });
+      expect(question.choices).toHaveLength(2);
+      const saved = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+      expect(saved).toMatchObject({
+        permissionMode,
+        language,
+        realtimeApiKey: key,
+        realtimeModel: 'fixture-model',
+        realtimeEndpoint:
+          'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime',
+      });
+      expect(saved.backends).toMatchObject([
+        {
+          name: 'qwen',
+          kind: 'acp',
+          command: '/usr/local/bin/qwen',
+          args: ['--acp'],
+          default: true,
+        },
+      ]);
+      expect(console.log).toHaveBeenCalledWith(
+        `  ✓ ${liveText(language, 'permissionMode.initSummary', { mode: t(permissionMode === 'ask' ? 'permissionMode.ask' : 'permissionMode.allowAll') })}`,
+      );
+      expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain(
+        key,
+      );
+      expect(process.env['DASHSCOPE_API_KEY']).toBe(key);
+    },
+  );
+
+  it('asks for permission handling only after every selected backend is configured and before the API key', async () => {
+    mocks.detectAgents.mockReturnValue([
+      {
+        label: 'Gemini CLI',
+        name: 'gemini',
+        command: '/synthetic/gemini',
+        args: ['--experimental-acp'],
+        version: 'fixture',
+      },
+      {
+        label: 'Qwen Code',
+        name: 'qwen',
+        command: '/synthetic/qwen',
+        args: ['--acp'],
+        version: 'fixture',
+      },
+    ]);
+    answerSetupPrompts();
+    const original = mocks.prompt.getMockImplementation()!;
+    mocks.prompt.mockImplementation(async (question) => {
+      if (question.message === liveText('en', 'init.defaultAgent'))
+        return { value: 'gemini' };
+      if (question.message === liveText('en', 'init.addAgent', { count: 1 }))
+        return { value: true };
+      if (question.message === liveText('en', 'init.whichAgent'))
+        return { value: 'qwen' };
+      return original(question);
+    });
+    await runInit({ source: true });
+    const prompts = mocks.prompt.mock.calls.map(
+      ([question]) => question.message,
+    );
+    const mode = prompts.indexOf(liveText('en', 'permissionMode.initQuestion'));
+    expect(prompts.indexOf(liveText('en', 'init.whichAgent'))).toBeLessThan(
+      prompts.indexOf(liveText('en', 'init.qwenMode')),
+    );
+    expect(mode).toBeGreaterThan(
+      prompts.indexOf(liveText('en', 'init.qwenMode')),
+    );
+    expect(mode).toBeLessThan(
+      prompts.indexOf(
+        liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
+      ),
+    );
+    expect(
+      prompts.filter(
+        (message) => message === liveText('en', 'permissionMode.initQuestion'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])).backends,
+    ).toHaveLength(2);
+  });
+
+  it.each([
+    ['ask', 0],
+    ['allow-all', 1],
+    [undefined, 0],
+    [null, 0],
+    ['allow_always', 0],
+    ['ALLOW-ALL', 0],
+  ] as const)(
+    'uses the prior permission mode %s only when valid (initial index %s)',
+    async (previous, expectedIndex) => {
+      mocks.existsSync.mockReturnValue(true);
+      mocks.readFileSync.mockReturnValue(
+        JSON.stringify({ language: 'en', permissionMode: previous }),
+      );
+      answerSetupPrompts();
+      const original = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) => {
+        if (
+          question.message === liveText('en', 'permissionMode.initQuestion')
+        ) {
+          expect(question.initial).toBe(expectedIndex);
+          return { value: question.choices[question.initial].value };
+        }
+        return original(question);
+      });
+      await runInit({ source: true });
+      expect(
+        JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]))
+          .permissionMode,
+      ).toBe(expectedIndex === 1 ? 'allow-all' : 'ask');
+    },
+  );
+
+  it.each([undefined, null, false, 'always', 1, {}])(
+    'cancels on invalid or missing permission answer %j before touching credentials or files',
+    async (value) => {
+      answerSetupPrompts();
+      const original = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) =>
+        question.message === liveText('en', 'permissionMode.initQuestion')
+          ? { value }
+          : original(question),
+      );
+      await runInit();
+      expect(mocks.prompt.mock.calls.at(-1)?.[0].message).toBe(
+        liveText('en', 'permissionMode.initQuestion'),
+      );
+      expect(mocks.writeFileSync).not.toHaveBeenCalled();
+      expect(mocks.renameSync).not.toHaveBeenCalled();
+      expect(mocks.mkdirSync).not.toHaveBeenCalled();
+      expect(mocks.refreshHost).not.toHaveBeenCalled();
+      expect(mocks.registerCurrentRuntime).not.toHaveBeenCalled();
+      expect(process.env['DASHSCOPE_API_KEY']).toBe('sk-test');
+    },
+  );
+
+  it.each([false, true])(
+    'keeps no-backend setup at ask without showing permission choices (prior allow-all: %s)',
+    async (existing) => {
+      mocks.detectAgents.mockReturnValue([]);
+      if (existing) {
+        mocks.existsSync.mockReturnValue(true);
+        mocks.readFileSync.mockReturnValue(
+          JSON.stringify({ language: 'en', permissionMode: 'allow-all' }),
+        );
+      }
+      answerWithoutBackend();
+      const original = mocks.prompt.getMockImplementation()!;
+      mocks.prompt.mockImplementation(async (question) =>
+        question.message === liveText('en', 'init.overwrite')
+          ? { value: true }
+          : original(question),
+      );
+      await runInit({ source: true });
+      expect(
+        JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1])),
+      ).toMatchObject({ permissionMode: 'ask', backends: [] });
+      expect(
+        mocks.prompt.mock.calls.some(
+          ([question]) =>
+            question.message === liveText('en', 'permissionMode.initQuestion'),
+        ),
+      ).toBe(false);
+    },
+  );
+
   it.each(['managed', 'existing', 'acp'] as const)(
     'saves the selected Qwen connection mode %s as the sole default backend',
     async (mode) => {
@@ -432,6 +645,7 @@ describe('runInit', () => {
         [liveText('en', 'language.choose'), language === 'en'],
         [t('init.defaultAgent'), 'qwen'],
         [t('init.qwenMode'), 'acp'],
+        [t('permissionMode.initQuestion'), 'ask'],
         [t('init.apiKey'), 'synthetic-region-test-key'],
         [t('init.apiName'), DEFAULT_REALTIME_MODEL],
         [t('init.endpoint'), true],
@@ -450,6 +664,7 @@ describe('runInit', () => {
         liveText('en', 'language.choose'),
         t('init.defaultAgent'),
         t('init.qwenMode'),
+        t('permissionMode.initQuestion'),
         t('init.apiKey'),
         t('init.apiName'),
         t('init.endpoint'),
@@ -958,6 +1173,8 @@ describe('runInit', () => {
               return { value: 'qwen' };
             case liveText('en', 'init.qwenMode'):
               return { value: 'acp' };
+            case liveText('en', 'permissionMode.initQuestion'):
+              return { value: 'ask' };
             case liveText('en', 'init.endpoint'):
               return { value: false };
             case liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }):
@@ -1019,6 +1236,8 @@ describe('runInit', () => {
             return { value: 'qwen' };
           case liveText('en', 'init.qwenMode'):
             return { value: 'acp' };
+          case liveText('en', 'permissionMode.initQuestion'):
+            return { value: 'ask' };
           case liveText('en', 'init.endpoint'):
             return { value: false };
           case liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }):
@@ -1110,6 +1329,7 @@ describe('runInit', () => {
           const choices = new Map<string, string | boolean>([
             [liveText(language, 'init.defaultAgent'), 'qwen'],
             [liveText(language, 'init.qwenMode'), 'acp'],
+            [liveText(language, 'permissionMode.initQuestion'), 'ask'],
             [liveText(language, 'init.endpoint'), false],
             [
               liveText(language, 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }),
@@ -1181,13 +1401,14 @@ describe('runInit', () => {
     expect(mocks.refreshHost).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8])(
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])(
     'does not write config if prompt %s is cancelled',
     async (cancelAt) => {
       const answers = [
         [liveText('en', 'language.choose'), true],
         [liveText('en', 'init.defaultAgent'), 'qwen'],
         [liveText('en', 'init.qwenMode'), 'acp'],
+        [liveText('en', 'permissionMode.initQuestion'), 'ask'],
         [liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }), true],
         [liveText('en', 'init.apiName'), 'fixture-model'],
         [liveText('en', 'init.endpoint'), false],

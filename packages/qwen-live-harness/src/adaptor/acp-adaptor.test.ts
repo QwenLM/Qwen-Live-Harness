@@ -527,6 +527,75 @@ describe('AcpAdaptor sessions and receipts', () => {
     connection.settle();
   });
 
+  it('retains structured permission facts and execution status without escalating a one-shot vote', async () => {
+    const connection = new FakeConnection();
+    const adaptor = makeAdaptor(connection);
+    adaptors.push(adaptor);
+    const handle = await adaptor.createSession({ cwd: process.cwd() });
+    const collector = eventCollector(adaptor, handle.id);
+    await adaptor.prompt(handle, [{ type: 'text', text: 'do it' }]);
+    const toolCall = {
+      toolCallId: 'tc-facts',
+      title: 'Run command',
+      kind: 'execute',
+      rawInput: { command: "printf '%s'  'two  spaces'" },
+    };
+    const vote = connection.client.requestPermission({
+      sessionId: handle.id,
+      toolCall,
+      options: [
+        {
+          optionId: 'always',
+          name: 'Always allow in this project',
+          kind: 'allow_always',
+        },
+      ],
+    } as never);
+    connection.update(handle.id, {
+      sessionUpdate: 'tool_call',
+      ...toolCall,
+      status: 'pending',
+    });
+    connection.update(handle.id, {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-facts',
+      status: 'in_progress',
+    });
+    const events = await collector.waitFor((items) =>
+      items.some(
+        (event) =>
+          event.type === 'activity' && event.toolStatus === 'in_progress',
+      ),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'permission_request',
+        title: "printf '%s'  'two  spaces'",
+        details: expect.objectContaining({
+          toolCallId: 'tc-facts',
+          command: "printf '%s'  'two  spaces'",
+          cwdVerified: true,
+        }),
+        options: [
+          expect.objectContaining({
+            persistentScope: 'Always allow in this project',
+          }),
+        ],
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'activity',
+        toolCallId: 'tc-facts',
+        toolStatus: 'pending',
+        jobRef: 'turn-1',
+      }),
+    );
+    await adaptor.respondPermission(handle, 'perm-1', 'allow');
+    await expect(vote).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+    connection.settle();
+  });
+
   /**
    * The repro this guards: qwen-code offers "Allow All Edits"
    * (kind `allow_always`) alongside the one-shot grant. Voting the one-shot

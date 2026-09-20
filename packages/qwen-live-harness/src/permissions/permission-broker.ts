@@ -4,40 +4,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/**
- * Voice-side permission handling.
- *
- * Design points carried over from the split design doc (§7):
- * - A request resolved elsewhere (WebShell) retracts the queued spoken ask.
- *
- * REVISED (see the always-allow fix): the design doc kept "allow always"
- * off the wire and reimplemented it here as a TTL'd standing rule keyed on
- * the request title. That key can only ever match the IDENTICAL action, so
- * the rule never fires for the case users actually hit — approving one file
- * edit and being asked again for the next one. Agents already model the
- * real scope ("Allow All Edits", "Always Allow in project: <cmd>"), so a
- * deliberate "allow always" is now forwarded as the backend's own
- * persistent grant. The standing rule stays as the fallback for backends
- * that offer no always-option, and an explicit "deny" still revokes it.
- */
-
 import type {
   BackendAdaptor,
   BackendHandle,
+  PermissionDecision,
+  PermissionDetails,
   PermissionOption,
 } from '../adaptor/types.js';
+import {
+  redactPermissionText,
+  stripControlSequences,
+} from '../adaptor/adaptor-utils.js';
 
-const DEFAULT_RULE_TTL_MS = 30 * 60_000;
-const MAX_RULES = 64;
+export type PermissionBrokerMode = 'ask' | 'allow-all';
+export type SpokenPermissionDecision = 'allow' | 'allow_always' | 'deny';
+type DeliveryOutcome = 'delivered' | 'already_resolved' | 'skipped';
 
-/**
- * Scope a backend's raw requestId. Request ids are adaptor-local strings
- * (qwen serve mints UUIDs; an ACP adaptor counts perm-1, perm-2), so the
- * owning adaptor must scope the key or two live backends collide and one
- * backend's resolution retracts another backend's pending ask.
- */
 function scopedRequestId(backend: BackendHandle, requestId: string): string {
-  return `${backend.adaptor}:${requestId}`;
+  return JSON.stringify([backend.adaptor, backend.id, requestId]);
 }
 
 export interface PendingPermission {
@@ -48,84 +32,71 @@ export interface PendingPermission {
   jobRef?: string;
   title: string;
   options: readonly PermissionOption[];
+  details?: PermissionDetails;
+  /** Mode when this request arrived; no stored operation grants are consulted. */
+  permissionMode: PermissionBrokerMode;
   createdAt: number;
 }
 
+export interface PermissionDecisionEvent {
+  pending: PendingPermission;
+  requestedDecision: SpokenPermissionDecision;
+  decision: PermissionDecision;
+  auto: boolean;
+  outcome: 'delivered' | 'already_resolved';
+  /** Mode under which the vote was issued, not proof that execution started. */
+  permissionMode: PermissionBrokerMode;
+  reason?: string;
+}
+
 export interface PermissionBrokerOptions {
-  /** Resolves the adaptor that owns a pending request's backend handle. */
   adaptorFor: (handle: BackendHandle) => BackendAdaptor;
   now?: () => number;
-  ruleTtlMs?: number;
+  getPermissionMode?: () => PermissionBrokerMode;
+  onDecision?: (event: PermissionDecisionEvent) => void;
   log?: (
     type: 'permission.request' | 'permission.decision',
     payload: Record<string, unknown>,
   ) => void;
 }
 
-export type SpokenPermissionDecision = 'allow' | 'allow_always' | 'deny';
-
 export interface PermissionAskEvent {
   pending: PendingPermission;
-  /** True when a standing rule answered it silently — nothing to speak. */
+  /** The request was consumed automatically; onDecision identifies the outcome. */
   autoAnswered: boolean;
-  /** True when the event stream replayed an ask already awaiting a vote. */
   alreadyPending: boolean;
 }
 
-interface StandingRule {
-  sessionHandle: string;
-  titleKey: string;
-  expiresAt: number;
-}
-
-/**
- * Standing-rule key: tool name plus the WHOLE normalized detail (trimmed,
- * whitespace-collapsed — but case-preserved: `/a` and `/A` are different
- * directories on Linux, and commands routinely contain colons, so the
- * split is on the FIRST colon only and the entire remainder is the
- * detail). A voice "always allow" is a trust grant; it must cover only
- * repeats of the exact command the user heard and approved —
- * `git push origin main` never silently covers
- * `git push --force origin main`, and `git commit -m "fix: bug"` never
- * covers `git commit -m "fix: something else entirely"`.
- */
-function titleKeyOf(title: string): string {
-  const separator = title.indexOf(':');
-  const head = separator === -1 ? title : title.slice(0, separator);
-  const detail = separator === -1 ? '' : title.slice(separator + 1);
-  const normalized = detail.trim().split(/\s+/).join(' ');
-  return `${head.trim()}:${normalized}`;
-}
-
-/**
- * Whether the backend offered a grant it will remember itself. Mirrors the
- * adaptors' `pickPersistentGrant` over the same option list, so the broker
- * and the vote agree on which path a deliberate "allow always" took.
- */
-function offersPersistentGrant(pending: PendingPermission): boolean {
-  return pending.options.some(
-    (option) => option.kind === 'proceed' && option.escalation === 'always',
+function offersOnce(options: readonly PermissionOption[]): boolean {
+  return options.some(
+    (option) => option.kind === 'proceed' && option.escalation !== 'always',
   );
 }
 
+/** Global Live policy only. Every allow uses a non-persistent backend vote. */
 export class PermissionBroker {
   private readonly pending = new Map<string, PendingPermission>();
   private readonly pendingByRequestId = new Map<string, string>();
+  private readonly autoAnswerAllowed = new Set<string>();
   private readonly autoAnswering = new Set<string>();
-  private rules: StandingRule[] = [];
+  private readonly deliveries = new Map<string, Promise<DeliveryOutcome>>();
   private seq = 0;
   private readonly now: () => number;
-  private readonly ruleTtlMs: number;
 
   constructor(private readonly options: PermissionBrokerOptions) {
     this.now = options.now ?? Date.now;
-    this.ruleTtlMs = options.ruleTtlMs ?? DEFAULT_RULE_TTL_MS;
   }
 
-  /**
-   * A permission_request arrived from the backend. Returns what the caller
-   * should do: speak the ask, or nothing (a standing rule auto-answered).
-   */
+  private mode(): PermissionBrokerMode {
+    try {
+      return this.options.getPermissionMode?.() === 'allow-all'
+        ? 'allow-all'
+        : 'ask';
+    } catch {
+      return 'ask';
+    }
+  }
+
   async onRequest(fields: {
     requestId: string;
     backend: BackendHandle;
@@ -133,139 +104,148 @@ export class PermissionBroker {
     jobRef?: string;
     title: string;
     options: readonly PermissionOption[];
+    details?: PermissionDetails;
+    /** Explicit veto for stale requests or a disposed/shutting-down service. */
     allowAutoAnswer?: boolean;
   }): Promise<PermissionAskEvent> {
-    const existingHandle = this.pendingByRequestId.get(
-      scopedRequestId(fields.backend, fields.requestId),
-    );
+    const key = scopedRequestId(fields.backend, fields.requestId);
+    const existingHandle = this.pendingByRequestId.get(key);
     const existing = existingHandle
       ? this.pending.get(existingHandle)
       : undefined;
-    if (existing) {
+    if (existing)
       return { pending: existing, autoAnswered: false, alreadyPending: true };
-    }
-
     const pending: PendingPermission = {
       requestHandle: `req_${++this.seq}`,
       requestId: fields.requestId,
       backend: fields.backend,
       sessionHandle: fields.sessionHandle,
       ...(fields.jobRef !== undefined ? { jobRef: fields.jobRef } : {}),
-      title: fields.title,
+      title: stripControlSequences(redactPermissionText(fields.title)).slice(
+        0,
+        8192,
+      ),
       options: fields.options,
+      ...(fields.details ? { details: fields.details } : {}),
+      permissionMode: this.mode(),
       createdAt: this.now(),
     };
     this.pending.set(pending.requestHandle, pending);
-    this.pendingByRequestId.set(
-      scopedRequestId(fields.backend, pending.requestId),
-      pending.requestHandle,
-    );
-    this.options.log?.('permission.request', {
+    this.pendingByRequestId.set(key, pending.requestHandle);
+    if (fields.allowAutoAnswer !== false)
+      this.autoAnswerAllowed.add(pending.requestHandle);
+    this.log('permission.request', {
       requestHandle: pending.requestHandle,
       requestId: pending.requestId,
       session: pending.sessionHandle,
       title: pending.title,
+      permissionMode: pending.permissionMode,
+      ...(pending.details?.toolCallId
+        ? { toolCallId: pending.details.toolCallId }
+        : {}),
     });
-
-    if (fields.allowAutoAnswer !== false && this.matchesRule(pending)) {
-      // A failed silent delivery must not crash the caller or swallow the
-      // request: fall back to asking the user aloud.
-      this.autoAnswering.add(pending.requestHandle);
-      try {
-        await this.deliver(pending, 'allow', true);
-        return { pending, autoAnswered: true, alreadyPending: false };
-      } catch (error) {
-        this.options.log?.('permission.decision', {
-          requestHandle: pending.requestHandle,
-          requestId: pending.requestId,
-          decision: 'allow',
-          auto: true,
-          outcome: 'delivery_failed',
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return { pending, autoAnswered: false, alreadyPending: false };
-      } finally {
-        this.autoAnswering.delete(pending.requestHandle);
-      }
-    }
-    return { pending, autoAnswered: false, alreadyPending: false };
+    const autoAnswered = await this.answerAutomatically(pending);
+    return { pending, autoAnswered, alreadyPending: false };
   }
 
-  /**
-   * The user answered aloud (via the respond_permission tool). `note` is a
-   * spoken constraint the user attached ("only this file"); the vote channel
-   * cannot carry it, so it is recorded in the decision log here and relayed
-   * to the backend session by the caller.
-   */
+  /** Called explicitly after a successful user setting change, not by mode reads. */
+  async approvePendingAutomatically(): Promise<void> {
+    for (const pending of [...this.pending.values()]) {
+      if (this.mode() !== 'allow-all') break;
+      if (this.pending.get(pending.requestHandle) !== pending) continue;
+      await this.answerAutomatically(pending);
+    }
+  }
+
+  private async answerAutomatically(
+    pending: PendingPermission,
+  ): Promise<boolean> {
+    if (
+      this.mode() !== 'allow-all' ||
+      !this.autoAnswerAllowed.has(pending.requestHandle) ||
+      this.pending.get(pending.requestHandle) !== pending
+    )
+      return false;
+    const existing = this.deliveries.get(pending.requestHandle);
+    if (existing) {
+      try {
+        return (await existing) !== 'skipped';
+      } catch {
+        return false;
+      }
+    }
+    this.autoAnswering.add(pending.requestHandle);
+    try {
+      return (await this.deliver(pending, 'allow', true)) !== 'skipped';
+    } catch {
+      this.log('permission.decision', {
+        requestHandle: pending.requestHandle,
+        requestId: pending.requestId,
+        auto: true,
+        outcome: 'delivery_failed',
+        permissionMode: 'allow-all',
+        error: 'Permission delivery failed; the request still needs attention.',
+      });
+      return false;
+    } finally {
+      this.autoAnswering.delete(pending.requestHandle);
+    }
+  }
+
+  /** Legacy allow_always is explicitly downgraded; it never changes configuration. */
   async respond(
     requestHandle: string,
     decision: SpokenPermissionDecision,
     note?: string,
   ): Promise<'delivered' | 'already_resolved' | 'not_found'> {
-    const pending = this.pending.get(requestHandle.trim());
+    const handle = requestHandle.trim();
+    const pending = this.pending.get(handle);
     if (!pending) return 'not_found';
-    if (decision === 'allow_always' && !offersPersistentGrant(pending)) {
-      // Only a backend with no always-option to take needs the local rule.
-      // When it had one, the agent records the real scope itself and stops
-      // asking, so a rule keyed on this request's title would be dead
-      // weight — it can only ever match an identical repeat the agent is
-      // no longer going to raise.
-      this.remember(pending);
+    const existing = this.deliveries.get(handle);
+    if (existing) {
+      const outcome = await existing;
+      if (outcome === 'skipped') return this.respond(handle, decision, note);
+      // Another explicit/automatic vote owned the fence. Do not claim that this
+      // caller's potentially different choice was sent to the backend.
+      return 'already_resolved';
     }
-    if (decision === 'deny') {
-      // An explicit refusal must outrank any standing rule that matched
-      // this same request (the silent auto-answer failed and fell back to
-      // asking): without revocation the invisible rule silently overrides
-      // the user's spoken "no" on the next identical request. Broker-local
-      // per the design note — the protocol vote has no revocation concept.
-      const key = titleKeyOf(pending.title);
-      this.rules = this.rules.filter(
-        (rule) =>
-          rule.sessionHandle !== pending.sessionHandle || rule.titleKey !== key,
-      );
-    }
-    return await this.deliver(pending, decision, false, note);
+    const outcome = await this.deliver(pending, decision, false, note);
+    return outcome === 'skipped' ? 'not_found' : outcome;
   }
 
-  /** A resolution arrived from the event stream (possibly our own vote). */
   onResolved(
     backend: BackendHandle,
     requestId: string,
   ): PendingPermission | undefined {
-    const scoped = scopedRequestId(backend, requestId);
-    const handle = this.pendingByRequestId.get(scoped);
-    if (handle === undefined) return undefined;
-    this.pendingByRequestId.delete(scoped);
+    const key = scopedRequestId(backend, requestId);
+    const handle = this.pendingByRequestId.get(key);
+    if (!handle) return;
     const pending = this.pending.get(handle);
+    this.pendingByRequestId.delete(key);
     this.pending.delete(handle);
+    this.autoAnswerAllowed.delete(handle);
     return pending;
   }
 
   resolveHandle(requestHandle: string): PendingPermission | undefined {
     return this.pending.get(requestHandle.trim());
   }
-
   get pendingCount(): number {
     return this.pending.size;
   }
-
   get pendingRequests(): readonly PendingPermission[] {
     return [...this.pending.values()];
   }
-
-  /** Pending requests that still need a user decision, not an in-flight rule. */
   get pendingUserRequests(): readonly PendingPermission[] {
     return [...this.pending.values()].filter(
       (pending) => !this.autoAnswering.has(pending.requestHandle),
     );
   }
-
   pendingForSession(sessionHandle: string): PendingPermission | undefined {
     return [...this.pendingUserRequests]
       .reverse()
       .find((pending) => pending.sessionHandle === sessionHandle.trim());
   }
-
   pendingForJob(
     backend: BackendHandle,
     jobRef: string,
@@ -279,62 +259,99 @@ export class PermissionBroker {
           pending.jobRef === jobRef.trim(),
       );
   }
-
   clearSession(sessionHandle: string): void {
-    const normalized = sessionHandle.trim();
     for (const pending of this.pending.values()) {
-      if (pending.sessionHandle !== normalized) continue;
-      this.pending.delete(pending.requestHandle);
-      this.autoAnswering.delete(pending.requestHandle);
-      this.pendingByRequestId.delete(
-        scopedRequestId(pending.backend, pending.requestId),
-      );
+      if (pending.sessionHandle !== sessionHandle.trim()) continue;
+      this.onResolved(pending.backend, pending.requestId);
     }
-    this.rules = this.rules.filter((rule) => rule.sessionHandle !== normalized);
   }
 
-  private matchesRule(pending: PendingPermission): boolean {
-    const now = this.now();
-    this.rules = this.rules.filter((rule) => rule.expiresAt > now);
-    const key = titleKeyOf(pending.title);
-    return this.rules.some(
-      (rule) =>
-        rule.sessionHandle === pending.sessionHandle && rule.titleKey === key,
-    );
-  }
-
-  private remember(pending: PendingPermission): void {
-    this.rules.push({
-      sessionHandle: pending.sessionHandle,
-      titleKey: titleKeyOf(pending.title),
-      expiresAt: this.now() + this.ruleTtlMs,
-    });
-    while (this.rules.length > MAX_RULES) this.rules.shift();
-  }
-
-  private async deliver(
+  private deliver(
     pending: PendingPermission,
-    decision: 'allow' | 'allow_always' | 'deny',
+    requestedDecision: SpokenPermissionDecision,
     auto: boolean,
     note?: string,
-  ): Promise<'delivered' | 'already_resolved'> {
-    const outcome = await this.options
-      .adaptorFor(pending.backend)
-      .respondPermission(pending.backend, pending.requestId, decision);
-    this.options.log?.('permission.decision', {
-      requestHandle: pending.requestHandle,
-      requestId: pending.requestId,
-      decision,
-      auto,
-      outcome,
-      ...(note ? { note } : {}),
-    });
-    if (outcome === 'delivered' || outcome === 'already_resolved') {
-      this.pending.delete(pending.requestHandle);
-      this.pendingByRequestId.delete(
-        scopedRequestId(pending.backend, pending.requestId),
-      );
+  ): Promise<DeliveryOutcome> {
+    const existing = this.deliveries.get(pending.requestHandle);
+    if (existing) return existing;
+    // Install the fence before invoking an adaptor that can synchronously emit
+    // resolution events or trigger another settings/manual decision callback.
+    const operation = Promise.resolve()
+      .then(async (): Promise<DeliveryOutcome> => {
+        if (this.pending.get(pending.requestHandle) !== pending)
+          return 'already_resolved';
+        const permissionMode = this.mode();
+        if (
+          auto &&
+          (permissionMode !== 'allow-all' ||
+            !this.autoAnswerAllowed.has(pending.requestHandle))
+        )
+          return 'skipped';
+        const decision: PermissionDecision =
+          requestedDecision === 'deny'
+            ? 'deny'
+            : offersOnce(pending.options)
+              ? 'allow'
+              : 'cancel';
+        const plannedReason =
+          decision === 'cancel'
+            ? 'The backend has no identifiable one-time approval option; the request was cancelled instead of granting persistent permission.'
+            : requestedDecision === 'allow_always'
+              ? 'Per-operation persistent grants are no longer supported. Only this operation was approved; change the global permission mode in Settings for future requests.'
+              : undefined;
+        const outcome = await this.options
+          .adaptorFor(pending.backend)
+          .respondPermission(pending.backend, pending.requestId, decision);
+        // A synchronous resolution may already have removed this request. Do
+        // not clear a newer request that reused the backend's opaque id.
+        if (this.pending.get(pending.requestHandle) === pending)
+          this.onResolved(pending.backend, pending.requestId);
+        const reason =
+          outcome === 'already_resolved'
+            ? 'The request was already resolved; no new permission or persistent grant was issued.'
+            : plannedReason;
+        this.log('permission.decision', {
+          requestHandle: pending.requestHandle,
+          requestId: pending.requestId,
+          requestedDecision,
+          decision,
+          auto,
+          outcome,
+          permissionMode,
+          ...(reason ? { reason } : {}),
+          ...(note ? { note: redactPermissionText(note).slice(0, 4096) } : {}),
+        });
+        try {
+          this.options.onDecision?.({
+            pending,
+            requestedDecision,
+            decision,
+            auto,
+            outcome,
+            permissionMode,
+            ...(reason ? { reason } : {}),
+          });
+        } catch {
+          /* Observability cannot retry an already-delivered vote. */
+        }
+        return outcome;
+      })
+      .finally(() => {
+        if (this.deliveries.get(pending.requestHandle) === operation)
+          this.deliveries.delete(pending.requestHandle);
+      });
+    this.deliveries.set(pending.requestHandle, operation);
+    return operation;
+  }
+
+  private log(
+    type: 'permission.request' | 'permission.decision',
+    payload: Record<string, unknown>,
+  ): void {
+    try {
+      this.options.log?.(type, payload);
+    } catch {
+      /* Logging never changes approval behavior. */
     }
-    return outcome;
   }
 }

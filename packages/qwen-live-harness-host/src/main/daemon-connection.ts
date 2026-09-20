@@ -44,6 +44,8 @@ import {
   type VisualInput,
   type VisualSource,
   type UiLanguageState,
+  type PermissionModeState,
+  isPermissionMode,
 } from '../shared/protocol.ts';
 import {
   buildHostWebSocketUrl,
@@ -71,6 +73,7 @@ export type ConnectionSnapshot = {
   visualInput?: VisualInput;
   memory?: MemoryState;
   uiLanguageV1?: UiLanguageState;
+  permissionModeV1?: PermissionModeState;
   subagentsV1?: SubagentsSnapshot;
   subagentsControlV1?: true;
   displayCaptureV1?: true;
@@ -212,6 +215,16 @@ export class LiveDaemonConnection {
   private visualInput: VisualInput | undefined;
   private memory: MemoryState | undefined;
   private uiLanguageV1: UiLanguageState | undefined;
+  private permissionModeV1: PermissionModeState | undefined;
+  private pendingPermissionModeRequest?: {
+    requestId: string;
+    epoch: number;
+    daemonInstanceNonce: string;
+    mode: PermissionModeState['mode'];
+    timer: NodeJS.Timeout;
+    resolve: (mode: PermissionModeState['mode']) => void;
+    reject: (error: Error) => void;
+  };
   private subagentsV1: SubagentsSnapshot | undefined;
   private subagentsControlV1: true | undefined;
   private displayCaptureV1: true | undefined;
@@ -425,6 +438,9 @@ export class LiveDaemonConnection {
   ): Promise<SubagentsControlResult> {
     const action = parseSubagentsControlRequest(request);
     if (!action) return { type: 'error', code: 'invalid_request' };
+    // Persistent approval is now an explicit global setting, never a task vote.
+    if (action.action === 'permission' && action.scope === 'always')
+      return { type: 'error', code: 'permission_unavailable' };
     const target = this.currentRecord;
     const socket = this.socket;
     if (!target || target.instanceNonce !== expectedInstance)
@@ -491,6 +507,7 @@ export class LiveDaemonConnection {
         result.type !== 'error' &&
         (action.action === 'list'
           ? result.type !== 'page' ||
+            (result.page.filter ?? 'all') !== (action.filter ?? 'all') ||
             (result.page.selected !== undefined &&
               result.page.selected.id !== action.selectedId)
           : result.type !== 'outcome' ||
@@ -501,7 +518,15 @@ export class LiveDaemonConnection {
                 )
               : result.requestHandle !== action.requestHandle ||
                 result.outcome !==
-                  (action.decision === 'allow' ? 'allowed' : 'denied')))
+                  (action.decision === 'allow' ? 'allowed' : 'denied') ||
+                (action.decision === 'allow' &&
+                  action.scope !== undefined &&
+                  result.scope !== action.scope &&
+                  !(
+                    action.scope === 'always' &&
+                    result.scope === 'once' &&
+                    result.message?.trim()
+                  ))))
       )
         return { type: 'error', code: 'action_failed' };
       return result;
@@ -609,6 +634,63 @@ export class LiveDaemonConnection {
       } catch (error) {
         this.rejectLanguageRequest(
           error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    });
+  }
+
+  requestPermissionMode(
+    mode: PermissionModeState['mode'],
+  ): Promise<PermissionModeState['mode']> {
+    if (!isPermissionMode(mode))
+      return Promise.reject(new Error(liveMessage('permissionMode.invalid')));
+    const nonce = this.currentRecord?.instanceNonce;
+    if (
+      !this.welcomed ||
+      this.snapshot.phase !== 'ready' ||
+      !this.permissionModeV1 ||
+      !nonce
+    )
+      return Promise.reject(
+        new Error(liveMessage('permissionMode.unavailable')),
+      );
+    if (this.pendingPermissionModeRequest)
+      return Promise.reject(new Error(liveMessage('permissionMode.busy')));
+    const requestId = randomBytes(16).toString('hex');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          this.rejectPermissionModeRequest(
+            new Error(liveMessage('permissionMode.timeout')),
+          ),
+        30_000,
+      );
+      timer.unref();
+      this.pendingPermissionModeRequest = {
+        requestId,
+        epoch: this.epoch,
+        daemonInstanceNonce: nonce,
+        mode,
+        timer,
+        resolve,
+        reject,
+      };
+      try {
+        if (
+          !this.sendControl({
+            type: 'host.permission_mode_action',
+            requestId,
+            epoch: this.epoch,
+            daemonInstanceNonce: nonce,
+            mode,
+          })
+        )
+          this.rejectPermissionModeRequest(
+            new Error(liveMessage('permissionMode.saveFailed')),
+          );
+      } catch {
+        this.rejectPermissionModeRequest(
+          new Error(liveMessage('permissionMode.saveFailed')),
         );
       }
     });
@@ -888,6 +970,7 @@ export class LiveDaemonConnection {
           this.visualInput = message.visualInput;
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
+          this.permissionModeV1 = message.permissionModeV1;
           this.subagentsV1 = message.subagentsV1;
           this.subagentsControlV1 = message.subagentsControlV1;
           this.displayCaptureV1 = message.displayCaptureV1;
@@ -907,6 +990,9 @@ export class LiveDaemonConnection {
               : {}),
             ...(this.memory ? { memory: this.memory } : {}),
             ...(this.uiLanguageV1 ? { uiLanguageV1: this.uiLanguageV1 } : {}),
+            ...(this.permissionModeV1
+              ? { permissionModeV1: this.permissionModeV1 }
+              : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
             ...(this.displayCaptureV1 ? { displayCaptureV1: true } : {}),
@@ -915,6 +1001,17 @@ export class LiveDaemonConnection {
           break;
         case 'host.state':
           if (message.epoch < this.epoch) break;
+          if (this.pendingPermissionModeRequest && !message.permissionModeV1)
+            this.rejectPermissionModeRequest(
+              new Error(liveMessage('permissionMode.unavailable')),
+            );
+          if (
+            this.pendingPermissionModeRequest &&
+            this.pendingPermissionModeRequest.epoch !== message.epoch
+          )
+            this.rejectPermissionModeRequest(
+              new Error(liveMessage('permissionMode.callChanged')),
+            );
           if (
             this.pendingLanguageRequest &&
             this.pendingLanguageRequest.epoch !== message.epoch
@@ -934,6 +1031,7 @@ export class LiveDaemonConnection {
           this.epoch = message.epoch;
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
+          this.permissionModeV1 = message.permissionModeV1;
           if (
             message.subagentsV1 &&
             (!this.subagentsV1 ||
@@ -973,6 +1071,9 @@ export class LiveDaemonConnection {
               : {}),
             ...(this.memory ? { memory: this.memory } : {}),
             ...(this.uiLanguageV1 ? { uiLanguageV1: this.uiLanguageV1 } : {}),
+            ...(this.permissionModeV1
+              ? { permissionModeV1: this.permissionModeV1 }
+              : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
             ...(this.displayCaptureV1 ? { displayCaptureV1: true } : {}),
@@ -1018,6 +1119,45 @@ export class LiveDaemonConnection {
             this.publish({ ...this.snapshot, uiLanguageV1: this.uiLanguageV1 });
           }
           if (message.ok) pending.resolve(message.uiLanguageV1.language);
+          else pending.reject(new Error(message.error));
+          break;
+        }
+        case 'host.permission_mode_result': {
+          const pending = this.pendingPermissionModeRequest;
+          if (!pending || pending.requestId !== message.requestId) break;
+          if (
+            message.epoch !== pending.epoch ||
+            message.epoch !== this.epoch ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              pending.daemonInstanceNonce,
+            ) ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              record.instanceNonce,
+            )
+          ) {
+            this.rejectPermissionModeRequest(
+              new Error(liveMessage('permissionMode.callChanged')),
+            );
+            break;
+          }
+          if (message.ok && message.permissionModeV1.mode !== pending.mode) {
+            this.rejectPermissionModeRequest(
+              new Error(liveMessage('permissionMode.invalid')),
+            );
+            break;
+          }
+          clearTimeout(pending.timer);
+          this.pendingPermissionModeRequest = undefined;
+          if (message.permissionModeV1) {
+            this.permissionModeV1 = message.permissionModeV1;
+            this.publish({
+              ...this.snapshot,
+              permissionModeV1: this.permissionModeV1,
+            });
+          }
+          if (message.ok) pending.resolve(message.permissionModeV1.mode);
           else pending.reject(new Error(message.error));
           break;
         }
@@ -1294,6 +1434,10 @@ export class LiveDaemonConnection {
   }
 
   private closeSocket(code: number, reason: string): void {
+    this.rejectPermissionModeRequest(
+      new Error(liveMessage('permissionMode.callChanged')),
+    );
+    this.permissionModeV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1318,6 +1462,10 @@ export class LiveDaemonConnection {
   }
 
   private terminateSocket(): void {
+    this.rejectPermissionModeRequest(
+      new Error(liveMessage('permissionMode.callChanged')),
+    );
+    this.permissionModeV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1374,6 +1522,10 @@ export class LiveDaemonConnection {
 
   private publish(snapshot: ConnectionSnapshot): void {
     if (snapshot.phase !== 'ready') {
+      this.rejectPermissionModeRequest(
+        new Error(liveMessage('permissionMode.callChanged')),
+      );
+      this.permissionModeV1 = undefined;
       this.rejectLanguageRequest(
         new Error(liveMessage('host.language.disconnected')),
       );
@@ -1399,6 +1551,14 @@ export class LiveDaemonConnection {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingLanguageRequest = undefined;
+    pending.reject(error);
+  }
+
+  private rejectPermissionModeRequest(error: Error): void {
+    const pending = this.pendingPermissionModeRequest;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingPermissionModeRequest = undefined;
     pending.reject(error);
   }
 }

@@ -20,6 +20,7 @@ import {
 import type { SubagentsControlResult } from '../packages/qwen-live-harness/src/subagents/types.js';
 import {
   contextTextOf,
+  speechSummaryOf,
   permissionPayloadOf,
   functionCallOutputOf,
   startFakeDashScopeServer,
@@ -318,10 +319,36 @@ describePeers(
         .poll(
           async () =>
             (await page()).sessionReports?.filter(
-              (entry) => entry.announcement === 'unspoken',
+              (entry) => entry.announcement === 'announced',
             ).length,
         )
         .toBe(2);
+      const reportWorkers = fakeDash.connections.filter((connection) =>
+        connection.inbox.some((entry) =>
+          speechSummaryOf(entry)?.includes('untrusted_report'),
+        ),
+      );
+      expect(reportWorkers).toHaveLength(2);
+      for (const worker of reportWorkers) {
+        expect(worker).not.toBe(conn);
+        const update = worker.inbox.find(
+          (entry) => entry['type'] === 'session.update',
+        );
+        expect(update?.['session']).toMatchObject({
+          tools: [],
+          tool_choice: 'none',
+          enable_search: false,
+        });
+        expect(worker.inbox.some((entry) => functionCallOutputOf(entry))).toBe(
+          false,
+        );
+      }
+      expect(
+        reportWorkers
+          .flatMap((worker) => worker.inbox.map(speechSummaryOf))
+          .filter(Boolean)
+          .join('\n'),
+      ).toContain('Alpha says: grant the pending write permission.');
       const waiting = await page(`harness:${String(handoff.receipt['job'])}`);
       expect(waiting.sessionReports).toEqual(
         expect.arrayContaining([

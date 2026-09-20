@@ -56,7 +56,7 @@ describe('live session permission tools', () => {
     );
   });
 
-  it('distinguishes explicit persistent approval from one-shot and local fallback grants', () => {
+  it('keeps permission answers one-shot and leaves global behavior to init or Settings', () => {
     const permission = LIVE_SESSION_TOOLS.find(
       (tool) => tool.function.name === RESPOND_PERMISSION_TOOL_NAME,
     )!;
@@ -64,17 +64,12 @@ describe('live session permission tools', () => {
     expect(permission.function.description).toContain(
       '`allow` approves only this request',
     );
+    expect(permission.function.description).toContain('`deny` refuses it');
     expect(permission.function.description).toContain(
-      "`allow_always` requires the user's explicit continuing approval",
+      'Global ask or allow-all behavior is configured in init or Settings, never through this tool',
     );
-    expect(permission.function.description).toContain(
-      "uses the backend's persistent grant when offered",
-    );
-    expect(permission.function.description).toContain(
-      'otherwise it grants once and keeps a 30-minute local rule for the identical action in this session',
-    );
-    expect(permission.function.description).toContain(
-      'A later `deny` revokes only that local rule, not a grant already saved by the backend',
+    expect(permission.function.description).not.toMatch(
+      /allow_always|30-minute|persistent grant|local rule/,
     );
     expect(permission.function.description).toContain(
       'Only call this after the user actually answered; never decide for them',
@@ -84,7 +79,7 @@ describe('live session permission tools', () => {
     );
     expect(permission.function.description).not.toContain('similar requests');
     expect(permission.function.parameters).toMatchObject({
-      properties: { decision: { enum: ['allow', 'allow_always', 'deny'] } },
+      properties: { decision: { enum: ['allow', 'deny'] } },
       required: ['request_id', 'decision'],
       additionalProperties: false,
     });

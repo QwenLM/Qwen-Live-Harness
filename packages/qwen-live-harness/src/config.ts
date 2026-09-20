@@ -18,6 +18,10 @@ import { resolveMemoryConfig, type MemoryConfig } from './memory/config.js';
 import type { LiveLanguage } from './i18n/messages.js';
 import { resolveLiveLanguage } from './language-preferences.js';
 import {
+  resolvePermissionMode,
+  type PermissionMode,
+} from './permission-preferences.js';
+import {
   ConfigurationError,
   readConfigurationValue,
 } from './configuration-error.js';
@@ -111,6 +115,8 @@ export interface ProactiveConfig {
 
 export interface LiveConfig {
   language?: LiveLanguage;
+  /** Missing values retain per-request confirmation. Never migrate old grants. */
+  permissionMode?: PermissionMode;
   realtime: {
     endpoint: string;
     apiKey: string;
@@ -1055,6 +1061,11 @@ export function loadConfig(
   const configPath = join(dataDir, 'config.json');
   const file = readConfigFile(configPath);
   const language = resolveLiveLanguage(file['language']);
+  const permissionMode = readConfigurationValue(
+    'config.sectionInvalid',
+    () => resolvePermissionMode(file['permissionMode']),
+    { section: 'permissionMode' },
+  );
 
   const apiKey =
     str(env['DASHSCOPE_API_KEY']) ??
@@ -1101,6 +1112,7 @@ export function loadConfig(
 
   return {
     language,
+    permissionMode,
     realtime: {
       endpoint:
         str(env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']) ??

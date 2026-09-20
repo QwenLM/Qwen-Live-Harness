@@ -22,6 +22,7 @@ import { ConversationLanguage } from './conversation-language.js';
 import {
   clampTail,
   pickLeastEscalating,
+  redactPermissionText,
   stripControlSequences,
 } from '../adaptor/adaptor-utils.js';
 import type {
@@ -31,6 +32,7 @@ import type {
   ContentBlock,
   InstructionDelivery,
   PeerSessionReport,
+  PermissionDetails,
 } from '../adaptor/types.js';
 import type { BackendRegistry } from '../adaptor/registry.js';
 import type { ProactiveConfig } from '../config.js';
@@ -56,6 +58,7 @@ import type {
   LiveVisualSource,
 } from '../host/types.js';
 import { buildLiveInstructions } from '../realtime/instructions.js';
+import { automaticApprovalAnnouncement } from '../permissions/approval-announcement.js';
 import { searchQwenRealtime } from '../realtime/web-search.js';
 import {
   synthesizeNotificationSpeech,
@@ -96,8 +99,14 @@ import {
 import { LiveLogger } from '../logger.js';
 import {
   PermissionBroker,
+  type PermissionDecisionEvent,
   type PendingPermission,
 } from '../permissions/permission-broker.js';
+import {
+  isPermissionMode,
+  type PermissionMode,
+} from '../permission-preferences.js';
+import { isImportantPermissionOperation } from '../permissions/important-operation.js';
 import {
   ProactiveScheduler,
   type ProactiveDelivery,
@@ -367,6 +376,7 @@ export interface LiveSessionOptions {
   registry: BackendRegistry;
   realtime: LiveRealtimeConfig;
   getLanguage?: () => LiveLanguage;
+  getPermissionMode?: () => PermissionMode;
   log: SessionLog;
   logger?: LiveLogger;
   onFailure?: RuntimeFailureSink;
@@ -442,6 +452,28 @@ interface ActiveSearchResult {
   playbackCompleted: boolean;
 }
 
+type ResultSpeechPurpose =
+  | 'visual_result'
+  | 'search_result'
+  | 'task_result'
+  | 'peer_report'
+  | 'permission_execution';
+interface IsolatedResultSpeech {
+  id: string;
+  purpose: ResultSpeechPurpose;
+  authority: RealtimeResponseAuthority;
+  controller: AbortController;
+  source: string;
+  searchId?: string;
+  reportId?: string;
+  transcript?: string;
+  audioForwarded: boolean;
+  playbackStarted: boolean;
+  playbackCompleted: boolean;
+  responseDone: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 interface CallContext {
   epoch: number;
   callId: string;
@@ -452,12 +484,14 @@ interface CallContext {
   memory?: MemorySession;
   memoryDialogue?: MemoryDialogueCollector;
   publishedMemoryContext?: string;
+  publishedPermissionState?: string;
   memoryContextRevision?: number;
   stopping: boolean;
   discoveryCleanup?: Promise<void>;
   searches: Map<string, CallSearchTask>;
   searchFallbackJobs: Set<string>;
   activeSearchResult?: ActiveSearchResult;
+  resultSpeech?: IsolatedResultSpeech;
   speechInProgress: boolean;
   responseInFlight: boolean;
   visualInput: LiveVisualInput;
@@ -639,8 +673,17 @@ export class LiveSession {
   >();
   private readonly permissionOperations = new Map<
     string,
-    { decision: 'allow' | 'deny'; promise: Promise<SubagentsControlResult> }
+    { decision: string; promise: Promise<SubagentsControlResult> }
   >();
+  private readonly permissionDecisions = new Map<
+    string,
+    PermissionDecisionEvent
+  >();
+  private readonly toolExecutions = new Map<
+    string,
+    { event: Extract<BackendEvent, { type: 'activity' }>; at: number }
+  >();
+  private readonly announcedExecutions = new Set<string>();
   private readonly controlReceipts = new Map<string, string>();
   private controlReceiptSeq = 0;
   private searchSeq = 0;
@@ -688,6 +731,8 @@ export class LiveSession {
     this.broker = new PermissionBroker({
       adaptorFor: (backend) => this.adaptorFor(backend),
       log: (type, payload) => this.log.write(type, payload),
+      getPermissionMode: () => this.permissionMode(),
+      onDecision: (event) => this.onPermissionDecision(event),
     });
     for (const { adaptor } of this.registry.all()) {
       let lastReceipts = new Map<string, string>();
@@ -727,6 +772,64 @@ export class LiveSession {
   }
 
   /** The adaptor that owns a backend handle (registry routing). */
+  private permissionMode(): PermissionMode {
+    if (this.disposed) return 'ask';
+    try {
+      const mode = this.options.getPermissionMode?.();
+      return isPermissionMode(mode) ? mode : 'ask';
+    } catch {
+      return 'ask';
+    }
+  }
+
+  /** Called only after the user's new mode has been saved successfully. */
+  permissionModeChanged(): void {
+    if (this.disposed) return;
+    const context = this.active;
+    const mode = this.permissionMode();
+    if (context && !context.stopping) {
+      for (const pending of this.broker.pendingRequests)
+        context.injector.retractPermission(
+          this.scopedPermissionId(pending.backend, pending.requestId),
+        );
+      if (
+        mode === 'allow-all' &&
+        context.currentResponseId &&
+        context.responseAuthorities.get(context.currentResponseId) ===
+          'permission'
+      ) {
+        context.realtime?.cancelResponse();
+        context.playbackSuppressed = true;
+        this.host.clearOutput(context.epoch);
+        context.injector.noteOutputCleared();
+      }
+      this.publishPendingPermissionState(context);
+    }
+    this.subagents.touch();
+    if (mode === 'allow-all') {
+      void this.broker
+        .approvePendingAutomatically()
+        .then(() => {
+          this.subagents.touch();
+          if (context && this.active === context && !context.stopping) {
+            this.publishPendingPermissionState(context);
+            // A failed automatic delivery remains visible and gets a concise ask.
+            for (const pending of this.broker.pendingUserRequests)
+              this.enqueuePermission(context, pending);
+          }
+        })
+        .catch(() => {
+          this.log.write('error', {
+            source: 'permission',
+            message:
+              'Automatic permission processing failed; unresolved requests remain in Subagents.',
+          });
+        });
+    } else if (context && !context.stopping) {
+      this.enqueuePendingPermissions(context);
+    }
+  }
+
   private adaptorFor(handle: BackendHandle): BackendAdaptor {
     return this.observedAdaptor(this.registry.adaptorFor(handle));
   }
@@ -816,11 +919,12 @@ export class LiveSession {
               context.stopping
             )
               return false;
-            return (
-              context.realtime.respondToTaskResult?.(
-                text,
-                this.notificationLanguage(),
-              ) === true
+            return this.startResultSpeech(
+              context,
+              text,
+              text.startsWith('[PERMISSION_EXECUTION]')
+                ? 'permission_execution'
+                : 'task_result',
             );
           },
           injectProactive: (event) => this.injectProactiveEvent(context, event),
@@ -1187,6 +1291,8 @@ export class LiveSession {
       return;
     }
     context.injector.notePlaybackStarted();
+    if (context.resultSpeech?.audioForwarded)
+      context.resultSpeech.playbackStarted = true;
     const report = context.activePeerReport;
     if (report?.audioForwarded) {
       report.playbackStarted = true;
@@ -1225,6 +1331,8 @@ export class LiveSession {
       });
       return;
     }
+    if (context.resultSpeech?.audioForwarded)
+      context.resultSpeech.playbackCompleted = true;
     const report = context.activePeerReport;
     if (report?.playbackStarted) {
       report.playbackCompleted = true;
@@ -1247,6 +1355,7 @@ export class LiveSession {
     }
     // A completed Proactive cycle may synchronously release the next FIFO
     // item, so settle its scheduler state before reopening the Injector.
+    this.finishIsolatedSpeech(context);
     context.injector.notePlaybackCompleted();
     this.debug('playback.completed', { epoch: call.epoch });
   }
@@ -1256,6 +1365,7 @@ export class LiveSession {
     const context = this.active;
     if (!context || context.epoch !== call.epoch || context.stopping) return;
     context.playbackSuppressed = true;
+    this.abortResultSpeech(context, 'output_muted');
     this.abortProactiveFallbacks(
       context,
       'Audio output was muted before the notification was delivered.',
@@ -1499,7 +1609,7 @@ export class LiveSession {
       this.active !== context ||
       context.stopping ||
       !reportId ||
-      !context.realtime?.speakPeerReport ||
+      !context.realtime ||
       this.host.isOutputMuted?.() === true
     )
       return false;
@@ -1511,15 +1621,9 @@ export class LiveSession {
       playbackCompleted: false,
     };
     context.activePeerReport = active;
-    let accepted = false;
-    try {
-      accepted = context.realtime.speakPeerReport(
-        text,
-        this.notificationLanguage(),
-      );
-    } catch {
-      /* retry only before admission */
-    }
+    const accepted = this.startResultSpeech(context, text, 'peer_report', {
+      reportId,
+    });
     if (!accepted) {
       if (context.activePeerReport === active)
         context.activePeerReport = undefined;
@@ -1528,6 +1632,279 @@ export class LiveSession {
     if (context.activePeerReport === active && !active.playbackStarted)
       this.reports.update(reportId, 'submitted');
     return true;
+  }
+
+  /** One tool-free worker owns one output. It never requests a main-model turn. */
+  private startResultSpeech(
+    context: CallContext,
+    text: string,
+    purpose: ResultSpeechPurpose,
+    identity: { searchId?: string; reportId?: string } = {},
+  ): boolean {
+    if (this.active !== context || context.stopping || !context.realtime)
+      return false;
+    const authority =
+      purpose === 'permission_execution' ? 'task_result' : purpose;
+    if (this.host.isOutputMuted?.() === true) {
+      const accepted = context.realtime.sendBackendContext(
+        `[RESULT_AVAILABLE] ${JSON.stringify({
+          kind: purpose,
+          status: 'available_not_announced',
+          payload: text,
+        })}`,
+      );
+      if (accepted)
+        queueMicrotask(() => {
+          if (this.active === context && !context.stopping)
+            context.injector.noteResponseDone(authority);
+        });
+      return accepted;
+    }
+    if (
+      context.resultSpeech ||
+      context.speechInProgress ||
+      context.responseInFlight ||
+      context.transportRecovering ||
+      context.pendingToolCalls.size > 0 ||
+      (context.realtime.canStartExternalSpeech?.() ??
+        context.realtime.canDeliverExternalAudio?.()) !== true
+    )
+      return false;
+    const state: IsolatedResultSpeech = {
+      id: `isolated-result-${++this.controlReceiptSeq}`,
+      purpose,
+      authority,
+      controller: new AbortController(),
+      source: text,
+      ...identity,
+      audioForwarded: false,
+      playbackStarted: false,
+      playbackCompleted: false,
+      responseDone: false,
+    };
+    context.resultSpeech = state;
+    // Reserve the Injector before returning to its synchronous flush loop.
+    context.injector.noteResponseCreated(authority);
+    this.host.setCallState(context.epoch, 'thinking');
+    try {
+      context.realtime.sendBackendContext(
+        `[RESULT_AVAILABLE] ${JSON.stringify({
+          kind: purpose,
+          status: 'available_not_announced',
+          payload: text,
+        })}`,
+      );
+    } catch {
+      /* The UI retains evidence even if silent history is unavailable. */
+    }
+    void this.generateResultSpeech(context, state);
+    return true;
+  }
+
+  private async generateResultSpeech(
+    context: CallContext,
+    state: IsolatedResultSpeech,
+  ): Promise<void> {
+    const current = () =>
+      this.active === context &&
+      !context.stopping &&
+      context.resultSpeech === state &&
+      !state.controller.signal.aborted;
+    try {
+      const language = this.notificationLanguage();
+      const outputLanguage =
+        language.outputLanguage ?? language.fallbackLanguage;
+      const result = await this.notificationSpeech({
+        ...this.options.realtime,
+        ...this.realtimeDebugContext({
+          epoch: context.epoch,
+          callId: context.callId,
+          purpose: state.purpose,
+          deliveryId: state.id,
+          ...(state.searchId ? { taskId: state.searchId } : {}),
+        }),
+        purpose: state.purpose,
+        summary: state.source,
+        ...(state.purpose === 'permission_execution'
+          ? {
+              fixedAnnouncement: this.approvalReadout(
+                state.source,
+                outputLanguage,
+              ),
+            }
+          : {}),
+        language: outputLanguage,
+        signal: state.controller.signal,
+      });
+      if (!current()) return;
+      if (
+        context.speechInProgress ||
+        context.responseInFlight ||
+        this.host.isOutputMuted?.() === true ||
+        (context.realtime?.canStartExternalSpeech?.() ??
+          context.realtime?.canDeliverExternalAudio?.()) !== true ||
+        result.sampleRate !== QWEN_REALTIME_OUTPUT_SAMPLE_RATE ||
+        !result.audio.length ||
+        result.audio.length % 2 !== 0 ||
+        result.audio.length > QWEN_REALTIME_OUTPUT_SAMPLE_RATE * 2 * 30 ||
+        !result.transcript.trim() ||
+        /<\/?(?:tool_call|function)(?:[\s=>]|$)/iu.test(result.transcript)
+      )
+        throw new Error('Isolated result output is unavailable.');
+      state.transcript = result.transcript;
+      if (state.searchId)
+        this.logSearchDelivery(context, state.searchId, 'isolated_generated', {
+          providerSessionId: result.sessionId,
+          responseId: result.responseId,
+          audioBytes: result.audio.length,
+        });
+      this.log.write('transcript.assistant', {
+        providerSessionId: result.sessionId,
+        responseId: result.responseId,
+        source: 'isolated_result',
+        purpose: state.purpose,
+        text: result.transcript,
+      });
+      this.host.setCaption(context.epoch, result.transcript);
+      const search = context.activeSearchResult;
+      if (search && search.taskId === state.searchId)
+        search.responseId = state.id;
+      const report = context.activePeerReport;
+      if (report && report.id === state.reportId) report.responseId = state.id;
+      for (let offset = 0; offset < result.audio.length; offset += 64 * 1024) {
+        if (!current()) return;
+        if (
+          this.host.isOutputMuted?.() === true ||
+          !this.host.sendOutputAudio(
+            context.epoch,
+            result.audio.subarray(offset, offset + 64 * 1024),
+          )
+        )
+          throw new Error('Isolated result output was not accepted.');
+        state.audioForwarded = true;
+        if (state.searchId && offset === 0)
+          this.logSearchDelivery(context, state.searchId, 'audio_started', {
+            responseId: state.id,
+          });
+        if (search && search.taskId === state.searchId)
+          search.audioForwarded = true;
+        if (report && report.id === state.reportId)
+          report.audioForwarded = true;
+        context.playbackSuppressed = false;
+        context.injector.notePlaybackStarted();
+        if (offset + 64 * 1024 < result.audio.length)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (!current()) return;
+      state.responseDone = true;
+      if (state.searchId)
+        this.logSearchDelivery(context, state.searchId, 'response_done', {
+          responseId: state.id,
+          status: 'completed',
+          audioForwarded: true,
+        });
+      if (search && search.taskId === state.searchId)
+        search.responseDone = true;
+      if (report && report.id === state.reportId) report.responseDone = true;
+      context.injector.noteResponseDone(state.authority);
+      this.host.setCallState(context.epoch, 'speaking');
+      this.host.finishOutputAudio(context.epoch);
+      // Do not invent playback completion when a Host receipt is missing.
+      if (current()) {
+        state.timer = setTimeout(
+          () => {
+            if (current()) this.abortResultSpeech(context, 'playback_timeout');
+          },
+          Math.ceil(
+            (result.audio.length / (QWEN_REALTIME_OUTPUT_SAMPLE_RATE * 2)) *
+              1000,
+          ) + 5000,
+        );
+        state.timer.unref?.();
+        this.finishIsolatedSpeech(context);
+      }
+    } catch {
+      if (current())
+        this.abortResultSpeech(context, 'generation_or_output_failed');
+    }
+  }
+
+  private finishIsolatedSpeech(context: CallContext): void {
+    const state = context.resultSpeech;
+    if (!state?.responseDone || !state.playbackCompleted) return;
+    if (!state.playbackStarted) {
+      this.abortResultSpeech(context, 'missing_playback_start');
+      return;
+    }
+    context.resultSpeech = undefined;
+    if (state.timer) clearTimeout(state.timer);
+    state.controller.abort();
+    try {
+      context.realtime?.sendBackendContext(
+        `[RESULT_DELIVERY] ${JSON.stringify({
+          kind: state.purpose,
+          status: 'played',
+          spoken_text: state.transcript,
+        })}`,
+      );
+    } catch {
+      /* Playback receipts remain authoritative. */
+    }
+    this.debug('result_speech.played', {
+      epoch: context.epoch,
+      purpose: state.purpose,
+      id: state.id,
+    });
+    if (!context.responseInFlight && !context.stopping)
+      this.host.setCallState(context.epoch, 'listening');
+  }
+
+  private abortResultSpeech(context: CallContext, reason: string): void {
+    const state = context.resultSpeech;
+    if (!state) return;
+    context.resultSpeech = undefined;
+    if (state.timer) clearTimeout(state.timer);
+    state.controller.abort();
+    this.debug('result_speech.unspoken', {
+      epoch: context.epoch,
+      purpose: state.purpose,
+      id: state.id,
+      reason,
+    });
+    if (state.searchId)
+      this.endSearchResult(
+        context,
+        reason === 'output_muted'
+          ? 'search.answerMuted'
+          : [
+                'user_interrupted',
+                'foreground_response',
+                'transport_recovery',
+              ].includes(reason)
+            ? 'search.answerInterrupted'
+            : 'search.answerUnspoken',
+      );
+    if (state.reportId)
+      this.endPeerReport(
+        context,
+        [
+          'user_interrupted',
+          'foreground_response',
+          'transport_recovery',
+        ].includes(reason)
+          ? 'interrupted'
+          : 'unspoken',
+        'The isolated report was not fully played.',
+      );
+    if (state.audioForwarded) {
+      context.playbackSuppressed = true;
+      this.host.clearOutput(context.epoch);
+      context.injector.noteOutputCleared();
+    }
+    context.injector.noteResponseDone(state.authority);
+    context.injector.noteOutputSuppressed();
+    if (!context.responseInFlight && !context.stopping)
+      this.host.setCallState(context.epoch, 'listening');
   }
 
   private finishPeerReport(context: CallContext): void {
@@ -1619,7 +1996,11 @@ export class LiveSession {
   ): Promise<SubagentsControlResult> {
     if (this.disposed) return { type: 'error', code: 'unavailable' };
     if (request.action === 'list') {
-      const page = this.subagents.page(request.offset, request.selectedId);
+      const page = this.subagents.page(
+        request.offset,
+        request.selectedId,
+        request.filter,
+      );
       page.snapshot = this.withPendingPermissions(page.snapshot);
       page.snapshot.tasks = page.snapshot.tasks.map((task) =>
         this.decorateSubagent(task),
@@ -1720,26 +2101,28 @@ export class LiveSession {
       return { type: 'page', page };
     }
     if (request.action === 'permission') {
+      if (request.scope === 'always')
+        return { type: 'error', code: 'permission_unavailable' };
+      const decision = request.decision;
       const pending = this.broker.resolveHandle(request.requestHandle);
       if (
         !pending ||
         !this.broker.pendingUserRequests.includes(pending) ||
         !this.permissionView(pending).choices.some(
-          (choice) => choice.decision === request.decision,
+          (choice) =>
+            choice.decision === request.decision &&
+            (choice.scope ?? 'once') === (request.scope ?? 'once'),
         )
       )
         return { type: 'error', code: 'permission_unavailable' };
       const existing = this.permissionOperations.get(request.requestHandle);
       if (existing)
-        return existing.decision === request.decision
+        return existing.decision === decision
           ? existing.promise
           : { type: 'error', code: 'permission_unavailable' };
-      const operation = this.respondSubagentPermission(
-        pending,
-        request.decision,
-      );
+      const operation = this.respondSubagentPermission(pending, decision);
       this.permissionOperations.set(request.requestHandle, {
-        decision: request.decision,
+        decision,
         promise: operation,
       });
       try {
@@ -1927,18 +2310,21 @@ export class LiveSession {
 
   private permissionView(pending: PendingPermission): SubagentPermission {
     const title = stripControlSequences(pending.title);
-    const titleTruncated = title.length > 4096;
+    const details = this.permissionDetailsText(pending.details);
+    const titleTruncated = title.length > 4096 || details.length > 8192;
     const choices: SubagentPermission['choices'] = [];
     for (const decision of ['allow', 'deny'] as const) {
       if (decision === 'allow' && titleTruncated) continue;
       const option = pickLeastEscalating(
-        pending.options,
+        pending.options.filter(
+          (option) => decision !== 'allow' || option.escalation !== 'always',
+        ),
         decision === 'allow' ? 'proceed' : 'reject',
       );
       if (option)
         choices.push({
           decision,
-          ...(option.escalation ? { scope: option.escalation } : {}),
+          ...(decision === 'allow' ? { scope: 'once' as const } : {}),
         });
     }
     return {
@@ -1947,8 +2333,264 @@ export class LiveSession {
       sessionId: pending.sessionHandle.slice(0, 256),
       title: title.slice(0, 4096),
       ...(titleTruncated ? { titleTruncated: true } : {}),
+      ...(details ? { details: details.slice(0, 8192) } : {}),
       choices,
     };
+  }
+
+  private permissionDetailsText(details?: PermissionDetails): string {
+    if (!details) return '';
+    return redactPermissionText(
+      JSON.stringify(
+        {
+          ...(details.toolName ? { tool: details.toolName } : {}),
+          ...(details.operation ? { operation: details.operation } : {}),
+          ...(details.command ? { command: details.command } : {}),
+          ...(details.rawInput !== undefined
+            ? { input: details.rawInput }
+            : {}),
+          ...(details.cwd ? { cwd: details.cwd } : {}),
+          ...(details.resources?.length
+            ? { resources: details.resources }
+            : {}),
+          ...(details.incomplete ? { incomplete: true } : {}),
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  private executionKey(
+    backend: BackendHandle,
+    jobRef?: string,
+    toolCallId?: string,
+  ): string | undefined {
+    return jobRef && toolCallId
+      ? JSON.stringify([backend.adaptor, backend.id, jobRef, toolCallId])
+      : undefined;
+  }
+
+  private approvalSpeechContext(details?: PermissionDetails): string {
+    // Only short, locally formatted names cross into the speech worker.
+    // Full approval details remain in the permission log and Subagents view.
+    return `[PERMISSION_EXECUTION] ${JSON.stringify({
+      status: 'approved',
+      evidence: 'approval_delivered',
+      automatic: true,
+      announcements: {
+        en: automaticApprovalAnnouncement(details, 'en'),
+        'zh-CN': automaticApprovalAnnouncement(details, 'zh-CN'),
+      },
+    })}`;
+  }
+
+  private approvalReadout(
+    source: string,
+    language: LiveLanguage,
+  ): string | undefined {
+    const prefix = '[PERMISSION_EXECUTION] ';
+    if (!source.startsWith(prefix)) return undefined;
+    try {
+      // This envelope is generated by approvalSpeechContext, not backend text.
+      // Cancellation and other result envelopes must keep their own policy.
+      const value = JSON.parse(source.slice(prefix.length)) as Record<
+        string,
+        unknown
+      >;
+      if (
+        value?.['status'] !== 'approved' ||
+        value['evidence'] !== 'approval_delivered' ||
+        value['automatic'] !== true
+      )
+        return undefined;
+      const announcements = value['announcements'];
+      if (!announcements || typeof announcements !== 'object') return undefined;
+      const text = (announcements as Record<string, unknown>)[language];
+      return typeof text === 'string' && text.length <= 256 && text.trim()
+        ? text
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private onPermissionDecision(event: PermissionDecisionEvent): void {
+    const key = this.executionKey(
+      event.pending.backend,
+      event.pending.jobRef,
+      event.pending.details?.toolCallId,
+    );
+    this.permissionDecisions.set(event.pending.requestHandle, event);
+    if (key) this.permissionDecisions.set(key, event);
+    while (this.permissionDecisions.size > 512)
+      this.permissionDecisions.delete(
+        this.permissionDecisions.keys().next().value!,
+      );
+    const taskId = this.permissionTaskId(event.pending);
+    if (
+      taskId &&
+      this.subagents.get(taskId)?.status === 'waiting' &&
+      !this.broker.pendingForJob(
+        event.pending.backend,
+        event.pending.jobRef ?? '',
+      )
+    )
+      this.subagents.update(taskId, {
+        status: 'running',
+        activity: liveMessage(
+          event.outcome === 'delivered' &&
+            ['deny', 'cancel'].includes(event.decision)
+            ? 'subagents.outcome.denied'
+            : 'permissions.awaitingExecution',
+        ),
+      });
+    const context = this.active;
+    if (!context || context.stopping) return;
+    context.injector.retractPermission(
+      this.scopedPermissionId(event.pending.backend, event.pending.requestId),
+    );
+    this.publishPendingPermissionState(context);
+    if (
+      event.auto &&
+      event.outcome === 'delivered' &&
+      event.decision === 'cancel'
+    ) {
+      context.injector.enqueue({
+        kind: 'task_result',
+        context: `[PERMISSION_EXECUTION] ${JSON.stringify({
+          status: 'cancelled',
+          evidence: 'permission_cancelled',
+          automatic: true,
+          action:
+            this.permissionDetailsText(event.pending.details).slice(0, 6000) ||
+            event.pending.title,
+          reason: event.reason,
+        })}`,
+      });
+      return;
+    }
+    if (
+      event.auto &&
+      event.outcome === 'delivered' &&
+      ['allow', 'allow_always'].includes(event.decision)
+    ) {
+      if (!isImportantPermissionOperation(event.pending.details)) return;
+      if (key) this.announcedExecutions.add(key);
+      while (this.announcedExecutions.size > 512)
+        this.announcedExecutions.delete(
+          this.announcedExecutions.values().next().value!,
+        );
+      const related = key ? this.toolExecutions.get(key) : undefined;
+      const activityDetails =
+        related && Date.now() - related.at < 60_000
+          ? related.event.details
+          : undefined;
+      const details = {
+        ...event.pending.details,
+        toolName: event.pending.details?.toolName ?? activityDetails?.toolName,
+        command: event.pending.details?.command ?? activityDetails?.command,
+      };
+      // Correlate only within the same backend/job/tool call. Some approval
+      // snapshots omit the tool name already supplied by its activity event.
+      context.injector.enqueue({
+        kind: 'task_result',
+        context: this.approvalSpeechContext(details),
+      });
+      return;
+    }
+    if (
+      key &&
+      event.outcome === 'delivered' &&
+      ['allow', 'allow_always'].includes(event.decision)
+    ) {
+      const started = this.toolExecutions.get(key);
+      if (started && Date.now() - started.at < 60_000)
+        this.announceExecution(
+          context,
+          event.pending.backend,
+          started.event,
+          event,
+        );
+    }
+  }
+
+  private announceExecution(
+    context: CallContext,
+    backend: BackendHandle,
+    event: Extract<BackendEvent, { type: 'activity' }>,
+    decision?: PermissionDecisionEvent,
+  ): void {
+    const key = this.executionKey(backend, event.jobRef, event.toolCallId);
+    if (
+      !key ||
+      this.announcedExecutions.has(key) ||
+      event.toolStatus !== 'in_progress' ||
+      !event.details ||
+      this.active !== context ||
+      context.stopping
+    )
+      return;
+    const known = decision ?? this.permissionDecisions.get(key);
+    if (
+      !isImportantPermissionOperation(known?.pending.details ?? event.details)
+    )
+      return;
+    if (
+      !known ||
+      !known.auto ||
+      known.outcome !== 'delivered' ||
+      !['allow', 'allow_always'].includes(known.decision)
+    )
+      return;
+    // Initial tool-call "in_progress" events may precede their permission ask.
+    // They alone are not evidence that an operation was authorized or executed.
+    this.announcedExecutions.add(key);
+    while (this.announcedExecutions.size > 512)
+      this.announcedExecutions.delete(
+        this.announcedExecutions.values().next().value!,
+      );
+    context.injector.enqueue({
+      kind: 'task_result',
+      context: this.approvalSpeechContext({
+        ...event.details,
+        ...known.pending.details,
+        toolName: known.pending.details?.toolName ?? event.details.toolName,
+        command: known.pending.details?.command ?? event.details.command,
+      }),
+    });
+  }
+
+  private publishPendingPermissionState(context: CallContext): void {
+    if (this.active !== context || !context.realtime || context.stopping)
+      return;
+    const requests = this.broker.pendingUserRequests.slice(0, 16).map((p) => ({
+      request_id: p.requestHandle,
+      session: p.sessionHandle,
+      ...(p.jobRef
+        ? { job: this.handles.jobByRef(p.backend, p.jobRef)?.jobHandle }
+        : {}),
+      status: 'waiting_for_permission',
+      action: p.title.slice(0, 512),
+    }));
+    if (
+      !requests.length &&
+      !context.publishedPermissionState &&
+      this.permissionMode() === 'ask'
+    )
+      return;
+    const text = `[TASK_RUNTIME_STATE] ${JSON.stringify({
+      permission_mode: this.permissionMode(),
+      pending_permissions: requests,
+      pending_count: this.broker.pendingUserRequests.length,
+    })}`;
+    if (text === context.publishedPermissionState) return;
+    try {
+      if (context.realtime.sendBackendContext(text))
+        context.publishedPermissionState = text;
+    } catch {
+      /* Diagnostic state publication never changes authority. */
+    }
   }
 
   private async respondSubagentPermission(
@@ -1963,20 +2605,38 @@ export class LiveSession {
       this.subagents.touch();
       if (outcome !== 'delivered')
         return { type: 'error', code: 'permission_unavailable' };
+      const actual = this.permissionDecisions.get(pending.requestHandle);
       const taskId = this.permissionTaskId(pending);
-      if (taskId)
+      if (
+        taskId &&
+        this.subagents.get(taskId)?.status === 'waiting' &&
+        !this.broker.pendingForJob(pending.backend, pending.jobRef ?? '')
+      )
         this.subagents.update(taskId, { status: 'running', activity: '' });
       this.active?.injector.retractPermission(
         this.scopedPermissionId(pending.backend, pending.requestId),
       );
       this.queueControlReceipt(
         taskId ?? pending.requestHandle,
-        `Permission ${pending.requestHandle} ${decision === 'allow' ? 'allowed' : 'denied'} by the user.`,
+        `Permission ${pending.requestHandle} ${actual?.decision === 'cancel' || decision === 'deny' ? 'denied' : 'allowed'} by the user.`,
       );
       return {
         type: 'outcome',
-        outcome: decision === 'allow' ? 'allowed' : 'denied',
+        outcome:
+          actual?.decision === 'cancel' || decision === 'deny'
+            ? 'denied'
+            : 'allowed',
         requestHandle: pending.requestHandle,
+        ...(decision !== 'deny'
+          ? {
+              scope: 'once' as const,
+              ...(actual?.decision === 'cancel'
+                ? {
+                    message: liveMessage('permissions.cancelledNoOnce'),
+                  }
+                : {}),
+            }
+          : {}),
       };
     } catch {
       return { type: 'error', code: 'action_failed' };
@@ -2278,6 +2938,8 @@ export class LiveSession {
         if (event.phase === 'started') {
           if (context.transportRecovering) return;
           context.transportRecovering = true;
+          context.publishedPermissionState = undefined;
+          this.abortResultSpeech(context, 'transport_recovery');
           context.realtimeGeneration += 1;
           this.clearNarrationInputs(context);
           context.recoveryNeedsRepeat = false;
@@ -2340,7 +3002,10 @@ export class LiveSession {
       onProtocolDebug: (details: Record<string, unknown>) => {
         if (!current()) return;
         this.debug('realtime.protocol', details);
-        if (this.logger.debugEnabled) {
+        if (
+          this.logger.debugEnabled ||
+          details['type'] === 'input_image_buffer.rejected'
+        ) {
           // The transport supplies allowlisted IDs/state only, never raw
           // requests, prompts, credentials, transcripts, or media.
           this.log.write('realtime.protocol', {
@@ -2377,11 +3042,13 @@ export class LiveSession {
       onSpeechStarted: (event: { itemId?: string }) => {
         if (!current()) return;
         this.rememberPermissionInput(context, event.itemId);
+        this.publishPendingPermissionState(context);
         if (context.recoveryNeedsRepeat) {
           context.recoveryNeedsRepeat = false;
           this.host.setStatusText(context.epoch);
         }
         context.speechInProgress = true;
+        this.abortResultSpeech(context, 'user_interrupted');
         this.endPeerReport(
           context,
           'interrupted',
@@ -2584,6 +3251,7 @@ export class LiveSession {
         context.currentResponseId = event.responseId;
         let cancelledInvalidatedProactive = false;
         context.responseInFlight = true;
+        this.abortResultSpeech(context, 'foreground_response');
         context.injector.noteResponseCreated(event.authority);
         if (event.authority !== 'proactive') {
           this.abortProactiveFallbacks(
@@ -4129,6 +4797,7 @@ export class LiveSession {
         note || undefined,
       );
       this.subagents.touch();
+      const actual = this.permissionDecisions.get(requestHandle);
       if (outcome === 'not_found') {
         return {
           status: 'error',
@@ -4139,7 +4808,12 @@ export class LiveSession {
         const job = pending.jobRef
           ? this.handles.jobByRef(pending.backend, pending.jobRef)
           : undefined;
-        if (job)
+        if (
+          job &&
+          this.subagents.get(`harness:${job.jobHandle}`)?.status ===
+            'waiting' &&
+          !this.broker.pendingForJob(pending.backend, pending.jobRef ?? '')
+        )
           this.subagents.update(`harness:${job.jobHandle}`, {
             status: 'running',
             activity: '',
@@ -4152,7 +4826,13 @@ export class LiveSession {
       // file") would otherwise be silently discarded — the grant would be
       // broader than the user believes. Relay it as a user instruction to
       // the same backend session through the existing prompt/steer path.
-      if (note && pending && outcome === 'delivered') {
+      if (
+        note &&
+        pending &&
+        outcome === 'delivered' &&
+        actual?.decision !== 'cancel' &&
+        actual?.decision !== 'deny'
+      ) {
         try {
           await this.adaptorFor(pending.backend).prompt(
             pending.backend,
@@ -4180,7 +4860,18 @@ export class LiveSession {
           };
         }
       }
-      return { status: outcome };
+      return {
+        status: outcome,
+        ...(actual &&
+        (decision === 'allow_always' || actual.decision !== decision)
+          ? {
+              effective_decision: actual.decision,
+              permission_mode: actual.permissionMode,
+              automatic_saved: false,
+              ...(actual.reason ? { note: actual.reason } : {}),
+            }
+          : {}),
+      };
     });
 
     return handlers;
@@ -4718,11 +5409,35 @@ export class LiveSession {
         const job = observedJob;
         if (job && !['accepted', 'running'].includes(job.state)) return;
         if (job) job.state = 'running';
-        if (id) this.subagents.update(id, { status: 'running', activity: '' });
+        if (id && !this.broker.pendingForJob(backend, job?.jobRef ?? ''))
+          this.subagents.update(id, { status: 'running', activity: '' });
         return;
       }
       case 'activity': {
         if (id) this.subagents.append(id, event.kind, event.text);
+        const key = this.executionKey(backend, event.jobRef, event.toolCallId);
+        if (key && event.kind === 'tool' && event.toolStatus) {
+          const previous = this.toolExecutions.get(key)?.event.details;
+          // Tool updates may carry only a status. Preserve the name/command
+          // from the same call's initial event, including a pending snapshot.
+          const details =
+            previous || event.details
+              ? {
+                  ...previous,
+                  ...event.details,
+                  toolName: event.details?.toolName ?? previous?.toolName,
+                  command: event.details?.command ?? previous?.command,
+                }
+              : undefined;
+          const cached = { ...event, ...(details ? { details } : {}) };
+          this.toolExecutions.set(key, { event: cached, at: Date.now() });
+          while (this.toolExecutions.size > 256)
+            this.toolExecutions.delete(
+              this.toolExecutions.keys().next().value!,
+            );
+          if (context && observedJob && event.toolStatus === 'in_progress')
+            this.announceExecution(context, backend, cached);
+        }
         return;
       }
       case 'progress': {
@@ -4836,12 +5551,22 @@ export class LiveSession {
             ...(event.jobRef !== undefined ? { jobRef: event.jobRef } : {}),
             title: event.title,
             options: event.options,
-            allowAutoAnswer: context !== undefined,
+            ...(event.details ? { details: event.details } : {}),
+            allowAutoAnswer: !this.disposed,
           })
           .then((ask) => {
             this.subagents.touch();
-            if (ask.autoAnswered && id)
-              this.subagents.update(id, { status: 'running', activity: '' });
+            if (context) this.publishPendingPermissionState(context);
+            if (
+              ask.autoAnswered &&
+              id &&
+              this.subagents.get(id)?.status === 'waiting' &&
+              !this.broker.pendingForJob(backend, event.jobRef ?? '')
+            )
+              this.subagents.update(id, {
+                status: 'running',
+                activity: liveMessage('permissions.awaitingExecution'),
+              });
             if (
               ask.autoAnswered ||
               ask.alreadyPending ||
@@ -4878,12 +5603,18 @@ export class LiveSession {
         const pendingJob = pending?.jobRef
           ? this.handles.jobByRef(backend, pending.jobRef)
           : undefined;
-        if (pendingJob)
+        if (
+          pendingJob &&
+          this.subagents.get(`harness:${pendingJob.jobHandle}`)?.status ===
+            'waiting' &&
+          !this.broker.pendingForJob(backend, pendingJob.jobRef ?? '')
+        )
           this.subagents.update(`harness:${pendingJob.jobHandle}`, {
             status: 'running',
             activity: '',
           });
         if (!context) return;
+        this.publishPendingPermissionState(context);
         const retracted = context.injector.retractPermission(
           this.scopedPermissionId(backend, event.requestId),
         );
@@ -4908,7 +5639,16 @@ export class LiveSession {
           if (this.handles.resolveJob(handle)?.sessionHandle === sessionHandle)
             this.joinedTasks.delete(key);
         this.reconcileSubagentSession(sessionHandle);
+        const permissions = this.broker.pendingRequests.filter(
+          (p) => p.sessionHandle === sessionHandle,
+        );
+        if (context)
+          for (const permission of permissions)
+            context.injector.retractPermission(
+              this.scopedPermissionId(permission.backend, permission.requestId),
+            );
         this.broker.clearSession(sessionHandle);
+        if (context) this.publishPendingPermissionState(context);
         this.subagents.touch();
         this.observedSessions.delete(sessionHandle);
         if (context?.defaultSessionHandle === sessionHandle) {
@@ -4939,6 +5679,11 @@ export class LiveSession {
       request_id: pending.requestHandle,
       session: pending.sessionHandle,
       action: pending.title,
+      details: this.permissionDetailsText(pending.details).slice(0, 8192),
+      status: 'waiting_for_permission',
+      choices: this.permissionView(pending).choices,
+      permission_mode: this.permissionMode(),
+      automatic_delivery_failed: this.permissionMode() === 'allow-all',
       fallback_language: this.options.getLanguage?.() ?? 'en',
     })}`;
   }
@@ -5131,7 +5876,7 @@ export class LiveSession {
     backend: BackendHandle,
     requestId: string,
   ): string {
-    return `${backend.adaptor}:${requestId}`;
+    return JSON.stringify([backend.adaptor, backend.id, requestId]);
   }
 
   private notificationLanguage(): RealtimeNotificationLanguage {
@@ -6204,13 +6949,16 @@ export class LiveSession {
 
   private cleanupContext(context: CallContext): void {
     context.stopping = true;
+    // End-call owns the terminal state of its outstanding lookups, including
+    // results whose independent speech is still generating or playing.
+    this.cancelCallSearches(context);
+    this.abortResultSpeech(context, 'call_ended');
     this.clearNarrationInputs(context);
     this.abortProactiveFallbacks(
       context,
       'The call ended before the notification was delivered.',
     );
     this.stopDiscovery(context);
-    this.cancelCallSearches(context);
     this.clearProactiveCancellationGrace(context.activeProactiveDelivery);
     this.detachMemory(context);
     if (this.active === context) {
@@ -6376,7 +7124,15 @@ export class LiveSession {
             taskId: task.id,
           };
           this.debug(event, metadata);
-          if (this.logger.debugEnabled)
+          if (event === 'visual_analysis.retrying')
+            this.subagents.update(task.id, {
+              activity: liveMessage('visual.retrying'),
+            });
+          if (
+            this.logger.debugEnabled ||
+            event === 'visual_analysis.retrying' ||
+            event === 'visual_analysis.failed'
+          )
             this.log.write('visual.analysis', { event, ...metadata });
         },
       });
@@ -6563,11 +7319,7 @@ export class LiveSession {
       this.finishSearchTask(context, task.id, 'search.answerMuted');
       return;
     }
-    if (
-      !(task.kind === 'visual'
-        ? context.realtime?.respondToVisualResult
-        : context.realtime?.respondToSearchResult)
-    ) {
+    if (!context.realtime) {
       this.finishSearchTask(context, task.id, 'search.completed');
       return;
     }
@@ -6587,7 +7339,8 @@ export class LiveSession {
     // request representation, while retaining the full bounded result in the UI.
     while (
       answer.length > 0 &&
-      (evidence.length > QWEN_REALTIME_LIMITS.maxFunctionOutputChars ||
+      (evidence.length > 16_000 ||
+        evidence.length > QWEN_REALTIME_LIMITS.maxFunctionOutputChars ||
         JSON.stringify(evidence).length >
           MAX_REALTIME_INSTRUCTIONS_CHARS - 4000)
     ) {
@@ -6627,18 +7380,12 @@ export class LiveSession {
       playbackCompleted: false,
     };
     context.activeSearchResult = active;
-    let accepted = false;
-    try {
-      const respond =
-        task.kind === 'visual'
-          ? context.realtime?.respondToVisualResult
-          : context.realtime?.respondToSearchResult;
-      accepted = respond?.(text, this.notificationLanguage()) ?? false;
-    } catch {
-      // An invalid request is not a failed lookup and must not execute a backend.
-      this.finishSearchTask(context, task.id, 'search.completed');
-      context.injector.retractSearchResult(task.id);
-    }
+    const accepted = this.startResultSpeech(
+      context,
+      text,
+      task.kind === 'visual' ? 'visual_result' : 'search_result',
+      { searchId: task.id },
+    );
     if (!accepted) {
       if (context.activeSearchResult === active)
         context.activeSearchResult = undefined;
@@ -6722,6 +7469,13 @@ export class LiveSession {
   }
 
   private cancelSearchTask(context: CallContext, task: CallSearchTask): void {
+    if (context.resultSpeech?.searchId === task.id) {
+      // Cancellation owns the terminal task result. Do not let speech cleanup
+      // first freeze its completed computation as a successfully ended task.
+      if (context.activeSearchResult?.taskId === task.id)
+        context.activeSearchResult = undefined;
+      this.abortResultSpeech(context, 'task_cancelled');
+    }
     task.controller.abort();
     context.searches.delete(task.id);
     context.injector.retractSearchResult(task.id);

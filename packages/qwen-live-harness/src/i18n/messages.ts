@@ -1881,6 +1881,86 @@ export const LIVE_MESSAGES = {
   // SUBAGENTS_MESSAGES
   'subagents.back': { en: 'Back', 'zh-CN': '返回' },
   'subagents.title': { en: 'Subagents', 'zh-CN': '子智能体' },
+  'subagents.filterHint': {
+    en: 'Filter tasks. Select again to show all.',
+    'zh-CN': '按类别筛选，再点一次显示全部。',
+  },
+  'subagents.filterTasks': { en: 'Filter tasks', 'zh-CN': '筛选任务' },
+  'permissionMode.label': {
+    en: 'Background Harness permissions',
+    'zh-CN': '后台 Harness 授权',
+  },
+  'permissionMode.hint': {
+    en: '“Allow all by default” automatically approves pending and future background Harness requests. Important operations are announced during calls; full records are in Subagents. The coding agent’s own restrictions still apply. Switching back to “Ask every time” does not revoke approvals already granted.',
+    'zh-CN':
+      '“默认允许全部”会自动批准当前等待和之后的后台 Harness 授权请求。通话中会语音播报重要操作，完整记录可在子智能体查看。后端自身限制仍生效。切回“每次询问”不会撤回已批准的操作。',
+  },
+  'permissionMode.initQuestion': {
+    en: 'How should background Harness permission requests be handled?',
+    'zh-CN': '后台 Harness 执行操作时，如何授权？',
+  },
+  'permissionMode.initSummary': {
+    en: 'Background Harness permissions: {mode}',
+    'zh-CN': '后台 Harness 授权：{mode}',
+  },
+  'permissionMode.configInvalid': {
+    en: 'Could not read a valid configuration file. Check config.json.',
+    'zh-CN': '无法读取有效的配置文件，请检查 config.json。',
+  },
+  'permissionMode.concurrentEdit': {
+    en: 'The configuration changed while saving. Reload the settings and try again.',
+    'zh-CN': '配置在保存时发生了变化，请刷新设置后重试。',
+  },
+  'permissionMode.allowOnceHint': {
+    en: 'Approve only this request.',
+    'zh-CN': '仅批准当前这次请求。',
+  },
+  'permissionMode.ask': { en: 'Ask every time', 'zh-CN': '每次询问' },
+  'permissionMode.allowAll': {
+    en: 'Allow all by default',
+    'zh-CN': '默认允许全部',
+  },
+  'permissionMode.askHint': {
+    en: 'Ask before approving. Existing approvals stay in effect.',
+    'zh-CN': '操作前先询问，已批准的操作不受影响。',
+  },
+  'permissionMode.allowAllHint': {
+    en: 'Auto-approve pending and future requests. Announce important operations during calls.',
+    'zh-CN': '自动批准当前及后续请求，通话中播报重要操作。',
+  },
+  'permissionMode.unavailable': {
+    en: 'Connect to a background service that supports this setting.',
+    'zh-CN': '请连接支持此设置的后台服务。',
+  },
+  'permissionMode.invalid': {
+    en: 'This permission setting is not valid.',
+    'zh-CN': '授权设置无效。',
+  },
+  'permissionMode.busy': {
+    en: 'The permission setting is still being saved.',
+    'zh-CN': '授权设置仍在保存中。',
+  },
+  'permissionMode.timeout': {
+    en: 'Saving the permission setting timed out. Check the current setting before trying again.',
+    'zh-CN': '保存授权设置超时，请确认当前设置后再试。',
+  },
+  'permissionMode.saveFailed': {
+    en: 'Could not save the permission setting.',
+    'zh-CN': '授权设置保存失败。',
+  },
+  'permissionMode.callChanged': {
+    en: 'The connection or call changed. Please try again.',
+    'zh-CN': '连接或通话已变化，请重试。',
+  },
+  'subagents.showAllTasks': { en: 'Show all', 'zh-CN': '显示全部' },
+  'subagents.filteredTasks': {
+    en: 'Showing: {category}',
+    'zh-CN': '当前显示：{category}',
+  },
+  'subagents.filterEmpty': {
+    en: 'No tasks in this category.',
+    'zh-CN': '暂无此类任务。',
+  },
   'subagents.terminalSessions': {
     en: 'Terminal sessions',
     'zh-CN': '终端会话',
@@ -2065,13 +2145,70 @@ export const LIVE_MESSAGES = {
   },
   'subagents.allow': { en: 'Allow', 'zh-CN': '允许' },
   'subagents.allowOnce': { en: 'Allow once', 'zh-CN': '仅允许本次' },
-  'subagents.allowAlways': { en: 'Always allow', 'zh-CN': '始终允许' },
+  'subagents.allowAlways': {
+    en: 'Auto-allow matching actions',
+    'zh-CN': '以后同类自动允许',
+  },
+  'permissions.exactScope': {
+    en: 'Only identical tool input for {backend} in {cwd}. Different arguments or directories need approval.',
+    'zh-CN':
+      '仅适用于 {backend} 在 {cwd} 下完全相同的操作；参数或目录变化仍需确认。',
+  },
+  'permissions.onceOnly': {
+    en: 'Automatic approval is unavailable for this request. Review the details before allowing it once.',
+    'zh-CN': '此请求暂不支持自动允许，请查看详情后决定是否仅允许本次。',
+  },
+  'permissions.revocationFailed': {
+    en: 'This request was denied, but revoking the saved rule failed. Automatic approval is off for this run; review the saved rules before restarting.',
+    'zh-CN':
+      '已拒绝本次请求，但未能保存规则撤销。本次运行已停用自动授权，请在重启前检查已保存的规则。',
+  },
+  'permissions.onceFallback': {
+    en: 'This request was allowed once. Automatic approval could not be saved; future requests will still ask.',
+    'zh-CN': '本次已允许，但未能保存自动授权规则，后续仍会询问。',
+  },
+  'permissions.cancelledNoOnce': {
+    en: 'The request was cancelled because the backend did not offer one-time approval.',
+    'zh-CN': '后台不支持单次授权，已取消请求，没有扩大权限。',
+  },
+  'permissions.awaitingExecution': {
+    en: 'Approval handled; waiting for execution status.',
+    'zh-CN': '授权已处理，等待执行状态。',
+  },
+  'permissions.autoApprovedCommand': {
+    en: 'Auto-approved the background agent to run the {name} command.',
+    'zh-CN': '已自动授权后台智能体执行{name}命令。',
+  },
+  'permissions.autoApprovedTool': {
+    en: 'Auto-approved the background agent to use the {name} tool.',
+    'zh-CN': '已自动授权后台智能体调用{name}工具。',
+  },
+  'permissions.autoApprovedGenericCommand': {
+    en: 'Auto-approved the background agent to run a command.',
+    'zh-CN': '已自动授权后台智能体执行命令。',
+  },
+  'permissions.autoApprovedGenericTool': {
+    en: 'Auto-approved the background agent to use a tool.',
+    'zh-CN': '已自动授权后台智能体调用工具。',
+  },
+  'permissions.approvalName.copyFiles': {
+    en: 'file copy',
+    'zh-CN': '复制文件',
+  },
+  'permissions.approvalName.interface': {
+    en: 'interface',
+    'zh-CN': '界面操作',
+  },
+  'permissions.approvalName.fileEdit': {
+    en: 'file editing',
+    'zh-CN': '文件编辑',
+  },
   'subagents.deny': { en: 'Deny', 'zh-CN': '拒绝' },
   'subagents.denyOnce': { en: 'Deny once', 'zh-CN': '仅拒绝本次' },
   'subagents.denyAlways': { en: 'Always deny', 'zh-CN': '始终拒绝' },
   'subagents.permissionScope': {
-    en: 'The coding agent determines the scope of each permission choice.',
-    'zh-CN': '各选项的授权范围由对应的编程助手决定。',
+    en: 'Review the action and automatic-approval scope before choosing.',
+    'zh-CN': '请先查看操作详情和自动授权范围，再选择是否允许。',
   },
   'subagents.permissionNoChoice': {
     en: 'This request cannot be handled here. Review it in the coding agent.',
@@ -2223,6 +2360,10 @@ export const LIVE_MESSAGES = {
   'visual.running': {
     en: 'Inspecting the selected snapshot.',
     'zh-CN': '正在分析所选来源的截图。',
+  },
+  'visual.retrying': {
+    en: 'Analysis failed. Retrying the same image once…',
+    'zh-CN': '画面分析失败，正在用同一张图重试一次…',
   },
   'visual.completed': {
     en: 'Snapshot analysis is available here.',

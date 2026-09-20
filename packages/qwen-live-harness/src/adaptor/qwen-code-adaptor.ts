@@ -31,6 +31,12 @@ import { DaemonClient } from '@qwen-code/sdk/daemon';
 import { ManagedQwenServe } from './managed-qwen-serve.js';
 import { publicActivity } from './public-activity.js';
 import {
+  classifyOption as classifyStructuredOption,
+  describePermissionDetails,
+  describePersistentScope,
+  describeToolCall,
+} from './adaptor-utils.js';
+import {
   QwenPeerDiscovery,
   type QwenPeerDiscoveryOptions,
   type PeerEndpointFactory,
@@ -163,6 +169,8 @@ export interface QwenCodeAdaptorOptions {
 
 interface SessionState {
   busy: boolean;
+  /** Workspace supplied when this adaptor created/attached the session. */
+  cwd?: string;
   activeJobRef?: string;
   /** Daemon-issued client id for this session; echoed on every call. */
   clientId?: string;
@@ -192,47 +200,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `toPermissionOptions` in packages/cli acp-integration/permissionUtils.ts);
  * that is authoritative when present. An unknown structured kind fails
  * closed to 'other'. The word heuristics run only when the backend omitted
- * the field entirely.
+ * the field entirely; the legacy fallback accepts only known one-shot ids.
  */
 function classifyOption(
   optionId: string,
   name: string | undefined,
   wireKind: string | undefined,
 ): { kind: PermissionOptionKind; escalation?: 'once' | 'always' } {
-  switch (wireKind) {
-    case 'allow_once':
-      return { kind: 'proceed', escalation: 'once' };
-    case 'allow_always':
-      return { kind: 'proceed', escalation: 'always' };
-    case 'reject_once':
-      return { kind: 'reject', escalation: 'once' };
-    case 'reject_always':
-      return { kind: 'reject', escalation: 'always' };
-    default:
-      break;
-  }
-  // Fail closed: a structured kind we do not understand must not be votable
-  // through a bare "allow"/"deny".
-  if (wireKind !== undefined) return { kind: 'other' };
-  // Fallback for backends that omit the structured kind. Snake/kebab ids
-  // ("proceed_once") must split into words — `\b` treats an underscore as a
-  // word character and would never match inside them.
+  if (wireKind !== undefined)
+    return classifyStructuredOption(optionId, name, wireKind);
+  // Never infer authority from a free-form label. Preserve only the old
+  // serve one-shot ids; broad/negated legacy options remain unavailable.
   const haystack = `${optionId} ${name ?? ''}`
     .toLowerCase()
     .replace(/[_-]/g, ' ');
-  const escalation = /\balways\b/.test(haystack)
-    ? ('always' as const)
-    : /\bonce\b/.test(haystack)
-      ? ('once' as const)
-      : undefined;
-  // Word boundaries matter: a bare /no/ would match inside "notify" and
-  // misroute an allow vote to a reject option.
-  if (/\b(allow|proceed|approve|yes|accept)\b/.test(haystack)) {
-    return { kind: 'proceed', ...(escalation ? { escalation } : {}) };
-  }
-  if (/\b(deny|reject|refuse|no|cancel)\b/.test(haystack)) {
-    return { kind: 'reject', ...(escalation ? { escalation } : {}) };
-  }
+  if (
+    /\b(always|all|project|workspace|session|user|never|not)\b/.test(haystack)
+  )
+    return { kind: 'other' };
+  if (['proceed_once', 'allow_once'].includes(optionId))
+    return { kind: 'proceed', escalation: 'once' };
+  if (
+    ['reject_once', 'deny_once', 'cancel', 'deny', 'reject'].includes(optionId)
+  )
+    return { kind: 'reject', escalation: 'once' };
   return { kind: 'other' };
 }
 
@@ -251,6 +242,7 @@ function pickLeastEscalating(
   let best: PermissionOption | undefined;
   for (const candidate of options) {
     if (candidate.kind !== wanted) continue;
+    if (wanted === 'proceed' && candidate.escalation === 'always') continue;
     if (best === undefined || rank(candidate) < rank(best)) best = candidate;
   }
   return best;
@@ -269,43 +261,6 @@ function pickPersistentGrant(
 ): PermissionOption | undefined {
   return options.find(
     (option) => option.kind === wanted && option.escalation === 'always',
-  );
-}
-
-/**
- * Compose the human-readable permission title. Control sequences are
- * stripped (the title flows verbatim into the spoken ask and keys the
- * broker's standing rule — raw ESC/OSC bytes must not reach speech or
- * anchor a trust grant), but NOT truncated to the first line: the
- * standing-rule key must span the whole command.
- */
-function describeToolCall(toolCall: unknown): string {
-  if (!isRecord(toolCall)) return 'a tool call';
-  const name = typeof toolCall['name'] === 'string' ? toolCall['name'] : '';
-  const command =
-    typeof toolCall['command'] === 'string' ? toolCall['command'] : '';
-  const title = typeof toolCall['title'] === 'string' ? toolCall['title'] : '';
-  const detail = stripControlSequences(command || title);
-  if (name && detail) return `${name}: ${detail}`;
-  return name || detail || 'a tool call';
-}
-
-/**
- * Remove terminal control sequences without the first-line cut that
- * sanitizeTitleLine applies — the permission key needs the whole command.
- * Mirrors the same sequence families (OSC, CSI, SS2/SS3/DCS, C0/DEL/C1).
- */
-function stripControlSequences(text: string): string {
-  return (
-    text
-      // eslint-disable-next-line no-control-regex
-      .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
-      // eslint-disable-next-line no-control-regex
-      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-      // eslint-disable-next-line no-control-regex
-      .replace(/\x1b[NOP]/g, '')
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ' ')
   );
 }
 
@@ -509,6 +464,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
     if (cwd !== undefined) this.sessionCwds.add(cwd);
     const state = this.trackSession(session.sessionId, {
       busy: session.hasActivePrompt === true,
+      ...(cwd ? { cwd } : {}),
       // The daemon issues the authoritative per-client id on create/attach;
       // every later call for this session must echo it (a self-made id is
       // rejected by the daemon's client registration guard). Older daemons
@@ -770,7 +726,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
       const wanted: PermissionOptionKind =
         decision === 'deny' ? 'reject' : 'proceed';
       // See the ACP adaptor: "allow always" prefers the backend's own
-      // persistent grant and degrades to the one-shot one, never to cancel.
+      // persistent grant and otherwise uses a non-persistent option only.
       const option =
         (decision === 'allow_always'
           ? pickPersistentGrant(options, wanted)
@@ -817,6 +773,17 @@ export class QwenCodeAdaptor implements BackendAdaptor {
 
   // -- internals -----------------------------------------------------------
 
+  private localSessionCwd(state: SessionState): string | undefined {
+    try {
+      const host = new URL(this.options.baseUrl).hostname;
+      return ['localhost', '127.0.0.1', '[::1]'].includes(host)
+        ? state.cwd
+        : undefined;
+    } catch {
+      return;
+    }
+  }
+
   private isDiscoveryHandle(handle: BackendHandle): boolean {
     return (
       handle.readOnly === true ||
@@ -827,7 +794,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
 
   private trackSession(
     sessionId: string,
-    seed?: Partial<Pick<SessionState, 'busy' | 'clientId'>>,
+    seed?: Partial<Pick<SessionState, 'busy' | 'clientId' | 'cwd'>>,
   ): SessionState {
     let state = this.sessions.get(sessionId);
     if (!state) {
@@ -843,6 +810,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
       state.busy = seed.busy;
     }
     if (seed?.clientId !== undefined) state.clientId = seed.clientId;
+    if (seed?.cwd !== undefined) state.cwd = seed.cwd;
     return state;
   }
 
@@ -924,6 +892,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
         const activity = publicActivity(
           update,
           envelope.promptId ?? state.activeJobRef,
+          this.localSessionCwd(state),
         );
         if (kind === 'agent_message_chunk') {
           const content = isRecord(update['content'])
@@ -947,6 +916,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
           const summary =
             typeof title === 'string' ? sanitizeTitleLine(title) : '';
           return [
+            ...(activity ? [activity] : []),
             {
               type: 'progress',
               ...(envelope.promptId !== undefined
@@ -1017,6 +987,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
           const wireKind =
             typeof raw['kind'] === 'string' ? raw['kind'] : undefined;
           const classified = classifyOption(raw['optionId'], name, wireKind);
+          const persistentScope = describePersistentScope(name, wireKind);
           return [
             {
               optionId: raw['optionId'],
@@ -1025,6 +996,7 @@ export class QwenCodeAdaptor implements BackendAdaptor {
               ...(classified.escalation !== undefined
                 ? { escalation: classified.escalation }
                 : {}),
+              ...(persistentScope ? { persistentScope } : {}),
             },
           ];
         });
@@ -1035,6 +1007,10 @@ export class QwenCodeAdaptor implements BackendAdaptor {
             ...(jobRef !== undefined ? { jobRef } : {}),
             requestId,
             title: describeToolCall(data['toolCall']),
+            details: describePermissionDetails(
+              data['toolCall'],
+              this.localSessionCwd(state),
+            ),
             options,
             payload: data,
           },

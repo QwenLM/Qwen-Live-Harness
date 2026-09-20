@@ -7,6 +7,7 @@ import {
   type SubagentsControlResult,
   type SubagentsPage,
   type SubagentsSnapshot,
+  type SubagentFilter,
 } from 'qwen-live-harness/subagents';
 import type { SubagentsWindowState } from '../shared/subagents-api.ts';
 import type {
@@ -57,6 +58,7 @@ export class SubagentsWindows {
   private controlsAvailable = false;
   private page?: SubagentsPage;
   private pageOffset = 0;
+  private filter: SubagentFilter = 'all';
   private pageError?: SubagentsWindowState['pageError'];
   private pageGeneration = 0;
   private refreshTask?: Promise<void>;
@@ -278,6 +280,7 @@ export class SubagentsWindows {
       resolvedTheme: this.appearance,
       connected: this.connected,
       mode: this.mode,
+      ...(this.filter !== 'all' ? { filter: this.filter } : {}),
       ...(this.snapshot ? { snapshot: this.snapshot } : {}),
       ...(this.selectedId ? { selectedId: this.selectedId } : {}),
       ...(this.instanceId ? { instanceId: this.instanceId } : {}),
@@ -315,7 +318,10 @@ export class SubagentsWindows {
       return { type: 'error', code: 'unsupported' };
     if (!this.isPinned()) return { type: 'error', code: 'unavailable' };
     if (request.action === 'list') {
-      this.pageOffset = request.offset ?? 0;
+      const filter = request.filter ?? 'all';
+      this.pageOffset = filter === this.filter ? (request.offset ?? 0) : 0;
+      if (filter !== this.filter) this.page = undefined;
+      this.filter = filter;
       this.invalidatePageRequest();
       await this.refreshPage();
       if (instanceId !== this.instanceId)
@@ -361,6 +367,7 @@ export class SubagentsWindows {
     const request: SubagentsControlRequest = {
       action: 'list',
       offset: this.pageOffset,
+      ...(this.filter !== 'all' ? { filter: this.filter } : {}),
       ...(this.selectedId ? { selectedId: this.selectedId } : {}),
     };
     const task = this.options
@@ -512,6 +519,7 @@ export class SubagentsWindows {
     this.openOnLoad = false;
     this.invalidatePageRequest();
     this.pageOffset = 0;
+    this.filter = 'all';
     this.page = undefined;
     this.pageError = undefined;
     this.stopCursorWatch();

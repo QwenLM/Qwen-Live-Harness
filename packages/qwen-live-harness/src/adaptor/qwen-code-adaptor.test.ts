@@ -112,7 +112,10 @@ function permissionRequestEnvelope(requestId = 'req-1'): EventEnvelope {
     requestId,
     toolCall: { name: 'Bash', command: 'rm -rf /tmp' },
     // The ACP wire field for display text is `name` (there is no `label`).
-    options: [{ optionId: 'allow', name: 'Allow once' }, { optionId: 'deny' }],
+    options: [
+      { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'deny', kind: 'reject_once' },
+    ],
   });
 }
 
@@ -774,6 +777,12 @@ describe('QwenCodeAdaptor.events', () => {
       kind: 'message',
       text: 'world',
     });
+    expect((await iterator.next()).value).toEqual({
+      type: 'activity',
+      jobRef: 'p1',
+      kind: 'tool',
+      text: 'Run npm test',
+    });
     const progress = await iterator.next();
     expect(progress.value).toEqual({
       type: 'progress',
@@ -853,7 +862,7 @@ describe('QwenCodeAdaptor.events', () => {
         kind: 'proceed',
         escalation: 'once',
       },
-      { optionId: 'deny', kind: 'reject' },
+      { optionId: 'deny', kind: 'reject', escalation: 'once' },
     ]);
   });
 
@@ -903,7 +912,10 @@ describe('QwenCodeAdaptor.events', () => {
 
     const events = await collect(adaptor, handleFor());
 
-    expect(events).toEqual([{ type: 'progress', summary: 'Run npm' }]);
+    expect(events).toEqual([
+      { type: 'activity', kind: 'tool', text: 'Run npm\ntest' },
+      { type: 'progress', summary: 'Run npm' },
+    ]);
   });
 
   it('never starts a clamped summary with a lone low surrogate', async () => {
@@ -1076,6 +1088,158 @@ describe('QwenCodeAdaptor.events', () => {
 });
 
 describe('QwenCodeAdaptor.respondPermission', () => {
+  it.each([
+    { optionId: 'allow_all', name: 'Allow all' },
+    { optionId: 'allow', name: 'Allow once' },
+    { optionId: 'proceed_once', name: 'Do not allow' },
+    { optionId: 'allow_session', name: 'Allow for session' },
+  ])(
+    'fails closed on ambiguous legacy option $optionId/$name',
+    async (option) => {
+      const client = makeClient();
+      const adaptor = makeAdaptor(client);
+      const handle = await adaptor.createSession();
+      vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+        envelopeStream([
+          envelope('permission_request', {
+            requestId: 'req-ambiguous',
+            toolCall: { title: 'Run command' },
+            options: [option],
+          }),
+        ]),
+      );
+      const events = await collect(adaptor, handle);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          options: [expect.objectContaining({ kind: 'other' })],
+        }),
+      );
+      await adaptor.respondPermission(handle, 'req-ambiguous', 'allow');
+      expect(client.respondToSessionPermission).toHaveBeenCalledWith(
+        handle.id,
+        'req-ambiguous',
+        { outcome: { outcome: 'cancelled' } },
+        ISSUED_CLIENT_ID,
+      );
+    },
+  );
+
+  it('does not verify a remote daemon cwd against a coincidentally matching local path', async () => {
+    const client = makeClient();
+    const adaptor = makeAdaptor(client, {
+      baseUrl: 'https://fixture.invalid',
+      defaultCwd: process.cwd(),
+    });
+    const handle = await adaptor.createSession();
+    vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+      envelopeStream([
+        envelope('permission_request', {
+          requestId: 'req-remote',
+          toolCall: { rawInput: { command: 'echo ok', cwd: process.cwd() } },
+          options: [],
+        }),
+      ]),
+    );
+    const events = await collect(adaptor, handle);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        details: expect.objectContaining({ cwdVerified: false }),
+      }),
+    );
+  });
+
+  it('retains input facts and native scope but never broadens an ordinary allow', async () => {
+    const client = makeClient();
+    const adaptor = makeAdaptor(client, { defaultCwd: process.cwd() });
+    const handle = await adaptor.createSession();
+    const toolCall = {
+      toolCallId: 'tc-facts',
+      title: 'Run command',
+      rawInput: { command: "printf '%s'  'two  spaces'" },
+    };
+    vi.mocked(client.subscribeEvents).mockReturnValueOnce(
+      envelopeStream([
+        envelope(
+          'permission_request',
+          {
+            requestId: 'req-facts',
+            toolCall,
+            options: [
+              {
+                optionId: 'always',
+                name: 'Always allow in this project',
+                kind: 'allow_always',
+              },
+            ],
+          },
+          { promptId: 'p1' },
+        ),
+        envelope(
+          'session_update',
+          {
+            update: {
+              sessionUpdate: 'tool_call',
+              ...toolCall,
+              status: 'pending',
+            },
+          },
+          { promptId: 'p1' },
+        ),
+        envelope(
+          'session_update',
+          {
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'tc-facts',
+              status: 'in_progress',
+            },
+          },
+          { promptId: 'p1' },
+        ),
+      ]),
+    );
+    const events = await collect(adaptor, handle);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'permission_request',
+        title: "printf '%s'  'two  spaces'",
+        details: expect.objectContaining({
+          command: "printf '%s'  'two  spaces'",
+          cwdVerified: true,
+          toolCallId: 'tc-facts',
+        }),
+        options: [
+          expect.objectContaining({
+            persistentScope: 'Always allow in this project',
+          }),
+        ],
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'activity',
+        jobRef: 'p1',
+        toolCallId: 'tc-facts',
+        toolStatus: 'pending',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'activity',
+        jobRef: 'p1',
+        toolCallId: 'tc-facts',
+        toolStatus: 'in_progress',
+      }),
+    );
+    await adaptor.respondPermission(handle, 'req-facts', 'allow');
+    expect(client.respondToSessionPermission).toHaveBeenCalledWith(
+      handle.id,
+      'req-facts',
+      { outcome: { outcome: 'cancelled' } },
+      ISSUED_CLIENT_ID,
+    );
+  });
+
   it('votes the proceed option for an allow decision', async () => {
     const client = makeClient();
     const adaptor = makeAdaptor(client);

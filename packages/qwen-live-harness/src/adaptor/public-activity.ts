@@ -4,16 +4,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { isRecord, stripControlSequences } from './adaptor-utils.js';
-import type { BackendEvent } from './types.js';
+import {
+  describePermissionDetails,
+  describeToolCall,
+  isRecord,
+  redactPermissionText,
+  stripControlSequences,
+} from './adaptor-utils.js';
+import type { BackendEvent, PermissionDetails } from './types.js';
 
 export function publicActivity(
   update: Record<string, unknown>,
   jobRef?: string,
+  sessionCwd?: string,
 ): Extract<BackendEvent, { type: 'activity' }> | undefined {
   const kind = update['sessionUpdate'];
   let activity: 'message' | 'plan' | 'tool';
   let text = '';
+  let details: PermissionDetails | undefined;
+  let toolStatus:
+    'pending' | 'in_progress' | 'completed' | 'failed' | undefined;
   if (kind === 'agent_message_chunk') {
     const content = update['content'];
     if (!isRecord(content) || typeof content['text'] !== 'string') return;
@@ -34,16 +44,21 @@ export function publicActivity(
         return [`[${status}] ${entry['content'].slice(0, 1024)}`];
       })
       .join('\n');
-  } else if (kind === 'tool_call_update') {
+  } else if (kind === 'tool_call' || kind === 'tool_call_update') {
     activity = 'tool';
+    details = describePermissionDetails(update, sessionCwd);
     const parts: string[] = [];
-    if (typeof update['title'] === 'string') parts.push(update['title']);
+    if (details.command || details.toolName)
+      parts.push(describeToolCall(update));
+    else if (typeof update['title'] === 'string') parts.push(update['title']);
     if (
       ['pending', 'in_progress', 'completed', 'failed'].includes(
         String(update['status']),
       )
-    )
+    ) {
+      toolStatus = update['status'] as typeof toolStatus;
       parts.push(`[${String(update['status'])}]`);
+    }
     if (Array.isArray(update['content'])) {
       for (const part of update['content'].slice(0, 24)) {
         if (!isRecord(part) || part['type'] !== 'content') continue;
@@ -58,12 +73,18 @@ export function publicActivity(
     }
     text = parts.join('\n');
   } else return;
-  text = stripControlSequences(text).slice(0, 8192);
-  if (!text) return;
+  text = stripControlSequences(redactPermissionText(text.slice(0, 8192))).slice(
+    0,
+    8192,
+  );
+  if (!text && !details?.toolCallId && !toolStatus) return;
   return {
     type: 'activity',
     kind: activity,
     text,
     ...(jobRef ? { jobRef } : {}),
+    ...(details?.toolCallId ? { toolCallId: details.toolCallId } : {}),
+    ...(toolStatus ? { toolStatus } : {}),
+    ...(details && Object.keys(details).length ? { details } : {}),
   };
 }

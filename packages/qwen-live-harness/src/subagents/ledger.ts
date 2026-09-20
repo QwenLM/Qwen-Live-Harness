@@ -11,6 +11,7 @@ import {
   type SubagentActivity,
   type SubagentStatus,
   type SubagentTask,
+  type SubagentFilter,
   type SubagentsPage,
   type SubagentsSnapshot,
 } from './types.js';
@@ -206,7 +207,11 @@ export class SubagentsLedger {
     this.changed();
   }
 
-  page(offset = 0, selectedId?: string): SubagentsPage {
+  page(
+    offset = 0,
+    selectedId?: string,
+    filter: SubagentFilter = 'all',
+  ): SubagentsPage {
     const counts: SubagentsSnapshot['counts'] = { ...this.archived };
     for (const [id, status] of this.states) {
       const completed =
@@ -219,12 +224,19 @@ export class SubagentsLedger {
       if (status === 'interrupted') counts.interrupted += 1;
       if (status === 'waiting') counts.needsAttention += 1;
     }
-    const sorted = [...this.details.values()].sort(
-      (a, b) =>
-        Number(TERMINAL.has(a.status)) - Number(TERMINAL.has(b.status)) ||
-        b.createdAt - a.createdAt ||
-        a.id.localeCompare(b.id),
-    );
+    const sorted = [...this.details.values()]
+      .reverse()
+      .filter((task) => {
+        if (filter === 'running') return !TERMINAL.has(task.status);
+        if (filter === 'needsAttention') return task.status === 'waiting';
+        if (filter === 'completed')
+          return (
+            task.status === 'completed' ||
+            (task.status === 'cancelled' && this.monitors.has(task.id))
+          );
+        return true;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
     const boundedOffset = Math.min(
       Number.isSafeInteger(offset) && offset >= 0 ? offset : 0,
       Math.max(0, sorted.length - 1),
@@ -238,7 +250,7 @@ export class SubagentsLedger {
       tasks,
       omitted: this.archivedCount + this.states.size - tasks.length,
     };
-    // Trim terminal details before active ones; count every logical task even
+    // Trim older details first; count every logical task even
     // when long Unicode/escaped output makes the retained view smaller.
     for (
       let index = tasks.length - 1;
@@ -260,6 +272,7 @@ export class SubagentsLedger {
       snapshot,
       offset: boundedOffset,
       total: sorted.length,
+      ...(filter !== 'all' ? { filter } : {}),
       ...(selected ? { selected } : {}),
     };
   }

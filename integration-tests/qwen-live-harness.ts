@@ -464,6 +464,41 @@ export class FakeHost {
     this.send({ type: 'host.action', action });
   }
 
+  async setPermissionMode(
+    mode: 'ask' | 'allow-all',
+    overrides: { epoch?: number; nonce?: string } = {},
+  ): Promise<JsonObject> {
+    const discovery = await readLiveDiscovery(this.discoveryDir);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Permission mode response timed out'));
+      }, 5000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.emitter.off('message', receive);
+      };
+      const receive = (message: JsonObject) => {
+        if (
+          message['type'] !== 'host.permission_mode_result' ||
+          message['requestId'] !== requestId
+        )
+          return;
+        cleanup();
+        resolve(message);
+      };
+      this.emitter.on('message', receive);
+      this.send({
+        type: 'host.permission_mode_action',
+        requestId,
+        epoch: overrides.epoch ?? this.states.at(-1)?.epoch ?? 0,
+        daemonInstanceNonce: overrides.nonce ?? discovery.instanceNonce,
+        mode,
+      });
+    });
+  }
+
   completePlayback(epoch: number, outputId: number): void {
     if (!this.pendingPlayback.delete(`${epoch}:${outputId}`)) {
       throw new Error('FakeHost: completion does not match pending output');
@@ -697,10 +732,15 @@ export async function waitForLiveResponseAfter(
   await waitForLiveLogEvents(
     stack.dataDir,
     (event) =>
-      event.type === 'response.done' &&
-      event.payload['responseId'] === responseId &&
-      event.payload['authority'] === authority &&
-      event.payload['status'] === 'completed',
+      authority === 'task_result'
+        ? event.type === 'transcript.assistant' &&
+          event.payload['responseId'] === responseId &&
+          event.payload['source'] === 'isolated_result' &&
+          event.payload['purpose'] === 'task_result'
+        : event.type === 'response.done' &&
+          event.payload['responseId'] === responseId &&
+          event.payload['authority'] === authority &&
+          event.payload['status'] === 'completed',
     { description: `${authority} ${responseId} completion` },
   );
 }

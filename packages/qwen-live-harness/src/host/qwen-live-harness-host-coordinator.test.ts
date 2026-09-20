@@ -657,6 +657,114 @@ describe('LiveHostCoordinator', () => {
     ).toMatchObject({ ok: false, uiLanguageV1: { language: 'zh-CN' } });
   });
 
+  it('persists permission mode only for the current nonce/epoch and caches identical requests without replaying changed parameters', () => {
+    let mode: 'ask' | 'allow-all' = 'ask';
+    const save = vi.fn((next: 'ask' | 'allow-all') => ({
+      mode: (mode = next),
+    }));
+    const value = coordinator({
+      getPermissionMode: () => ({ mode }),
+      onPermissionModeAction: save,
+    });
+    const socket = connectReady(value);
+    expect(
+      socket.messages().find((message) => message.type === 'host.welcome'),
+    ).toMatchObject({ permissionModeV1: { mode: 'ask' } });
+    const action = {
+      type: 'host.permission_mode_action',
+      requestId: 'mode-1',
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      mode: 'allow-all',
+    };
+    socket.receive(action);
+    socket.receive(action);
+    expect(save).toHaveBeenCalledTimes(1);
+    const results = () =>
+      socket
+        .messages()
+        .filter((message) => message.type === 'host.permission_mode_result');
+    expect(results()).toHaveLength(2);
+    expect(results()[0]).toMatchObject({
+      ok: true,
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      permissionModeV1: { mode: 'allow-all' },
+    });
+    expect(
+      socket
+        .messages()
+        .filter((message) => message.type === 'host.state')
+        .at(-1),
+    ).toMatchObject({ permissionModeV1: { mode: 'allow-all' } });
+    socket.receive({ ...action, mode: 'ask' });
+    socket.receive({
+      ...action,
+      requestId: 'wrong-nonce',
+      daemonInstanceNonce: 'different-daemon',
+    });
+    const call = value.start('resume');
+    socket.receive({ ...action, requestId: 'stale-call' });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(
+      results()
+        .slice(-3)
+        .every((result) => result.ok === false),
+    ).toBe(true);
+    socket.receive({
+      ...action,
+      requestId: 'current-call',
+      epoch: call.epoch,
+      mode: 'ask',
+    });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(mode).toBe('ask');
+  });
+
+  it('sends safe permission-mode save failures and rejects malformed or unsupported settings', () => {
+    const save = vi.fn(() => {
+      throw new Error('PRIVATE disk failure');
+    });
+    const value = coordinator({
+      getPermissionMode: () => ({ mode: 'ask' }),
+      onPermissionModeAction: save,
+    });
+    const socket = connectReady(value);
+    const action = {
+      type: 'host.permission_mode_action',
+      requestId: 'mode-failed',
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      mode: 'allow-all',
+    };
+    socket.receive(action);
+    const failure = socket
+      .messages()
+      .find((message) => message.type === 'host.permission_mode_result');
+    expect(failure).toMatchObject({
+      ok: false,
+      permissionModeV1: { mode: 'ask' },
+    });
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE');
+    socket.receive({ ...action, requestId: 'malformed', mode: 'always' });
+    expect(socket.closeCode).toBe(1002);
+    expect(save).toHaveBeenCalledTimes(1);
+    const legacy = coordinator();
+    const oldSocket = connectReady(legacy);
+    expect(
+      oldSocket.messages().find((message) => message.type === 'host.welcome'),
+    ).not.toHaveProperty('permissionModeV1');
+    oldSocket.receive({
+      ...action,
+      daemonInstanceNonce: legacy.daemonInstanceNonce,
+    });
+    expect(
+      oldSocket
+        .messages()
+        .find((message) => message.type === 'host.permission_mode_result'),
+    ).toMatchObject({ ok: false });
+  });
+
   it('rejects malformed or unsupported language requests and reports failed saves without changing language', () => {
     const save = vi.fn(() => {
       throw new Error('private disk error');

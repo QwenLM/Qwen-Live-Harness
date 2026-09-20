@@ -276,6 +276,23 @@ export type LiveHostVisualCaptureResult =
     };
 
 export type LiveLanguageState = { language: 'en' | 'zh-CN' };
+export type LivePermissionModeState = { mode: 'ask' | 'allow-all' };
+export type LiveHostPermissionModeAction = {
+  type: 'host.permission_mode_action';
+  requestId: string;
+  epoch: number;
+  daemonInstanceNonce: string;
+  mode: LivePermissionModeState['mode'];
+};
+export type LivePermissionModeResult = {
+  type: 'host.permission_mode_result';
+  requestId: string;
+  epoch: number;
+  daemonInstanceNonce: string;
+} & (
+  | { ok: true; permissionModeV1: LivePermissionModeState }
+  | { ok: false; error: string; permissionModeV1?: LivePermissionModeState }
+);
 export type LiveHostLanguageAction = {
   type: 'host.language_action';
   requestId: string;
@@ -317,6 +334,7 @@ export type LiveDaemonMessage =
       daemonShutdownV1?: true;
       displayCaptureV1?: true;
       uiLanguageV1?: LiveLanguageState;
+      permissionModeV1?: LivePermissionModeState;
       heartbeatIntervalMs: number;
       epoch: number;
       capabilities?: {
@@ -330,12 +348,14 @@ export type LiveDaemonMessage =
       type: 'host.state';
       epoch: number;
       uiLanguageV1?: LiveLanguageState;
+      permissionModeV1?: LivePermissionModeState;
       visualInput?: LiveVisualInput;
       memory?: LiveMemoryState;
       status: LiveHostStatus;
     }
   | LiveMemoryResult
   | LiveLanguageResult
+  | LivePermissionModeResult
   | { type: 'host.ping'; pingId: string }
   | { type: 'host.clear_output'; epoch: number }
   | { type: 'host.output_audio_finished'; epoch: number; outputId: number }

@@ -15,6 +15,7 @@ import {
   parseSubagentsSnapshot,
   parseSubagentsControlRequest,
   parseSubagentsControlResult,
+  SUBAGENT_FILTERS,
 } from './types.js';
 
 const task = {
@@ -43,6 +44,59 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
+  it('validates bounded permission outcome explanations and the actual approval scope', () => {
+    const outcome = {
+      type: 'outcome',
+      outcome: 'allowed',
+      requestHandle: 'req:1',
+    };
+    for (const scope of ['once', 'always']) {
+      const value = {
+        ...outcome,
+        scope,
+        message: 'Allowed this request only.',
+      };
+      expect(parseSubagentsControlResult(value)).toEqual(value);
+    }
+    for (const scope of [null, 1, ['once'], 'task'])
+      expect(
+        parseSubagentsControlResult({ ...outcome, scope }),
+      ).toBeUndefined();
+    for (const message of [null, 1, {}, 'x'.repeat(1025)])
+      expect(
+        parseSubagentsControlResult({ ...outcome, message }),
+      ).toBeUndefined();
+    expect(
+      parseSubagentsControlResult({ ...outcome, message: 'x'.repeat(1024) }),
+    ).toBeDefined();
+  });
+
+  it('round-trips supported task filters and rejects invalid values at both IPC boundaries', () => {
+    for (const filter of SUBAGENT_FILTERS) {
+      const request = { action: 'list', offset: 32, filter };
+      expect(parseSubagentsControlRequest(request)).toEqual(request);
+      const result = {
+        type: 'page',
+        page: { snapshot, offset: 0, total: 1, filter },
+      };
+      expect(parseSubagentsControlResult(result)).toEqual(result);
+    }
+    for (const filter of [null, '', 'failed', 'ALL', 1, {}, ['running']]) {
+      expect(
+        parseSubagentsControlRequest({ action: 'list', filter }),
+      ).toBeUndefined();
+      expect(
+        parseSubagentsControlResult({
+          type: 'page',
+          page: { snapshot, offset: 0, total: 1, filter },
+        }),
+      ).toBeUndefined();
+    }
+    expect(parseSubagentsControlRequest({ action: 'list', offset: 0 })).toEqual(
+      { action: 'list', offset: 0 },
+    );
+  });
+
   it('accepts optional display output without changing raw output and rejects malformed or oversized fields', () => {
     expect(parseSubagentsSnapshot(snapshot)).toEqual(snapshot);
     const withDisplay = {

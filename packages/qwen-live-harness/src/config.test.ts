@@ -9,6 +9,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_REALTIME_MODEL, loadConfig } from './config.js';
+import { configurationErrorMessage } from './configuration-error.js';
+import { liveMessage } from './i18n/messages.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -42,6 +44,93 @@ afterEach(async () => {
 });
 
 describe('loadConfig', () => {
+  it('defaults existing and new configurations to asking for every permission', async () => {
+    const newDirectory = await temporaryDataDir();
+    expect(
+      loadConfig({
+        QWEN_LIVE_HARNESS_DATA_DIR: newDirectory,
+        DASHSCOPE_API_KEY: 'fixture-key',
+      }).permissionMode,
+    ).toBe('ask');
+    const dataDir = await dataDirWithConfig({
+      realtimeApiKey: 'fixture-key',
+      backends: [],
+    });
+    await writeFile(
+      join(dataDir, 'permission-policies.json'),
+      JSON.stringify({ version: 1, rules: [{ legacy: 'unrelated fixture' }] }),
+    );
+    expect(
+      loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir }).permissionMode,
+    ).toBe('ask');
+  });
+
+  it.each(['ask', 'allow-all'] as const)(
+    'loads explicit permissionMode %s without changing credentials or backend configuration',
+    async (permissionMode) => {
+      const raw = {
+        permissionMode,
+        realtimeApiKey: 'private-config-fixture',
+        realtimeEndpoint:
+          'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime',
+        backends: [
+          {
+            name: 'fixture',
+            kind: 'acp',
+            command: '/synthetic/agent',
+            args: ['--acp'],
+            env: { BACKEND_KEY: 'private-backend-fixture' },
+          },
+        ],
+      };
+      const dataDir = await dataDirWithConfig(raw);
+      const path = join(dataDir, 'config.json');
+      const bytes = await readFile(path, 'utf8');
+      const config = loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir });
+      expect(config.permissionMode).toBe(permissionMode);
+      expect(config.realtime.apiKey).toBe(raw.realtimeApiKey);
+      expect(config.realtime.endpoint).toBe(raw.realtimeEndpoint);
+      expect(config.backends[0]).toMatchObject(raw.backends[0]!);
+      expect(await readFile(path, 'utf8')).toBe(bytes);
+    },
+  );
+
+  it.each([
+    null,
+    false,
+    true,
+    1,
+    '',
+    'ASK',
+    'allow_always',
+    'allow_all',
+    ' ask ',
+    {},
+    [],
+  ])(
+    'rejects an unknown permission mode %j without silently enabling automatic approval',
+    async (permissionMode) => {
+      const dataDir = await dataDirWithConfig({
+        permissionMode,
+        realtimeApiKey: 'private-config-fixture',
+      });
+      const path = join(dataDir, 'config.json');
+      const bytes = await readFile(path, 'utf8');
+      let failure: unknown;
+      try {
+        loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(configurationErrorMessage(failure)).toBe(
+        liveMessage('config.sectionInvalid', { section: 'permissionMode' }),
+      );
+      expect(String(failure)).not.toContain('private-config-fixture');
+      expect(await readFile(path, 'utf8')).toBe(bytes);
+    },
+  );
+
   it('treats an explicit empty backend list as delegation disabled', async () => {
     const dataDir = await dataDirWithConfig({
       realtimeApiKey: 'test',

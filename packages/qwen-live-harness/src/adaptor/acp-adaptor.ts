@@ -57,6 +57,8 @@ import { PACKAGE_VERSION } from '../version.js';
 import {
   clampTail,
   classifyOption,
+  describePermissionDetails,
+  describePersistentScope,
   describeToolCall,
   isRecord,
   MAX_DETAIL_CHARS,
@@ -462,8 +464,8 @@ export class AcpAdaptor implements BackendAdaptor {
       // "allow always" takes the backend's own persistent grant when one is
       // on offer, so the agent stops re-asking for the same class of action.
       // No always-option (the agent hid them, or this is a deny) falls back
-      // to the narrowest grant — never to a cancel, which would read as a
-      // refusal the user never gave.
+      // to a non-persistent grant. With no such option, cancel rather than
+      // silently widen an ordinary approval into a persistent one.
       const option =
         (decision === 'allow_always'
           ? pickPersistentGrant(parked.options, wanted)
@@ -979,7 +981,7 @@ export class AcpAdaptor implements BackendAdaptor {
     if (!state || state.closed) return;
     const update = isRecord(params['update']) ? params['update'] : {};
     const kind = update['sessionUpdate'];
-    const activity = publicActivity(update, state.activeJobRef);
+    const activity = publicActivity(update, state.activeJobRef, state.cwd);
     if (activity) state.queue.push(activity);
     if (kind === 'agent_message_chunk') {
       const content = isRecord(update['content']) ? update['content'] : {};
@@ -1033,11 +1035,13 @@ export class AcpAdaptor implements BackendAdaptor {
       const wireKind =
         typeof raw['kind'] === 'string' ? raw['kind'] : undefined;
       const classified = classifyOption(optionId, name, wireKind);
+      const persistentScope = describePersistentScope(name, wireKind);
       options.push({
         optionId,
         ...(name ? { label: name } : {}),
         kind: classified.kind,
         ...(classified.escalation ? { escalation: classified.escalation } : {}),
+        ...(persistentScope ? { persistentScope } : {}),
       });
     }
     this.permSeq += 1;
@@ -1051,6 +1055,7 @@ export class AcpAdaptor implements BackendAdaptor {
       ...(state.activeJobRef ? { jobRef: state.activeJobRef } : {}),
       requestId,
       title: describeToolCall(params['toolCall']),
+      details: describePermissionDetails(params['toolCall'], state.cwd),
       options,
       payload: params,
     });

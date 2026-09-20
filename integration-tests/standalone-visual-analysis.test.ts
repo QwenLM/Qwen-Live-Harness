@@ -90,6 +90,17 @@ async function fixture() {
     { request: Json; responseId: string }
   >();
   const resultResponses = new Map<Json, string>();
+  fakeDash.speechResponder = (speech, input) => {
+    expect(speech).not.toBe(conn);
+    const payload = visualPayload(input);
+    expect(payload).toBeDefined();
+    const responseId = speech.respondWithAudio(
+      ANSWER,
+      String(payload?.['answer'] ?? 'Update ready.'),
+    );
+    resultResponses.set(input, responseId);
+    return responseId;
+  };
   const pendingReceipts: Array<{ callId: string; output: string }> = [];
   const pendingNotifications: Json[] = [];
   let queuedUserCalls = 0;
@@ -248,15 +259,14 @@ async function fixture() {
   };
   const result = async (question: string) => {
     const message = await fakeDash.waitForMessage(
-      (message) =>
-        conn.inbox.includes(message) &&
-        visualPayload(message)?.['query'] === question,
+      (message) => visualPayload(message)?.['query'] === question,
     );
     await waitForLiveLogEvents(
       dataDir,
       (event) =>
-        event.type === 'response.done' &&
-        event.payload['authority'] === 'visual_result' &&
+        event.type === 'transcript.assistant' &&
+        event.payload['source'] === 'isolated_result' &&
+        event.payload['purpose'] === 'visual_result' &&
         event.payload['responseId'] === resultResponses.get(message),
     );
     return { message, payload: visualPayload(message)! };
@@ -281,6 +291,115 @@ async function fixture() {
 }
 
 describe('standalone On Demand visual subagent', () => {
+  it('waits for the exact quoted input acknowledgement before asking the isolated speaker to respond', async () => {
+    const f = await fixture();
+    const question = 'Describe the ACK-gated snapshot.';
+    const accepted = await f.invoke(question);
+    const worker = await f.worker();
+    await f.commit(worker);
+    f.fakeDash.autoAckUserItems = false;
+    f.answer(worker, 'The snapshot contains an orange circle.');
+    const input = await f.fakeDash.waitForMessage(
+      (message) => visualPayload(message)?.['query'] === question,
+    );
+    const speaker = f.fakeDash.connections.find((candidate) =>
+      candidate.inbox.includes(input),
+    )!;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(
+      speaker.inbox.some((message) => message['type'] === 'response.create'),
+    ).toBe(false);
+    expect(Buffer.concat(f.host.audioFrames)).toEqual(PREAMBLE);
+    speaker.send({
+      type: 'conversation.item.created',
+      item: {
+        type: 'message',
+        id: 'wrong-summary',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'Different quoted result' }],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(
+      speaker.inbox.some((message) => message['type'] === 'response.create'),
+    ).toBe(false);
+    speaker.send({
+      type: 'conversation.item.created',
+      item: {
+        ...(input['item'] as Json),
+        id: 'provider-assigned-summary',
+        status: 'completed',
+      },
+    });
+    await f.result(question);
+    expect(await f.waitTask(accepted.taskId, 'completed')).toMatchObject({
+      notification: 'delivered',
+    });
+    expect(
+      speaker.inbox.filter((message) => message['type'] === 'response.create'),
+    ).toHaveLength(1);
+  });
+
+  it.each(['complete', 'cancel'] as const)(
+    'buffers isolated result audio until complete and safely handles %s',
+    async (outcome) => {
+      const f = await fixture();
+      const question = 'Describe the buffered snapshot.';
+      const accepted = await f.invoke(question);
+      const worker = await f.worker();
+      await f.commit(worker);
+      let speaker: FakeDashScopeConnection | undefined;
+      let responseId = '';
+      f.fakeDash.speechResponder = (connection, input) => {
+        speaker = connection;
+        expect(visualPayload(input)?.['query']).toBe(question);
+        responseId = connection.beginResponse();
+        connection.send({
+          type: 'response.audio.delta',
+          response_id: responseId,
+          delta: ANSWER.toString('base64'),
+        });
+        connection.send({
+          type: 'response.audio_transcript.done',
+          response_id: responseId,
+          transcript: 'There is a blue circle.',
+        });
+        return responseId;
+      };
+      f.answer(worker, 'There is a blue circle.');
+      await expect.poll(() => Boolean(speaker)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(Buffer.concat(f.host.audioFrames)).toEqual(PREAMBLE);
+      expect(
+        (await f.tasks()).find((task) => task.id === accepted.taskId)?.status,
+      ).toBe('delivering');
+      if (outcome === 'cancel') {
+        expect(
+          await f.control({ action: 'stop', taskId: accepted.taskId }),
+        ).toMatchObject({ type: 'outcome', outcome: 'stopped' });
+        await expect
+          .poll(() => speaker!.socket.readyState)
+          .toBe(speaker!.socket.CLOSED);
+        speaker!.finishResponse(responseId);
+        expect(await f.waitTask(accepted.taskId, 'cancelled')).toMatchObject({
+          status: 'cancelled',
+        });
+        expect(Buffer.concat(f.host.audioFrames)).toEqual(PREAMBLE);
+      } else {
+        speaker!.send({ type: 'response.audio.done', response_id: responseId });
+        speaker!.finishResponse(responseId);
+        expect(await f.waitTask(accepted.taskId, 'completed')).toMatchObject({
+          notification: 'delivered',
+        });
+        expect(Buffer.concat(f.host.audioFrames)).toEqual(
+          Buffer.concat([PREAMBLE, ANSWER]),
+        );
+      }
+      expect(f.live.proc.exitCode).toBeNull();
+    },
+  );
+
   it.each([true, false])(
     'analyzes through an isolated same-model worker then announces the result without a backend (explicit question=%s)',
     async (explicit) => {
@@ -367,6 +486,21 @@ describe('standalone On Demand visual subagent', () => {
         source: 'screen',
       });
       expect(notificationOf(delivered.message)?.kind).toBe('visual_result');
+      expect(f.conn.inbox).not.toContain(delivered.message);
+      const speech = f.fakeDash.connections.find((candidate) =>
+        candidate.inbox.includes(delivered.message),
+      )!;
+      expect(speech).not.toBe(worker);
+      expect(
+        speech.inbox.find((message) => message['type'] === 'session.update')?.[
+          'session'
+        ],
+      ).toMatchObject({
+        tools: [],
+        tool_choice: 'none',
+        enable_search: false,
+        turn_detection: null,
+      });
       expect(f.fakeDash.inbox.indexOf(delivered.message)).toBeGreaterThan(
         f.fakeDash.inbox.indexOf(accepted.continuation.request),
       );

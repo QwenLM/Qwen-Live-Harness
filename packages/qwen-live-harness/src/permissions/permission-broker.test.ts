@@ -10,485 +10,483 @@ import type {
   BackendHandle,
   PermissionOption,
 } from '../adaptor/types.js';
-import { PermissionBroker } from './permission-broker.js';
+import {
+  PermissionBroker,
+  type PermissionBrokerMode,
+  type PermissionDecisionEvent,
+} from './permission-broker.js';
 
-const BACKEND: BackendHandle = { id: 's1', adaptor: 'fake' };
-
+const BACKEND: BackendHandle = { adaptor: 'fake', id: 'session-1' };
 const OPTIONS: readonly PermissionOption[] = [
-  { optionId: 'allow', kind: 'proceed' },
-  { optionId: 'deny', kind: 'reject' },
+  { optionId: 'all', kind: 'proceed', escalation: 'always' },
+  { optionId: 'once', kind: 'proceed', escalation: 'once' },
+  { optionId: 'reject', kind: 'reject', escalation: 'once' },
 ];
 
-function createAdaptor() {
-  return {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+function rig(initial: PermissionBrokerMode = 'ask') {
+  const state = { mode: initial };
+  const adaptor = {
     respondPermission: vi.fn(
       async (): Promise<'delivered' | 'already_resolved'> => 'delivered',
     ),
   };
-}
-
-type FakeAdaptor = ReturnType<typeof createAdaptor>;
-
-interface Rig {
-  adaptor: FakeAdaptor;
-  broker: PermissionBroker;
-  clock: { now: number };
-  logEvents: Array<{ type: string; payload: Record<string, unknown> }>;
-}
-
-function createBroker(options?: { ruleTtlMs?: number }): Rig {
-  const adaptor = createAdaptor();
-  const clock = { now: 1_000_000 };
-  const logEvents: Rig['logEvents'] = [];
+  const decisions: PermissionDecisionEvent[] = [];
+  const log = vi.fn();
+  const getPermissionMode = vi.fn(() => state.mode);
   const broker = new PermissionBroker({
     adaptorFor: () => adaptor as unknown as BackendAdaptor,
-    now: () => clock.now,
-    ...(options?.ruleTtlMs !== undefined
-      ? { ruleTtlMs: options.ruleTtlMs }
-      : {}),
-    log: (type, payload) => {
-      logEvents.push({ type, payload });
+    getPermissionMode,
+    now: () => 1000,
+    log,
+    onDecision: (event) => {
+      decisions.push(event);
     },
   });
-  return { adaptor, broker, clock, logEvents };
+  const request = (
+    requestId: string,
+    extra: Partial<Parameters<PermissionBroker['onRequest']>[0]> = {},
+  ) =>
+    broker.onRequest({
+      requestId,
+      backend: BACKEND,
+      sessionHandle: 'session_1',
+      jobRef: 'job-1',
+      title: 'Run command',
+      options: OPTIONS,
+      details: {
+        toolCallId: `tool-${requestId}`,
+        toolName: 'shell',
+        command: 'printf "%s" "a  b"',
+        rawInput: { command: 'printf "%s" "a  b"' },
+      },
+      ...extra,
+    });
+  return { state, adaptor, broker, decisions, log, getPermissionMode, request };
 }
 
-function request(
-  broker: PermissionBroker,
-  fields?: {
-    requestId?: string;
-    sessionHandle?: string;
-    jobRef?: string;
-    title?: string;
-  },
-) {
-  return broker.onRequest({
-    requestId: fields?.requestId ?? 'r1',
-    backend: BACKEND,
-    sessionHandle: fields?.sessionHandle ?? 'session_1',
-    ...(fields?.jobRef !== undefined ? { jobRef: fields.jobRef } : {}),
-    title: fields?.title ?? 'Bash: rm -rf /a',
-    options: OPTIONS,
-  });
-}
-
-describe('PermissionBroker', () => {
-  it('records pending asks with incrementing handles when no rule matches', async () => {
-    const { adaptor, broker } = createBroker();
-
-    const first = await request(broker, { requestId: 'r1' });
-    expect(first.autoAnswered).toBe(false);
-    expect(first.pending.requestHandle).toBe('req_1');
-    expect(first.pending.requestId).toBe('r1');
-    expect(first.pending.sessionHandle).toBe('session_1');
-
-    const second = await request(broker, { requestId: 'r2' });
-    expect(second.autoAnswered).toBe(false);
-    expect(second.pending.requestHandle).toBe('req_2');
-
-    expect(broker.pendingCount).toBe(2);
+describe('PermissionBroker global permission mode', () => {
+  it('defaults to ask and preserves pending action metadata', async () => {
+    const { broker, request, adaptor } = rig();
+    const first = await request('r1');
+    expect(first).toMatchObject({
+      autoAnswered: false,
+      alreadyPending: false,
+      pending: {
+        requestHandle: 'req_1',
+        requestId: 'r1',
+        sessionHandle: 'session_1',
+        jobRef: 'job-1',
+        permissionMode: 'ask',
+        createdAt: 1000,
+        details: { toolCallId: 'tool-r1', command: 'printf "%s" "a  b"' },
+      },
+    });
+    expect(first.pending).not.toHaveProperty('alwaysPolicy');
+    expect(broker.pendingUserRequests).toEqual([first.pending]);
     expect(adaptor.respondPermission).not.toHaveBeenCalled();
-    expect(
-      broker.pendingRequests.map((pending) => pending.requestHandle),
-    ).toEqual(['req_1', 'req_2']);
-    expect(
-      broker.pendingUserRequests.map((pending) => pending.requestHandle),
-    ).toEqual(['req_1', 'req_2']);
-    expect(broker.pendingForSession('session_1')?.requestHandle).toBe('req_2');
-    expect(broker.pendingForSession('session_99')).toBeUndefined();
   });
 
-  it('keeps a replayed backend request idempotent', async () => {
-    const { broker } = createBroker();
-    const first = await request(broker, { requestId: 'r1' });
-    const replay = await request(broker, { requestId: 'r1' });
+  it('uses ask when no callback is supplied or the callback fails', async () => {
+    for (const getPermissionMode of [
+      undefined,
+      () => {
+        throw new Error('Unavailable configuration');
+      },
+    ]) {
+      const vote = vi.fn();
+      const broker = new PermissionBroker({
+        adaptorFor: () =>
+          ({ respondPermission: vote }) as unknown as BackendAdaptor,
+        ...(getPermissionMode ? { getPermissionMode } : {}),
+      });
+      const ask = await broker.onRequest({
+        requestId: 'r1',
+        backend: BACKEND,
+        sessionHandle: 'session_1',
+        title: 'Run',
+        options: OPTIONS,
+      });
+      expect(ask.pending.permissionMode).toBe('ask');
+      expect(ask.autoAnswered).toBe(false);
+      expect(vote).not.toHaveBeenCalled();
+    }
+  });
 
-    expect(replay.pending).toBe(first.pending);
-    expect(replay.alreadyPending).toBe(true);
-    expect(first.alreadyPending).toBe(false);
+  it('asks again after every manual approval, without remembering titles or native grants', async () => {
+    const { broker, request, adaptor, decisions } = rig();
+    await request('r1');
+    expect(await broker.respond('req_1', 'allow')).toBe('delivered');
+    expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
+      BACKEND,
+      'r1',
+      'allow',
+    );
+    expect(decisions[0]).toMatchObject({
+      requestedDecision: 'allow',
+      decision: 'allow',
+      auto: false,
+      outcome: 'delivered',
+      permissionMode: 'ask',
+    });
+    expect((await request('r2')).autoAnswered).toBe(false);
     expect(broker.pendingCount).toBe(1);
-    expect(broker.pendingRequests[0]?.requestHandle).toBe('req_1');
   });
 
-  it('finds pending permissions only for their exact backend job', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1', jobRef: 'job-ref-1' });
-    await request(broker, { requestId: 'r2', jobRef: 'job-ref-2' });
-
-    expect(broker.pendingForJob(BACKEND, 'job-ref-1')?.requestHandle).toBe(
-      'req_1',
-    );
-    expect(broker.pendingForJob(BACKEND, 'job-ref-2')?.requestHandle).toBe(
-      'req_2',
-    );
-    expect(broker.pendingForJob(BACKEND, 'job-ref-3')).toBeUndefined();
+  it('automatically uses one-time votes for every new request in allow-all, never native always', async () => {
+    const { request, adaptor, decisions, broker } = rig('allow-all');
+    const first = await request('r1');
+    const second = await request('r2', {
+      details: { incomplete: true },
+      title: 'Another action',
+    });
+    expect(first.autoAnswered).toBe(true);
+    expect(second.autoAnswered).toBe(true);
+    expect(adaptor.respondPermission.mock.calls).toEqual([
+      [BACKEND, 'r1', 'allow'],
+      [BACKEND, 'r2', 'allow'],
+    ]);
+    expect(decisions).toHaveLength(2);
+    expect(decisions[0]).toMatchObject({
+      auto: true,
+      permissionMode: 'allow-all',
+      decision: 'allow',
+      outcome: 'delivered',
+    });
+    expect(broker.pendingCount).toBe(0);
   });
 
-  it('delivers an allow vote and clears the pending ask', async () => {
-    const { adaptor, broker } = createBroker();
-    await request(broker, { requestId: 'r1' });
+  it.each(['ask', 'allow-all'] as const)(
+    'cancels rather than choosing always-only permission in %s mode',
+    async (mode) => {
+      const { request, broker, adaptor, decisions } = rig(mode);
+      const ask = await request('r1', {
+        options: [{ optionId: 'all', kind: 'proceed', escalation: 'always' }],
+      });
+      if (mode === 'ask')
+        await broker.respond(ask.pending.requestHandle, 'allow');
+      expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
+        BACKEND,
+        'r1',
+        'cancel',
+      );
+      expect(decisions[0]?.reason).toMatch(/no identifiable one-time approval/);
+      expect(decisions[0]?.decision).toBe('cancel');
+    },
+  );
 
-    const outcome = await broker.respond('req_1', 'allow');
+  it('does not reinterpret unclassified options as approval', async () => {
+    const { request, adaptor, decisions } = rig('allow-all');
+    await request('r1', {
+      options: [
+        { optionId: 'unknown', label: 'Allow everything', kind: 'other' },
+      ],
+    });
+    expect(adaptor.respondPermission).toHaveBeenCalledWith(
+      BACKEND,
+      'r1',
+      'cancel',
+    );
+    expect(decisions[0]?.reason).toBeDefined();
+  });
 
-    expect(outcome).toBe('delivered');
+  it('downgrades legacy allow_always without creating a policy or changing global mode', async () => {
+    const { request, broker, adaptor, decisions, state } = rig();
+    await request('r1');
+    await broker.respond('req_1', 'allow_always', 'only the requested file');
     expect(adaptor.respondPermission).toHaveBeenCalledWith(
       BACKEND,
       'r1',
       'allow',
     );
-    expect(broker.pendingCount).toBe(0);
-    expect(broker.resolveHandle('req_1')).toBeUndefined();
+    expect(decisions[0]).toMatchObject({
+      requestedDecision: 'allow_always',
+      decision: 'allow',
+      permissionMode: 'ask',
+      auto: false,
+    });
+    expect(decisions[0]?.reason).toContain('Only this operation was approved');
+    expect(state.mode).toBe('ask');
+    expect((await request('r2')).autoAnswered).toBe(false);
   });
 
-  it('clears pending requests when a session closes', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1', sessionHandle: 'session_1' });
-    await request(broker, { requestId: 'r2', sessionHandle: 'session_2' });
+  it('does not claim approval for an already-resolved legacy request', async () => {
+    const { request, broker, adaptor, decisions } = rig();
+    await request('r1');
+    adaptor.respondPermission.mockResolvedValueOnce('already_resolved');
+    expect(await broker.respond('req_1', 'allow_always')).toBe(
+      'already_resolved',
+    );
+    expect(decisions[0]?.outcome).toBe('already_resolved');
+    expect(decisions[0]?.reason).toContain('no new permission');
+    expect(broker.pendingCount).toBe(0);
+  });
 
+  it('keeps replayed asks idempotent while awaiting a user', async () => {
+    const { request, broker } = rig();
+    const first = await request('r1');
+    const repeated = await request('r1');
+    expect(repeated.pending).toBe(first.pending);
+    expect(repeated.alreadyPending).toBe(true);
+    expect(broker.pendingCount).toBe(1);
+  });
+
+  it('isolates colliding request ids across adaptors and sessions', async () => {
+    const { request, broker } = rig();
+    const second = { ...BACKEND, id: 'session-2' };
+    const third = { ...BACKEND, adaptor: 'other' };
+    await request('same');
+    await request('same', { backend: second, sessionHandle: 'session_2' });
+    await request('same', { backend: third, sessionHandle: 'session_3' });
+    expect(broker.pendingCount).toBe(3);
+    expect(broker.onResolved(BACKEND, 'same')?.requestHandle).toBe('req_1');
+    expect(broker.onResolved(second, 'same')?.requestHandle).toBe('req_2');
+    expect(broker.onResolved(third, 'same')?.requestHandle).toBe('req_3');
+  });
+
+  it('finds a pending request by exact job and clears only the selected session', async () => {
+    const { request, broker } = rig();
+    await request('r1');
+    await request('r2', { jobRef: 'job-2', sessionHandle: 'session_2' });
+    expect(broker.pendingForJob(BACKEND, 'job-1')?.requestHandle).toBe('req_1');
+    expect(broker.pendingForSession('session_2')?.requestHandle).toBe('req_2');
     broker.clearSession('session_1');
-
     expect(broker.resolveHandle('req_1')).toBeUndefined();
     expect(broker.resolveHandle('req_2')).toBeDefined();
+    expect(await broker.respond('missing', 'deny')).toBe('not_found');
   });
 
-  it('forwards allow_always to the backend as a persistent grant', async () => {
-    const { adaptor, broker } = createBroker();
-    await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
-
-    await broker.respond('req_1', 'allow_always');
-    // The backend models the real scope of the grant; the broker must not
-    // silently downgrade a deliberate "always" to a one-shot allow.
+  it('switching modes affects new requests, while pending requests need an explicit refresh', async () => {
+    const { request, broker, state, adaptor } = rig();
+    await request('r1');
+    state.mode = 'allow-all';
+    await Promise.resolve();
+    expect(adaptor.respondPermission).not.toHaveBeenCalled();
+    expect((await request('r1')).alreadyPending).toBe(true);
+    await broker.approvePendingAutomatically();
     expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
       BACKEND,
       'r1',
-      'allow_always',
+      'allow',
     );
+    state.mode = 'ask';
+    expect((await request('r2')).autoAnswered).toBe(false);
+  });
 
-    // Same session, same normalized title: the grant covers the repeat.
-    const ask = await request(broker, {
-      requestId: 'r2',
-      title: 'Bash:  rm  -rf /a ',
-    });
-    expect(ask.autoAnswered).toBe(true);
-    // The local fallback rule is a one-shot auto-answer, not another grant.
-    expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
+  it('respects the explicit stale/service-shutdown automatic-approval veto during refresh', async () => {
+    const { request, broker, adaptor, state } = rig();
+    await request('r1', { allowAutoAnswer: false });
+    await request('r2');
+    state.mode = 'allow-all';
+    await broker.approvePendingAutomatically();
+    expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
       BACKEND,
       'r2',
       'allow',
     );
-    expect(broker.pendingCount).toBe(0);
+    expect(
+      broker.pendingUserRequests.map((pending) => pending.requestId),
+    ).toEqual(['r1']);
   });
 
-  it('skips the local rule when the backend takes the grant itself', async () => {
-    const { adaptor, broker } = createBroker();
-    const persistent: readonly PermissionOption[] = [
-      { optionId: 'proceed_always', kind: 'proceed', escalation: 'always' },
-      { optionId: 'proceed_once', kind: 'proceed', escalation: 'once' },
-      { optionId: 'deny', kind: 'reject', escalation: 'once' },
-    ];
-    await broker.onRequest({
-      requestId: 'r1',
-      backend: BACKEND,
-      sessionHandle: 'session_1',
-      title: 'Writing to src/a.ts',
-      options: persistent,
-    });
-    await broker.respond('req_1', 'allow_always');
-    expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
-      BACKEND,
-      'r1',
-      'allow_always',
+  it('checks ask again immediately before dispatching a queued automatic vote', async () => {
+    const { request, state, adaptor, broker } = rig('allow-all');
+    const pending = request('r1');
+    state.mode = 'ask';
+    expect((await pending).autoAnswered).toBe(false);
+    expect(adaptor.respondPermission).not.toHaveBeenCalled();
+    expect(broker.pendingUserRequests).toHaveLength(1);
+  });
+
+  it('stops a refresh when mode changes during the first in-flight approval', async () => {
+    const { request, state, adaptor, broker, decisions } = rig();
+    await request('r1');
+    await request('r2');
+    const first = deferred<'delivered'>();
+    adaptor.respondPermission.mockReturnValueOnce(first.promise);
+    state.mode = 'allow-all';
+    const processing = broker.approvePendingAutomatically();
+    await vi.waitFor(() =>
+      expect(adaptor.respondPermission).toHaveBeenCalledOnce(),
     );
-
-    // The agent recorded the real scope, so it will not raise this again.
-    // A local rule keyed on the title would be dead weight — and it must
-    // not silently auto-answer a request the agent did choose to raise.
-    const repeat = await broker.onRequest({
-      requestId: 'r2',
-      backend: BACKEND,
-      sessionHandle: 'session_1',
-      title: 'Writing to src/a.ts',
-      options: persistent,
-    });
-    expect(repeat.autoAnswered).toBe(false);
-    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
+    state.mode = 'ask';
+    first.resolve('delivered');
+    await processing;
+    expect(adaptor.respondPermission).toHaveBeenCalledOnce();
+    expect(decisions[0]?.permissionMode).toBe('allow-all');
+    expect(
+      broker.pendingUserRequests.map((pending) => pending.requestId),
+    ).toEqual(['r2']);
   });
 
-  it('scopes the standing rule to the whole approved command, not its prefix', async () => {
-    const { broker } = createBroker();
-    await request(broker, {
-      requestId: 'r1',
-      title: 'Bash: git push origin main',
-    });
-    await broker.respond('req_1', 'allow_always');
-    await request(broker, { requestId: 'r2', title: 'Bash: rm -rf /a' });
-    await broker.respond('req_2', 'allow_always');
-
-    // A flag variant is a different command; the user approved a command,
-    // not its destructive variants.
-    const forced = await request(broker, {
-      requestId: 'r3',
-      title: 'Bash: git push --force origin main',
-    });
-    expect(forced.autoAnswered).toBe(false);
-
-    // Same two-token prefix, different target: likewise not covered.
-    const differentTarget = await request(broker, {
-      requestId: 'r4',
-      title: 'Bash: rm -rf /b',
-    });
-    expect(differentTarget.autoAnswered).toBe(false);
-
-    // The identical repeat is.
-    const repeat = await request(broker, {
-      requestId: 'r5',
-      title: 'Bash: git push origin main',
-    });
-    expect(repeat.autoAnswered).toBe(true);
+  it('shares one in-flight fence across simultaneous refreshes and pending event replays', async () => {
+    const { request, state, adaptor, broker, decisions } = rig();
+    await request('r1');
+    await request('r2');
+    const first = deferred<'delivered'>();
+    adaptor.respondPermission.mockReturnValueOnce(first.promise);
+    state.mode = 'allow-all';
+    const a = broker.approvePendingAutomatically();
+    const b = broker.approvePendingAutomatically();
+    expect((await request('r1')).alreadyPending).toBe(true);
+    await vi.waitFor(() =>
+      expect(adaptor.respondPermission).toHaveBeenCalledOnce(),
+    );
+    first.resolve('delivered');
+    await Promise.all([a, b]);
+    expect(adaptor.respondPermission.mock.calls).toEqual([
+      [BACKEND, 'r1', 'allow'],
+      [BACKEND, 'r2', 'allow'],
+    ]);
+    expect(decisions).toHaveLength(2);
   });
 
-  it('does not auto-answer requests with a different title key', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
-    await broker.respond('req_1', 'allow_always');
-
-    const ask = await request(broker, {
-      requestId: 'r2',
-      title: 'Bash: ls -la',
-    });
-    expect(ask.autoAnswered).toBe(false);
-  });
-
-  it('stops auto-answering once the standing rule expires', async () => {
-    const { broker, clock } = createBroker({ ruleTtlMs: 60_000 });
-    await request(broker, { requestId: 'r1' });
-    await broker.respond('req_1', 'allow_always');
-
-    clock.now += 59_999;
-    const beforeExpiry = await request(broker, { requestId: 'r2' });
-    expect(beforeExpiry.autoAnswered).toBe(true);
-
-    clock.now += 2;
-    const afterExpiry = await request(broker, { requestId: 'r3' });
-    expect(afterExpiry.autoAnswered).toBe(false);
-  });
-
-  it('scopes standing rules to the session that granted them', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1', sessionHandle: 'session_1' });
-    await broker.respond('req_1', 'allow_always');
-
-    const otherSession = await request(broker, {
-      requestId: 'r2',
-      sessionHandle: 'session_2',
-    });
-    expect(otherSession.autoAnswered).toBe(false);
-  });
-
-  it('delivers deny votes and reports unknown handles', async () => {
-    const { adaptor, broker } = createBroker();
-    await request(broker, { requestId: 'r1' });
-
-    const denied = await broker.respond('req_1', 'deny');
-    expect(denied).toBe('delivered');
-    expect(adaptor.respondPermission).toHaveBeenCalledWith(
+  it('does not auto-approve over a manual denial that acquired the fence first', async () => {
+    const { request, state, adaptor, broker, decisions } = rig();
+    await request('r1');
+    const manual = broker.respond('req_1', 'deny');
+    state.mode = 'allow-all';
+    await Promise.all([manual, broker.approvePendingAutomatically()]);
+    expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
       BACKEND,
       'r1',
       'deny',
     );
-
-    const missing = await broker.respond('req_99', 'allow');
-    expect(missing).toBe('not_found');
-    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
+    expect(decisions[0]).toMatchObject({ auto: false, decision: 'deny' });
   });
 
-  it('onResolved returns the pending ask once and clears it', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1' });
-
-    const pending = broker.onResolved(BACKEND, 'r1');
-    expect(pending?.requestHandle).toBe('req_1');
-    expect(broker.pendingCount).toBe(0);
-
-    expect(broker.onResolved(BACKEND, 'r1')).toBeUndefined();
-  });
-
-  it('scopes requestIds by owning adaptor — one backend never retracts another', async () => {
-    // Request ids are adaptor-local (serve UUIDs vs an ACP counter), so two
-    // backends can mint the same id; a resolution from one must leave the
-    // other's pending ask intact.
-    const { broker } = createBroker();
-    const otherBackend: BackendHandle = { id: 's1', adaptor: 'acp' };
-    await request(broker, { requestId: 'perm-1' });
-    await broker.onRequest({
-      requestId: 'perm-1',
-      backend: otherBackend,
-      sessionHandle: 'session_2',
-      title: 'write_file: other.txt',
-      options: OPTIONS,
-    });
-    expect(broker.pendingCount).toBe(2);
-
-    const resolved = broker.onResolved(BACKEND, 'perm-1');
-    expect(resolved?.requestHandle).toBe('req_1');
-
-    // The acp backend's identical id is untouched…
-    expect(broker.pendingCount).toBe(1);
-    // …and resolves only against its own backend.
-    expect(broker.onResolved(otherBackend, 'perm-1')?.requestHandle).toBe(
-      'req_2',
+  it('does not claim a racing manual denial was delivered after automatic approval began', async () => {
+    const { request, state, adaptor, broker, decisions } = rig();
+    await request('r1');
+    const first = deferred<'delivered'>();
+    adaptor.respondPermission.mockReturnValueOnce(first.promise);
+    state.mode = 'allow-all';
+    const automatic = broker.approvePendingAutomatically();
+    await vi.waitFor(() =>
+      expect(adaptor.respondPermission).toHaveBeenCalledOnce(),
     );
-    expect(broker.pendingCount).toBe(0);
-  });
-
-  it('logs requests and decisions with the auto flag', async () => {
-    const { broker, logEvents } = createBroker();
-
-    await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
-    await broker.respond('req_1', 'allow_always');
-    await request(broker, { requestId: 'r2', title: 'Bash: rm -rf /a' });
-
-    expect(logEvents.map((event) => event.type)).toEqual([
-      'permission.request',
-      'permission.decision',
-      'permission.request',
-      'permission.decision',
-    ]);
-    expect(logEvents[0]?.payload).toMatchObject({
-      requestHandle: 'req_1',
-      requestId: 'r1',
-      session: 'session_1',
-      title: 'Bash: rm -rf /a',
-    });
-    expect(logEvents[1]?.payload).toMatchObject({
-      requestHandle: 'req_1',
-      decision: 'allow_always',
-      auto: false,
-      outcome: 'delivered',
-    });
-    expect(logEvents[3]?.payload).toMatchObject({
-      requestHandle: 'req_2',
-      requestId: 'r2',
-      decision: 'allow',
-      auto: true,
-    });
-  });
-
-  it("records the user's spoken constraint note in the decision log", async () => {
-    const { broker, logEvents } = createBroker();
-    await request(broker, { requestId: 'r1' });
-
-    const outcome = await broker.respond('req_1', 'allow', 'only this file');
-
-    expect(outcome).toBe('delivered');
-    const decision = logEvents.find(
-      (event) => event.type === 'permission.decision',
+    const manual = broker.respond('req_1', 'deny');
+    first.resolve('delivered');
+    expect(await manual).toBe('already_resolved');
+    await automatic;
+    expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
+      BACKEND,
+      'r1',
+      'allow',
     );
-    expect(decision?.payload).toMatchObject({
-      requestHandle: 'req_1',
-      decision: 'allow',
-      note: 'only this file',
-    });
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ auto: true, decision: 'allow' });
   });
 
-  it('clears the pending ask when the backend reports it already resolved', async () => {
-    const { adaptor, broker } = createBroker();
-    await request(broker, { requestId: 'r1' });
-    adaptor.respondPermission.mockResolvedValueOnce('already_resolved');
+  it('lets an explicit manual decision proceed if a queued automatic vote was stopped by ask mode', async () => {
+    const { request, state, broker, adaptor } = rig('allow-all');
+    const incoming = request('r1');
+    state.mode = 'ask';
+    const manual = broker.respond('req_1', 'deny');
+    await incoming;
+    expect(await manual).toBe('delivered');
+    expect(adaptor.respondPermission).toHaveBeenCalledExactlyOnceWith(
+      BACKEND,
+      'r1',
+      'deny',
+    );
+  });
 
-    const outcome = await broker.respond('req_1', 'allow');
-
-    expect(outcome).toBe('already_resolved');
+  it('skips entries resolved or closed while a refresh is in flight', async () => {
+    const { request, state, adaptor, broker } = rig();
+    await request('r1');
+    await request('r2', { sessionHandle: 'session_2' });
+    const first = deferred<'delivered'>();
+    adaptor.respondPermission.mockReturnValueOnce(first.promise);
+    state.mode = 'allow-all';
+    const processing = broker.approvePendingAutomatically();
+    await vi.waitFor(() =>
+      expect(adaptor.respondPermission).toHaveBeenCalledOnce(),
+    );
+    broker.clearSession('session_2');
+    first.resolve('delivered');
+    await processing;
+    expect(adaptor.respondPermission).toHaveBeenCalledOnce();
     expect(broker.pendingCount).toBe(0);
-    expect(broker.resolveHandle('req_1')).toBeUndefined();
-    // The handle is gone: a second relay reports not_found instead of
-    // re-voting on a settled request.
-    expect(await broker.respond('req_1', 'allow')).toBe('not_found');
-    expect(adaptor.respondPermission).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to a spoken ask when the silent auto-approval fails to deliver', async () => {
-    const { adaptor, broker, logEvents } = createBroker();
-    const first = await request(broker, { requestId: 'r1' });
-    await broker.respond(first.pending.requestHandle, 'allow_always');
-
-    // The standing rule matches, but the backend is unreachable: the ask
-    // must surface to the user instead of crashing the caller.
+  it('keeps failed automatic requests available for a user decision without leaking provider errors', async () => {
+    const { request, broker, adaptor, log, decisions, state } =
+      rig('allow-all');
     adaptor.respondPermission.mockRejectedValueOnce(
-      new Error('daemon unreachable'),
+      new Error('credential=private-value'),
     );
-    const second = await request(broker, { requestId: 'r2' });
-
-    expect(second.autoAnswered).toBe(false);
-    expect(broker.resolveHandle(second.pending.requestHandle)).toBeDefined();
-    const failure = logEvents.find(
-      (event) =>
-        event.type === 'permission.decision' &&
-        event.payload['outcome'] === 'delivery_failed',
+    expect((await request('r1')).autoAnswered).toBe(false);
+    expect(broker.pendingUserRequests).toHaveLength(1);
+    expect(decisions).toHaveLength(0);
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-value');
+    state.mode = 'ask';
+    expect(await broker.respond('req_1', 'deny')).toBe('delivered');
+    expect(adaptor.respondPermission).toHaveBeenLastCalledWith(
+      BACKEND,
+      'r1',
+      'deny',
     );
-    expect(failure?.payload).toMatchObject({ auto: true, decision: 'allow' });
   });
 
-  it('keeps the whole command after colons in the standing-rule key', async () => {
-    // `git commit -m "fix: bug"` — the command itself contains a colon;
-    // the key must not truncate at it (or a different -m message with the
-    // same prefix would silently match).
-    const { broker } = createBroker();
-    await request(broker, {
+  it('preserves correlation after synchronous backend resolution and isolates failing observers', async () => {
+    const vote = vi.fn(async (): Promise<'delivered'> => {
+      broker.onResolved(BACKEND, 'r1');
+      return 'delivered';
+    });
+    const onDecision = vi.fn(() => {
+      throw new Error('observer failed');
+    });
+    const broker = new PermissionBroker({
+      adaptorFor: () =>
+        ({ respondPermission: vote }) as unknown as BackendAdaptor,
+      getPermissionMode: () => 'allow-all',
+      onDecision,
+      log: () => {
+        throw new Error('log failed');
+      },
+    });
+    const result = await broker.onRequest({
       requestId: 'r1',
-      title: 'Shell: git commit -m "fix: bug"',
+      backend: BACKEND,
+      sessionHandle: 'session_1',
+      jobRef: 'job-1',
+      title: 'Run command',
+      options: OPTIONS,
+      details: { toolCallId: 'tool-1' },
     });
-    await broker.respond('req_1', 'allow_always');
-
-    const different = await request(broker, {
-      requestId: 'r2',
-      title: 'Shell: git commit -m "fix: something else entirely"',
-    });
-    expect(different.autoAnswered).toBe(false);
-
-    const identical = await request(broker, {
-      requestId: 'r3',
-      title: 'Shell: git commit -m "fix: bug"',
-    });
-    expect(identical.autoAnswered).toBe(true);
-  });
-
-  it('does not case-fold the standing-rule key — /a and /A are different paths', async () => {
-    const { broker } = createBroker();
-    await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
-    await broker.respond('req_1', 'allow_always');
-
-    const different = await request(broker, {
-      requestId: 'r2',
-      title: 'Bash: rm -rf /A',
-    });
-    expect(different.autoAnswered).toBe(false);
-  });
-
-  it('an explicit deny revokes the standing rule that matched the request', async () => {
-    const { broker, adaptor } = createBroker();
-    await request(broker, { requestId: 'r1', title: 'Bash: rm -rf /a' });
-    await broker.respond('req_1', 'allow_always');
-
-    // The silent auto-answer fails and falls back to a spoken ask…
-    adaptor.respondPermission.mockImplementation(async () => {
-      throw new Error('daemon unreachable');
-    });
-    const fallback = await request(broker, {
-      requestId: 'r2',
-      title: 'Bash: rm -rf /a',
-    });
-    expect(fallback.autoAnswered).toBe(false);
-
-    // …and the user says deny. The rule must not survive the refusal.
-    adaptor.respondPermission.mockImplementation(
-      async () => 'delivered' as const,
+    expect(result.autoAnswered).toBe(true);
+    expect(onDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auto: true,
+        outcome: 'delivered',
+        pending: expect.objectContaining({
+          jobRef: 'job-1',
+          details: { toolCallId: 'tool-1' },
+        }),
+      }),
     );
-    await broker.respond('req_2', 'deny');
-    const again = await request(broker, {
-      requestId: 'r3',
-      title: 'Bash: rm -rf /a',
+    expect(broker.pendingCount).toBe(0);
+    expect(vote).toHaveBeenCalledOnce();
+  });
+
+  it('redacts credentials in permission titles and optional decision notes', async () => {
+    const { request, broker, log } = rig();
+    const ask = await request('r1', {
+      title: 'TOKEN=private-value printf test',
     });
-    expect(again.autoAnswered).toBe(false);
+    await broker.respond('req_1', 'allow', 'password=another-secret');
+    expect(ask.pending.title).not.toContain('private-value');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-value');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('another-secret');
   });
 });

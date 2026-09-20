@@ -47,6 +47,7 @@ import { MemoryService } from './memory/service.js';
 import { MemoryStoreError } from './memory/store.js';
 import { deriveMemoryBaseUrl } from './memory/config.js';
 import { persistLanguagePreference } from './language-preferences.js';
+import { persistPermissionModePreference } from './permission-preferences.js';
 import { persistScreenDisplayPreference } from './visual-preferences.js';
 import { liveMessage, liveText } from './i18n/messages.js';
 import { writeDaemonStopMarker, type DaemonIdentity } from './lifecycle.js';
@@ -344,6 +345,27 @@ export class LiveDaemon {
       daemonInstanceNonce: this.instanceNonce,
       daemonShutdownV1: true,
       getUiLanguage: () => ({ language: this.config.language ?? 'en' }),
+      getPermissionMode: () => ({ mode: this.config.permissionMode ?? 'ask' }),
+      onPermissionModeAction: (mode) => {
+        this.config.permissionMode = persistPermissionModePreference(
+          this.config.dataDir,
+          mode,
+        );
+        this.debugArchive?.recordRuntime('host.permission_mode_changed', {
+          mode: this.config.permissionMode,
+        });
+        // Persistence is the settings transaction boundary. A later runtime
+        // refresh failure must not make the UI pretend the saved mode reverted.
+        try {
+          this.session?.permissionModeChanged();
+        } catch {
+          this.debugArchive?.recordRuntime(
+            'host.permission_mode_apply_failed',
+            { mode: this.config.permissionMode },
+          );
+        }
+        return { mode: this.config.permissionMode };
+      },
       getSubagents: () => this.session?.getSubagentsSnapshot(),
       subagentsControlV1: true,
       onScreenDisplayChange: (screenDisplayId) => {
@@ -433,6 +455,8 @@ export class LiveDaemon {
 
     const session = new LiveSession({
       getLanguage: () => this.config.language ?? 'en',
+      getPermissionMode: () =>
+        this.stopping ? 'ask' : (this.config.permissionMode ?? 'ask'),
       onFailure: (failure) => this.recordFailure(failure, false),
       failureSecrets: runtimeFailureSecrets(this.config, [this.token]),
       host: coordinator,

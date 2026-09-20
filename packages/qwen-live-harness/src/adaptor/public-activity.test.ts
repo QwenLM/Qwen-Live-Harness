@@ -8,6 +8,43 @@ import { describe, expect, it } from 'vitest';
 import { publicActivity } from './public-activity.js';
 
 describe('public backend activity', () => {
+  it('preserves tool identity and actual status on both start and update events', () => {
+    const started = publicActivity(
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tc-1',
+        title: 'Run command',
+        status: 'pending',
+        rawInput: { command: "printf '%s' 'a  b'" },
+      },
+      'j1',
+    );
+    expect(started).toMatchObject({
+      kind: 'tool',
+      jobRef: 'j1',
+      toolCallId: 'tc-1',
+      toolStatus: 'pending',
+      details: { toolCallId: 'tc-1', command: "printf '%s' 'a  b'" },
+    });
+    expect(
+      publicActivity({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-1',
+        status: 'in_progress',
+      }),
+    ).toMatchObject({ toolCallId: 'tc-1', toolStatus: 'in_progress' });
+    expect(
+      publicActivity({ sessionUpdate: 'tool_call_update', toolCallId: 'tc-1' }),
+    ).not.toHaveProperty('toolStatus');
+    expect(
+      publicActivity({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tc-1',
+        status: 'unknown',
+      }),
+    ).not.toHaveProperty('toolStatus');
+  });
+
   it('projects public text, plans and tool text without thought or arbitrary payloads', () => {
     expect(
       publicActivity(

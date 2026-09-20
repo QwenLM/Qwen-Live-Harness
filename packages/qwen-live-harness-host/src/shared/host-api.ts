@@ -4,6 +4,7 @@ import type {
   LiveStatus,
   MemoryAction,
   MemoryState,
+  PermissionModeState,
   VisualInput,
   VisualMode,
   VisualSource,
@@ -52,6 +53,7 @@ export type HostPublicState = {
   screenDisplaysError?: string;
   visualSettingsError?: string;
   memory?: MemoryState;
+  permissionModeV1?: PermissionModeState;
   subagentsV1?: SubagentsSnapshot;
   live: LiveStatus;
   permissions: HostPublicPermissions;
@@ -72,6 +74,7 @@ export type LiveHostApi = {
   setScreenDisplay: (id: string) => Promise<void>;
   memoryAction: (action: MemoryAction) => Promise<MemoryState>;
   setLanguage: (language: LiveLanguage) => Promise<void>;
+  setPermissionMode?: (mode: PermissionModeState['mode']) => Promise<void>;
   setTheme: (theme: LiveTheme) => Promise<void>;
   setThemeColor: (color: LiveThemeColor) => Promise<void>;
   setSettingsOpen: (open: boolean) => Promise<void>;

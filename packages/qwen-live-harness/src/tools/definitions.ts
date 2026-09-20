@@ -281,12 +281,9 @@ const RESPOND_PERMISSION_TOOL: RealtimeToolDefinition = {
     name: RESPOND_PERMISSION_TOOL_NAME,
     description:
       "Relay the user's spoken answer to a pending [PERMISSION] request. " +
-      '`allow` approves only this request. `allow_always` requires the ' +
-      "user's explicit continuing approval: it uses the backend's persistent " +
-      'grant when offered; otherwise it grants once and keeps a 30-minute ' +
-      'local rule for the identical action in this session. A later `deny` ' +
-      'revokes only that local rule, not a grant already saved by the ' +
-      'backend. Only call this after the user actually answered; never decide ' +
+      '`allow` approves only this request; `deny` refuses it. Global ask or ' +
+      'allow-all behavior is configured in init or Settings, never through ' +
+      'this tool. Only call this after the user actually answered; never decide ' +
       'for them. Do not tell the user the vote succeeded until this tool ' +
       'returns status `delivered`.',
     parameters: {
@@ -298,7 +295,7 @@ const RESPOND_PERMISSION_TOOL: RealtimeToolDefinition = {
         },
         decision: {
           type: 'string',
-          enum: ['allow', 'allow_always', 'deny'],
+          enum: ['allow', 'deny'],
         },
         note: {
           type: 'string',

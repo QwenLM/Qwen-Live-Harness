@@ -28,6 +28,9 @@ import {
   type LiveHostLanguageAction,
   type LiveLanguageResult,
   type LiveLanguageState,
+  type LivePermissionModeState,
+  type LiveHostPermissionModeAction,
+  type LivePermissionModeResult,
   type LiveMemoryAction,
   type LiveMemoryResult,
   type LiveMemoryState,
@@ -118,6 +121,10 @@ interface HostLease {
   memoryPending?: Set<string>;
   memoryResults?: Map<string, LiveMemoryResult>;
   languageResults?: Map<string, LiveLanguageResult>;
+  permissionModeResults?: Map<
+    string,
+    { request: LiveHostPermissionModeAction; result: LivePermissionModeResult }
+  >;
   expectedClose?: boolean;
   failureReported?: boolean;
 }
@@ -161,6 +168,10 @@ export interface LiveHostCoordinatorOptions {
   daemonInstanceNonce?: string;
   daemonShutdownV1?: boolean;
   getUiLanguage?: () => LiveLanguageState;
+  getPermissionMode?: () => LivePermissionModeState;
+  onPermissionModeAction?: (
+    mode: LivePermissionModeState['mode'],
+  ) => LivePermissionModeState;
   getSubagents?: () => SubagentsSnapshot | undefined;
   subagentsControlV1?: boolean;
   onScreenDisplayChange?: (screenDisplayId: string) => void;
@@ -569,7 +580,11 @@ function parseMemoryAction(
 
 function parseHostMessage(
   text: string,
-): LiveHostMessage | LiveHostLanguageAction | undefined {
+):
+  | LiveHostMessage
+  | LiveHostLanguageAction
+  | LiveHostPermissionModeAction
+  | undefined {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -580,6 +595,24 @@ function parseHostMessage(
   if (value['type'] === 'host.hello') return parseHello(value);
   if (value['type'] === 'host.action') return parseAction(value);
   if (value['type'] === 'host.memory_action') return parseMemoryAction(value);
+  if (value['type'] === 'host.permission_mode_action') {
+    if (
+      !isBoundedString(value['requestId']) ||
+      String(value['requestId']).length > 128 ||
+      !isNonNegativeSafeInteger(value['epoch']) ||
+      !isBoundedString(value['daemonInstanceNonce']) ||
+      String(value['daemonInstanceNonce']).length > 256 ||
+      (value['mode'] !== 'ask' && value['mode'] !== 'allow-all')
+    )
+      return undefined;
+    return {
+      type: 'host.permission_mode_action',
+      requestId: String(value['requestId']),
+      epoch: value['epoch'],
+      daemonInstanceNonce: String(value['daemonInstanceNonce']),
+      mode: value['mode'],
+    };
+  }
   if (value['type'] === 'host.language_action') {
     if (
       !isBoundedString(value['requestId']) ||
@@ -1719,7 +1752,80 @@ export class LiveHostCoordinator {
       this.handleLanguageAction(lease, message);
       return;
     }
+    if (message.type === 'host.permission_mode_action') {
+      this.handlePermissionModeAction(lease, message);
+      return;
+    }
     this.handleAction(message);
+  }
+
+  private handlePermissionModeAction(
+    lease: HostLease,
+    message: LiveHostPermissionModeAction,
+  ): void {
+    if (this.host !== lease) return;
+    lease.permissionModeResults ??= new Map();
+    const cached = lease.permissionModeResults.get(message.requestId);
+    let result: LivePermissionModeResult;
+    const identity = {
+      type: 'host.permission_mode_result' as const,
+      requestId: message.requestId,
+      epoch: message.epoch,
+      daemonInstanceNonce: this.daemonInstanceNonce,
+    };
+    try {
+      if (
+        message.epoch !== this.nextEpoch ||
+        message.daemonInstanceNonce !== this.daemonInstanceNonce
+      )
+        throw new Error(liveMessage('permissionMode.callChanged'));
+      if (cached) {
+        if (
+          cached.request.mode !== message.mode ||
+          cached.request.epoch !== message.epoch ||
+          cached.request.daemonInstanceNonce !== message.daemonInstanceNonce
+        )
+          throw new Error(liveMessage('permissionMode.invalid'));
+        this.sendHost(cached.result);
+        return;
+      }
+      if (
+        !this.options.onPermissionModeAction ||
+        !this.options.getPermissionMode
+      )
+        throw new Error(liveMessage('permissionMode.unavailable'));
+      const permissionModeV1 = this.options.onPermissionModeAction(
+        message.mode,
+      );
+      if (permissionModeV1.mode !== message.mode)
+        throw new Error(liveMessage('permissionMode.saveFailed'));
+      result = { ...identity, ok: true, permissionModeV1 };
+    } catch (error) {
+      result = {
+        ...identity,
+        ok: false,
+        error:
+          error instanceof Error &&
+          error.message.startsWith('qwen-live-harness-ui:')
+            ? error.message
+            : liveMessage('permissionMode.saveFailed'),
+        ...(this.options.getPermissionMode
+          ? { permissionModeV1: this.options.getPermissionMode() }
+          : {}),
+      };
+    }
+    if (!cached) {
+      lease.permissionModeResults.set(message.requestId, {
+        request: message,
+        result,
+      });
+      if (lease.permissionModeResults.size > 64)
+        lease.permissionModeResults.delete(
+          lease.permissionModeResults.keys().next().value!,
+        );
+    }
+    this.sendHost(result);
+    this.broadcastState();
   }
 
   private handleLanguageAction(
@@ -2086,6 +2192,9 @@ export class LiveHostCoordinator {
         : {}),
       protocolVersion: LIVE_HOST_PROTOCOL_VERSION,
       daemonInstanceNonce: this.daemonInstanceNonce,
+      ...(this.options.getPermissionMode
+        ? { permissionModeV1: this.options.getPermissionMode() }
+        : {}),
       ...(this.options.getUiLanguage
         ? { uiLanguageV1: this.options.getUiLanguage() }
         : {}),
@@ -2639,6 +2748,9 @@ export class LiveHostCoordinator {
     const memory = this.memoryState();
     this.sendHost({
       type: 'host.state',
+      ...(this.options.getPermissionMode
+        ? { permissionModeV1: this.options.getPermissionMode() }
+        : {}),
       ...(this.host?.hello?.subagentsV1 && this.options.getSubagents
         ? { subagentsV1: this.options.getSubagents() }
         : {}),

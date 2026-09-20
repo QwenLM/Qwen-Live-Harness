@@ -17,6 +17,7 @@ import {
   FakeHost,
   spawnQwenLiveHarness,
   startLiveCall,
+  readLiveDiscovery,
   waitForLiveResponseAfter,
   type SpawnedQwenLiveHarness,
 } from './qwen-live-harness.js';
@@ -102,9 +103,7 @@ describe('standalone daemon with an external ACP process', () => {
     );
     expect(receipt['status']).toBe('accepted');
     const complete = await fakeDash.waitForMessage(
-      (m) =>
-        contextTextOf(m)?.includes(`[COMPLETE ${String(receipt['job'])}]`) ??
-        false,
+      (m) => taskResultPayloadOf(m)?.job === receipt['job'],
       { fromIndex },
     );
     expect(contextTextOf(complete)).toContain('standalone portability check');
@@ -208,5 +207,88 @@ describe('standalone daemon with an external ACP process', () => {
       { fromIndex },
     );
     expect(contextTextOf(completed)).toContain('permission granted');
+  });
+
+  it('keeps a UI permission waiting after an unavailable persistent scope and confirms an explicit once-only vote', async () => {
+    const accepted = await tool(
+      'handoff',
+      { task: 'permission: approve one synthetic edit from the task page' },
+      'scoped-ui-permission',
+    );
+    const taskId = `harness:${String(accepted.receipt['job'])}`;
+    const discovery = await readLiveDiscovery(join(temporary, 'discovery'));
+    const control = async (action: Record<string, unknown>) => {
+      const response = await fetch(`${live.url}/live/subagents`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${discovery.token}`,
+          'x-qwen-live-harness-nonce': discovery.instanceNonce,
+        },
+        body: JSON.stringify(action),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as Record<string, unknown>;
+    };
+    type Selected = {
+      status: string;
+      permissions: Array<{
+        requestHandle: string;
+        choices: Array<{ decision: string; scope?: string }>;
+      }>;
+    };
+    let selected: Selected | undefined;
+    await expect
+      .poll(async () => {
+        const result = await control({
+          action: 'list',
+          selectedId: taskId,
+          filter: 'needsAttention',
+        });
+        const page = result['page'] as { filter: string; selected?: Selected };
+        expect(page.filter).toBe('needsAttention');
+        selected = page.selected;
+        return selected?.permissions?.length;
+      })
+      .toBe(1);
+    expect(selected?.status).toBe('waiting');
+    const permission = selected!.permissions[0]!;
+    // This fixture has no verified executable/target, so a generic edit title
+    // must not create a future auto-allow rule.
+    expect(permission.choices).not.toContainEqual({
+      decision: 'allow',
+      scope: 'always',
+    });
+    expect(
+      await control({
+        action: 'permission',
+        requestHandle: permission.requestHandle,
+        decision: 'allow',
+        scope: 'always',
+      }),
+    ).toMatchObject({ type: 'error', code: 'permission_unavailable' });
+    const pending = await control({ action: 'list', selectedId: taskId });
+    expect((pending['page'] as { selected: Selected }).selected.status).toBe(
+      'waiting',
+    );
+    expect(
+      await control({
+        action: 'permission',
+        requestHandle: permission.requestHandle,
+        decision: 'allow',
+        scope: 'once',
+      }),
+    ).toMatchObject({
+      type: 'outcome',
+      outcome: 'allowed',
+      requestHandle: permission.requestHandle,
+      scope: 'once',
+    });
+    await expect
+      .poll(async () => {
+        const result = await control({ action: 'list', selectedId: taskId });
+        return (result['page'] as { selected: Selected }).selected.status;
+      })
+      .toBe('completed');
   });
 });

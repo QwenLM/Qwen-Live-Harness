@@ -35,6 +35,85 @@ function task(
 afterEach(() => vi.useRealTimers());
 
 describe('SubagentsLedger', () => {
+  it('keeps the latest arrival first even when timestamps tie, without bumping updates', () => {
+    const ledger = new SubagentsLedger();
+    try {
+      ledger.upsert(task('first'));
+      ledger.upsert(task('second'));
+      ledger.upsert(task('third'));
+      ledger.update('first', { activity: 'New activity, not a new task' });
+      expect(ledger.page().snapshot.tasks.map((value) => value.id)).toEqual([
+        'third',
+        'second',
+        'first',
+      ]);
+    } finally {
+      ledger.dispose();
+    }
+  });
+  it('paginates filtered tasks newest first while keeping global counts and selected details', () => {
+    const ledger = new SubagentsLedger();
+    try {
+      for (let index = 0; index < 40; index++)
+        ledger.upsert({
+          ...task(`active:${index}`),
+          createdAt: index,
+          status: index % 2 ? 'running' : 'waiting',
+        });
+      ledger.upsert({ ...task('newest-completed'), createdAt: 60 });
+      ledger.result('newest-completed', 'completed', 'Finished');
+      ledger.upsert({ ...task('newer-failed'), createdAt: 50 });
+      ledger.result('newer-failed', 'failed', 'Failed');
+      ledger.upsert({
+        ...task('stopped-monitor'),
+        kind: 'proactive',
+        source: 'screen',
+        createdAt: 45,
+      });
+      ledger.result('stopped-monitor', 'cancelled', 'Stopped');
+      expect(
+        ledger
+          .page()
+          .snapshot.tasks.slice(0, 4)
+          .map((value) => value.id),
+      ).toEqual([
+        'newest-completed',
+        'newer-failed',
+        'stopped-monitor',
+        'active:39',
+      ]);
+      const running = ledger.page(32, 'newest-completed', 'running');
+      expect(running.total).toBe(40);
+      expect(running.snapshot.tasks).toHaveLength(8);
+      expect(running.snapshot.tasks[0]?.id).toBe('active:7');
+      expect(running.selected?.id).toBe('newest-completed');
+      const waiting = ledger.page(0, undefined, 'needsAttention');
+      expect(waiting.total).toBe(20);
+      expect(
+        waiting.snapshot.tasks.every((value) => value.status === 'waiting'),
+      ).toBe(true);
+      const completed = ledger.page(0, undefined, 'completed');
+      expect(completed.snapshot.tasks.map((value) => value.id)).toEqual([
+        'newest-completed',
+        'stopped-monitor',
+      ]);
+      for (const page of [running, waiting, completed]) {
+        expect(page.snapshot.counts).toEqual(ledger.snapshot().counts);
+        expect(
+          parseSubagentsControlResult({ type: 'page', page }),
+        ).toBeDefined();
+      }
+      ledger.update('active:0', { activity: 'New output' });
+      expect(
+        ledger.page(0, undefined, 'needsAttention').snapshot.tasks[0]?.id,
+      ).toBe('active:38');
+      ledger.update('active:38', { status: 'running' });
+      expect(ledger.page(0, undefined, 'needsAttention').total).toBe(19);
+    } finally {
+      ledger.dispose();
+    }
+  });
+
   it('keeps bounded display messages separate from raw task output', () => {
     const ledger = new SubagentsLedger();
     const outputMessage =
@@ -166,7 +245,11 @@ describe('SubagentsLedger', () => {
       ledger.upsert(monitor);
       if (cancelFirst) ledger.result(monitor.id, 'cancelled', 'Cancelled');
       for (let index = 0; index < 40; index += 1)
-        ledger.upsert({ ...task(`running:${index}`), updatedAt: index + 2 });
+        ledger.upsert({
+          ...task(`running:${index}`),
+          createdAt: index + 2,
+          updatedAt: index + 2,
+        });
       if (!cancelFirst) ledger.result(monitor.id, 'cancelled', 'Cancelled');
       const before = ledger.snapshot();
       expect(before.tasks.some((entry) => entry.id === monitor.id)).toBe(false);

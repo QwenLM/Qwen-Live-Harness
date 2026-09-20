@@ -250,6 +250,127 @@ function fixture(
   };
 }
 describe('Subagents native lifecycle', () => {
+  it('keeps filters across pagination, refresh and detail navigation, and resets them for a new panel', async () => {
+    const requests: SubagentsControlRequest[] = [];
+    const f = fixture(undefined, async (request) => {
+      requests.push(request);
+      assert.equal(request.action, 'list');
+      return {
+        type: 'page',
+        page: {
+          snapshot,
+          offset: request.offset ?? 0,
+          total: 80,
+          ...(request.filter ? { filter: request.filter } : {}),
+        },
+      };
+    });
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const serialize = (value: unknown) => JSON.parse(JSON.stringify(value));
+    f.controller.update('en', true, snapshot, 'one', true);
+    f.controller.openList();
+    const window = f.windows[0]!;
+    window.ready();
+    await settle();
+    await f.invoke('live:subagents:control', window, 'one', {
+      action: 'list',
+      filter: 'running',
+      offset: 70,
+    });
+    assert.deepEqual(serialize(requests.at(-1)), {
+      action: 'list',
+      filter: 'running',
+      offset: 0,
+    });
+    assert.equal(f.state(window).filter, 'running');
+    await f.invoke('live:subagents:control', window, 'one', {
+      action: 'list',
+      filter: 'running',
+      offset: 32,
+    });
+    assert.equal(f.state(window).page?.offset, 32);
+    f.controller.update('en', true, { ...snapshot, revision: 2 }, 'one', true);
+    await settle();
+    assert.deepEqual(serialize(requests.at(-1)), {
+      action: 'list',
+      filter: 'running',
+      offset: 32,
+    });
+    await f.invoke('live:subagents:detail', window, 'harness:1');
+    await settle();
+    assert.deepEqual(serialize(requests.at(-1)), {
+      action: 'list',
+      filter: 'running',
+      offset: 32,
+      selectedId: 'harness:1',
+    });
+    await f.invoke('live:subagents:back', window);
+    await settle();
+    assert.equal(f.state(window).filter, 'running');
+    assert.deepEqual(serialize(requests.at(-1)), {
+      action: 'list',
+      filter: 'running',
+      offset: 32,
+    });
+    f.invoke('live:subagents:close', window);
+    f.controller.openList();
+    await settle();
+    assert.equal(f.state(window).filter, undefined);
+    assert.deepEqual(serialize(requests.at(-1)), { action: 'list', offset: 0 });
+    f.controller.dispose();
+  });
+
+  it('discards stale page responses when the filter changes and rejects invalid filters', async () => {
+    const requests: Array<{
+      request: SubagentsControlRequest;
+      resolve: (result: SubagentsControlResult) => void;
+    }> = [];
+    const f = fixture(
+      undefined,
+      (request) =>
+        new Promise((resolve) => requests.push({ request, resolve })),
+    );
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+    f.controller.update('en', true, snapshot, 'one', true);
+    f.controller.openList();
+    const window = f.windows[0]!;
+    window.ready();
+    assert.equal(requests.length, 1);
+    const switched = f.invoke('live:subagents:control', window, 'one', {
+      action: 'list',
+      filter: 'completed',
+    });
+    assert.equal(requests.length, 2);
+    assert.equal(f.state(window).filter, 'completed');
+    requests[1]!.resolve({
+      type: 'page',
+      page: {
+        snapshot: { ...snapshot, tasks: [] },
+        offset: 0,
+        total: 0,
+        filter: 'completed',
+      },
+    });
+    await switched;
+    requests[0]!.resolve({
+      type: 'page',
+      page: { snapshot, offset: 0, total: 1 },
+    });
+    await settle();
+    assert.equal(f.state(window).page?.filter, 'completed');
+    assert.equal(f.state(window).page?.total, 0);
+    const invalid = await f.invoke('live:subagents:control', window, 'one', {
+      action: 'list',
+      filter: 'not-a-filter',
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(invalid)), {
+      type: 'error',
+      code: 'invalid_request',
+    });
+    assert.equal(requests.length, 2);
+    f.controller.dispose();
+  });
+
   it('localizes the native window title on creation and language changes without replacing the UI', () => {
     const f = fixture();
     f.controller.update('zh-CN', true, snapshot, 'one');

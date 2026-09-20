@@ -98,22 +98,31 @@ describe('standalone Omni without any coding backend', () => {
     anchor: Json,
     authority: 'tool_continuation' | 'visual_result',
   ) {
-    // Independent image workers also send response.create. Match the main
-    // connection rather than letting their request satisfy this turn's wait.
+    // Match the exact owner: foreground receipts and isolated result speech
+    // use separate connections, and the image inference is a third channel.
+    const owner =
+      authority === 'visual_result'
+        ? fakeDash.connections.find((candidate) =>
+            candidate.inbox.includes(anchor),
+          )!
+        : conn;
     const request = await fakeDash.waitForMessage(
       (message) =>
-        conn.inbox.includes(message) && message['type'] === 'response.create',
+        owner.inbox.includes(message) && message['type'] === 'response.create',
       { fromIndex: fakeDash.inbox.indexOf(anchor) + 1 },
     );
     const responseId = fakeDash.autoResponseIdFor(request);
     expect(responseId).toBeDefined();
-    await waitForLiveLogEvents(
-      dataDir,
-      (event) =>
-        event.type === 'response.done' &&
-        event.payload['responseId'] === responseId &&
-        event.payload['authority'] === authority &&
-        event.payload['status'] === 'completed',
+    await waitForLiveLogEvents(dataDir, (event) =>
+      authority === 'visual_result'
+        ? event.type === 'transcript.assistant' &&
+          event.payload['responseId'] === responseId &&
+          event.payload['source'] === 'isolated_result' &&
+          event.payload['purpose'] === authority
+        : event.type === 'response.done' &&
+          event.payload['responseId'] === responseId &&
+          event.payload['authority'] === authority &&
+          event.payload['status'] === 'completed',
     );
   }
 
@@ -216,9 +225,7 @@ describe('standalone Omni without any coding backend', () => {
     expect(receipt['taskId']).toMatch(/^visual:/);
     expect(receipt['asset']).toMatch(/^asset_/);
     const result = await fakeDash.waitForMessage(
-      (message) =>
-        conn.inbox.includes(message) &&
-        notificationOf(message)?.kind === 'visual_result',
+      (message) => notificationOf(message)?.kind === 'visual_result',
     );
     expect(JSON.parse(notificationOf(result)!.payload)).toMatchObject({
       status: 'completed',
@@ -228,6 +235,15 @@ describe('standalone Omni without any coding backend', () => {
     // Receipt completion is not result delivery. Drain the asynchronous visual
     // notification before the following test queues a new user tool call.
     await responseAfter(result, 'visual_result');
+    expect(conn.inbox).not.toContain(result);
+    await waitForLiveLogEvents(
+      dataDir,
+      (event) =>
+        event.type === 'search.delivery' &&
+        event.payload['taskId'] === receipt['taskId'] &&
+        event.payload['phase'] === 'finished' &&
+        event.payload['delivered'] === true,
+    );
   });
 
   it('keeps Memory writes and refreshed context available', async () => {
@@ -299,7 +315,7 @@ describe('standalone Omni without any coding backend', () => {
       { fromIndex },
     );
     expect(contextTextOf(stopped)).toContain('cancelled');
-    expect(fakeDash.connections).toHaveLength(2);
+    expect(fakeDash.connections).toHaveLength(3);
   });
 
   it('continues to forward Live Feed frames directly to Omni', async () => {

@@ -17,6 +17,13 @@ export const SUBAGENT_STATUSES = [
   'interrupted',
 ] as const;
 export type SubagentStatus = (typeof SUBAGENT_STATUSES)[number];
+export const SUBAGENT_FILTERS = [
+  'all',
+  'running',
+  'completed',
+  'needsAttention',
+] as const;
+export type SubagentFilter = (typeof SUBAGENT_FILTERS)[number];
 export type SubagentActivity = {
   at: number;
   kind: 'status' | 'message' | 'plan' | 'tool' | 'observation' | 'notification';
@@ -28,6 +35,8 @@ export type SubagentPermission = {
   titleTruncated?: boolean;
   backend?: string;
   sessionId?: string;
+  details?: string;
+  alwaysScope?: string;
   choices: Array<{
     decision: 'allow' | 'deny';
     scope?: 'once' | 'always';
@@ -159,6 +168,7 @@ export type SubagentsPage = {
   snapshot: SubagentsSnapshot;
   offset: number;
   total: number;
+  filter?: SubagentFilter;
   selected?: SubagentTask;
   unassignedPermissions?: SubagentPermission[];
   unassignedPermissionsOmitted?: number;
@@ -170,12 +180,18 @@ export type SubagentsPage = {
   sessionReportsOmitted?: number;
 };
 export type SubagentsControlRequest =
-  | { action: 'list'; offset?: number; selectedId?: string }
+  | {
+      action: 'list';
+      offset?: number;
+      selectedId?: string;
+      filter?: SubagentFilter;
+    }
   | { action: 'stop'; taskId: string }
   | {
       action: 'permission';
       requestHandle: string;
       decision: 'allow' | 'deny';
+      scope?: 'once' | 'always';
     };
 export const SUBAGENTS_CONTROL_ERROR_CODES = [
   'unsupported',
@@ -196,6 +212,8 @@ export type SubagentsControlResult =
       outcome: 'stopping' | 'stopped' | 'already_ended' | 'allowed' | 'denied';
       taskId?: string;
       requestHandle?: string;
+      scope?: 'once' | 'always';
+      message?: string;
     }
   | { type: 'error'; code: SubagentsControlErrorCode };
 
@@ -231,7 +249,11 @@ function validPermissions(value: unknown): value is SubagentPermission[] {
       (permission['titleTruncated'] !== undefined &&
         typeof permission['titleTruncated'] !== 'boolean') ||
       !Array.isArray(permission['choices']) ||
-      permission['choices'].length > 2
+      permission['choices'].length > 3 ||
+      (permission['details'] !== undefined &&
+        !text(permission['details'], 8192)) ||
+      (permission['alwaysScope'] !== undefined &&
+        !text(permission['alwaysScope'], 1024))
     )
       return false;
     handles.add(permission['requestHandle']);
@@ -245,13 +267,13 @@ function validPermissions(value: unknown): value is SubagentPermission[] {
         (permission['titleTruncated'] === true &&
           choice['decision'] === 'allow') ||
         (choice['decision'] !== 'allow' && choice['decision'] !== 'deny') ||
-        decisions.has(choice['decision']) ||
+        decisions.has(`${choice['decision']}:${choice['scope'] ?? ''}`) ||
         (choice['scope'] !== undefined &&
           choice['scope'] !== 'once' &&
           choice['scope'] !== 'always')
       )
         return false;
-      decisions.add(choice['decision']);
+      decisions.add(`${choice['decision']}:${choice['scope'] ?? ''}`);
     }
   }
   return true;
@@ -481,7 +503,11 @@ export function parseSubagentsControlRequest(
   const keys = Object.keys(value);
   if (
     value['action'] === 'list' &&
-    keys.every((key) => ['action', 'offset', 'selectedId'].includes(key)) &&
+    keys.every((key) =>
+      ['action', 'offset', 'selectedId', 'filter'].includes(key),
+    ) &&
+    (value['filter'] === undefined ||
+      SUBAGENT_FILTERS.includes(value['filter'] as SubagentFilter)) &&
     (value['offset'] === undefined || integer(value['offset'])) &&
     (value['selectedId'] === undefined || identifier(value['selectedId']))
   )
@@ -495,10 +521,13 @@ export function parseSubagentsControlRequest(
   if (
     value['action'] === 'permission' &&
     keys.every((key) =>
-      ['action', 'requestHandle', 'decision'].includes(key),
+      ['action', 'requestHandle', 'decision', 'scope'].includes(key),
     ) &&
     identifier(value['requestHandle']) &&
-    (value['decision'] === 'allow' || value['decision'] === 'deny')
+    (value['decision'] === 'allow' || value['decision'] === 'deny') &&
+    (value['scope'] === undefined ||
+      value['scope'] === 'once' ||
+      (value['scope'] === 'always' && value['decision'] === 'allow'))
   )
     return value as SubagentsControlRequest;
   return undefined;
@@ -517,6 +546,13 @@ export function parseSubagentsControlResult(
       : undefined;
   if (value['type'] === 'outcome') {
     if (
+      (value['scope'] !== undefined &&
+        value['scope'] !== 'once' &&
+        value['scope'] !== 'always') ||
+      (value['message'] !== undefined && !text(value['message'], 1024))
+    )
+      return undefined;
+    if (
       (['stopping', 'stopped', 'already_ended'].includes(
         value['outcome'] as string,
       ) &&
@@ -534,6 +570,8 @@ export function parseSubagentsControlResult(
     !snapshot ||
     !integer(page['offset']) ||
     !integer(page['total']) ||
+    (page['filter'] !== undefined &&
+      !SUBAGENT_FILTERS.includes(page['filter'] as SubagentFilter)) ||
     page['offset'] > page['total'] ||
     snapshot.tasks.length > page['total'] - page['offset'] ||
     (page['selected'] !== undefined && !validTask(page['selected'])) ||

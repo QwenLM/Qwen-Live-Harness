@@ -142,6 +142,99 @@ async function fixture(
 }
 
 describe('standalone subagent management transport', () => {
+  it('rejects legacy persistent task votes and correlates once-only approval scopes', async () => {
+    const legacy = await fixture();
+    assert.deepEqual(
+      await legacy.connection.requestSubagents(
+        {
+          action: 'permission',
+          requestHandle: 'req_1',
+          decision: 'allow',
+          scope: 'always',
+        },
+        nonce,
+      ),
+      { type: 'error', code: 'permission_unavailable' },
+    );
+    assert.equal(legacy.requests.length, 0);
+    for (const [requested, returned, message, accepted] of [
+      ['once', 'once', undefined, true],
+      ['once', undefined, undefined, false],
+      ['once', 'always', 'An explanation must not broaden approval.', false],
+    ] as const) {
+      let body: unknown;
+      const outcome = {
+        type: 'outcome',
+        outcome: 'allowed',
+        requestHandle: 'req_1',
+        ...(returned ? { scope: returned } : {}),
+        ...(message ? { message } : {}),
+      };
+      const value = await fixture({
+        handleRequest: (request, response) => {
+          let data = '';
+          request.on('data', (chunk) => {
+            data += String(chunk);
+          });
+          request.on('end', () => {
+            body = JSON.parse(data);
+            response.writeHead(200).end(JSON.stringify(outcome));
+          });
+        },
+      });
+      const request = {
+        action: 'permission' as const,
+        requestHandle: 'req_1',
+        decision: 'allow' as const,
+        scope: requested,
+      };
+      assert.deepEqual(
+        await value.connection.requestSubagents(request, nonce),
+        accepted ? outcome : { type: 'error', code: 'action_failed' },
+      );
+      assert.deepEqual(body, request);
+    }
+  });
+
+  it('requires the returned page to match the requested filter, including legacy unfiltered replies', async () => {
+    for (const [requested, returned, accepted] of [
+      ['running', 'running', true],
+      ['completed', 'completed', true],
+      ['needsAttention', 'needsAttention', true],
+      ['running', undefined, false],
+      ['completed', 'running', false],
+      [undefined, 'completed', false],
+      ['all', undefined, true],
+    ] as const) {
+      let body: unknown;
+      const responsePage = {
+        ...page,
+        page: { ...page.page, ...(returned ? { filter: returned } : {}) },
+      };
+      const value = await fixture({
+        handleRequest: (request, response) => {
+          let data = '';
+          request.on('data', (chunk) => {
+            data += String(chunk);
+          });
+          request.on('end', () => {
+            body = JSON.parse(data);
+            response.writeHead(200).end(JSON.stringify(responsePage));
+          });
+        },
+      });
+      const request = {
+        action: 'list' as const,
+        ...(requested ? { filter: requested } : {}),
+      };
+      assert.deepEqual(
+        await value.connection.requestSubagents(request, nonce),
+        accepted ? responsePage : { type: 'error', code: 'action_failed' },
+      );
+      assert.deepEqual(body, request);
+    }
+  });
+
   it('uses nonce-authenticated daemon management while the call is idle', async () => {
     const value = await fixture();
     assert.equal(value.connection.getSnapshot().subagentsControlV1, true);
