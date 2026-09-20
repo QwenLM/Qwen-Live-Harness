@@ -885,6 +885,7 @@ describe('persistent Live orb and Settings', () => {
         'Video Source',
         'Display',
         'Capture Mode',
+        liveText('en', 'permissionMode.label'),
         'Language',
         'Appearance',
         'Color palette',

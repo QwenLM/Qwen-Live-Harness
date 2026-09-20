@@ -84,6 +84,8 @@ export class SettingsPanel {
   private openingConfig = false;
   private configError: unknown = '';
   private readonly language = document.createElement('select');
+  private readonly permissionMode = document.createElement('select');
+  private readonly permissionModeHint = document.createElement('p');
   private readonly systemTheme = button(
     'theme.system',
     () => void this.run(() => this.api.setTheme('system')),
@@ -242,6 +244,40 @@ export class SettingsPanel {
       if (next === 'en' || next === 'zh-CN')
         void this.run(() => this.api.setLanguage(next));
     });
+    const permissionModeField = field(
+      'permissionMode.label',
+      this.permissionMode,
+    );
+    permissionModeField.classList.add(
+      'settings-row',
+      'settings-permission-mode',
+    );
+    this.permissionModeHint.className = 'settings-hint';
+    permissionModeField.append(this.permissionModeHint);
+    for (const [mode, key] of [
+      ['ask', 'permissionMode.ask'],
+      ['allow-all', 'permissionMode.allowAll'],
+    ] as const) {
+      const option = uiText(document.createElement('option'), key);
+      option.value = mode;
+      this.permissionMode.append(option);
+    }
+    uiLabel(this.permissionMode, 'permissionMode.label');
+    this.permissionMode.setAttribute(
+      'aria-describedby',
+      'permission-mode-hint',
+    );
+    this.permissionModeHint.id = 'permission-mode-hint';
+    this.permissionMode.addEventListener('change', () => {
+      const next = this.permissionMode.value;
+      this.permissionMode.value = this.state?.permissionModeV1?.mode ?? 'ask';
+      if (
+        !this.permissionMode.disabled &&
+        (next === 'ask' || next === 'allow-all') &&
+        this.api.setPermissionMode
+      )
+        void this.run(() => this.api.setPermissionMode!(next));
+    });
     const appearance = field(
       'ui.appearance',
       this.systemTheme,
@@ -310,7 +346,13 @@ export class SettingsPanel {
       ['ui.visual', [source, this.displayField, capture]],
       [
         'ui.personalization',
-        [this.memory.element, languageField, appearance, palette],
+        [
+          this.memory.element,
+          permissionModeField,
+          languageField,
+          appearance,
+          palette,
+        ],
       ],
     ] as const) {
       const group = document.createElement('div');
@@ -409,6 +451,21 @@ export class SettingsPanel {
     const unavailable = state.connection !== 'ready';
     const language = state.language ?? 'en';
     localizeUi(this.element, language);
+    this.permissionMode.value = state.permissionModeV1?.mode ?? 'ask';
+    this.permissionMode.disabled =
+      this.busy ||
+      unavailable ||
+      !state.permissionModeV1 ||
+      !this.api.setPermissionMode ||
+      Boolean(state.quitState);
+    this.permissionModeHint.textContent = liveText(
+      language,
+      !state.permissionModeV1 || !this.api.setPermissionMode
+        ? 'permissionMode.unavailable'
+        : state.permissionModeV1.mode === 'allow-all'
+          ? 'permissionMode.allowAllHint'
+          : 'permissionMode.askHint',
+    );
     this.openConfig.disabled =
       this.openingConfig ||
       this.busy ||

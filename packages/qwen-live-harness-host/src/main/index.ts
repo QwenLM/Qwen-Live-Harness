@@ -591,6 +591,9 @@ function publicState(): HostPublicState {
       ? { visualSettingsError: connection.visualSettingsError }
       : {}),
     ...(connection.memory ? { memory: connection.memory } : {}),
+    ...(connection.permissionModeV1
+      ? { permissionModeV1: connection.permissionModeV1 }
+      : {}),
     ...(connection.subagentsV1 ? { subagentsV1: connection.subagentsV1 } : {}),
     live: startupMessage ? { ...status, message: startupMessage } : status,
     permissions: { ...permissions },
@@ -2070,6 +2073,21 @@ function registerIpc(): void {
     }
     language = value;
     publishState();
+  });
+  ipcMain.handle('live:set-permission-mode', async (event, value: unknown) => {
+    if (
+      !isTrustedSender(event) ||
+      !rendererEventsEnabled ||
+      (value !== 'ask' && value !== 'allow-all')
+    )
+      throw new Error(liveMessage('permissionMode.invalid'));
+    if (
+      quitState ||
+      connection.phase !== 'ready' ||
+      !connection.permissionModeV1
+    )
+      throw new Error(liveMessage('permissionMode.unavailable'));
+    await daemon.requestPermissionMode(value);
   });
   ipcMain.on('live:overlay-layout', (event, layout: unknown) => {
     if (

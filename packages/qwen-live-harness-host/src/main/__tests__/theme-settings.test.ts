@@ -134,6 +134,74 @@ function host(overrides: Partial<LiveHostApi> = {}) {
 }
 
 describe('Qwen Live Harness Host theme settings', () => {
+  it('offers global ask/allow-all modes but changes the selection only after a confirmed save', async () => {
+    let finish: () => void = () => {};
+    const calls: string[] = [];
+    const h = host({
+      setPermissionMode: (next) => {
+        calls.push(next);
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    h.update({ permissionModeV1: { mode: 'ask' } });
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const select = h.get<HTMLSelectElement>(
+      'select[data-live-label="permissionMode.label"]',
+    );
+    assert.equal(select.value, 'ask');
+    assert.equal(select.disabled, false);
+    assert.deepEqual(
+      [...select.options].map((option) => option.value),
+      ['ask', 'allow-all'],
+    );
+    select.value = 'allow-all';
+    select.dispatchEvent(new h.dom.window.Event('change'));
+    assert.equal(select.value, 'ask');
+    assert.equal(select.disabled, true);
+    assert.deepEqual(calls, ['allow-all']);
+    h.update({ permissionModeV1: { mode: 'allow-all' } });
+    finish();
+    await settled();
+    assert.equal(select.value, 'allow-all');
+    assert.equal(select.disabled, false);
+    h.update({ language: 'zh-CN' });
+    assert.equal(
+      select.options[1]!.textContent,
+      liveText('zh-CN', 'permissionMode.allowAll'),
+    );
+    assert.equal(
+      h.get('#permission-mode-hint').textContent,
+      liveText('zh-CN', 'permissionMode.allowAllHint'),
+    );
+  });
+  it('restores global permission selection after save failure and disables legacy or disconnected settings', async () => {
+    const h = host({
+      setPermissionMode: async () => {
+        throw new Error(liveMessage('permissionMode.saveFailed'));
+      },
+    });
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const select = h.get<HTMLSelectElement>(
+      'select[data-live-label="permissionMode.label"]',
+    );
+    assert.equal(select.value, 'ask');
+    assert.equal(select.disabled, true);
+    h.update({ permissionModeV1: { mode: 'ask' } });
+    select.value = 'allow-all';
+    select.dispatchEvent(new h.dom.window.Event('change'));
+    await settled();
+    assert.equal(select.value, 'ask');
+    assert.equal(select.disabled, false);
+    assert(
+      h.app.textContent?.includes(liveText('en', 'permissionMode.saveFailed')),
+    );
+    h.update({ connection: 'disconnected' });
+    assert.equal(select.disabled, true);
+  });
   it('offers seven named color choices with a visible selection indicator and bilingual labels', async () => {
     const h = host();
     h.get<HTMLButtonElement>('.settings-control').click();

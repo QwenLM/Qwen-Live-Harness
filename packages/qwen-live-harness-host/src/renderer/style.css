@@ -679,6 +679,22 @@ button[aria-pressed='true'] {
 .settings-row > .settings-hint {
   grid-column: 1 / -1;
 }
+.settings-permission-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+.settings-permission-mode > strong {
+  white-space: normal;
+}
+.settings-permission-mode > .settings-options {
+  padding: 0 8px;
+  border: 1px solid var(--live-control-border);
+  border-radius: var(--live-control-radius);
+  background: var(--live-control-bg);
+}
+.settings-permission-mode select {
+  min-height: 32px;
+  text-align: left;
+}
 .settings-appearance {
   display: grid;
   gap: 8px;

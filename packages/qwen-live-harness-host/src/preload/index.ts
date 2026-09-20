@@ -66,6 +66,7 @@ const api: LiveHostApi = {
   memoryAction: (action) =>
     ipcRenderer.invoke('live:memory-action', action) as Promise<MemoryState>,
   setLanguage: (language) => invoke('live:set-language', language),
+  setPermissionMode: (mode) => invoke('live:set-permission-mode', mode),
   setTheme: (theme) => invoke('live:set-theme', theme),
   setThemeColor: (color) => invoke('live:set-theme-color', color),
   setSettingsOpen: (open) => invoke('live:settings-open', open),
