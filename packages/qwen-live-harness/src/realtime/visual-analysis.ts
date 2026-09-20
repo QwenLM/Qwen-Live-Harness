@@ -24,6 +24,8 @@ const MAX_TEXT_PARTS = 64;
 const MAX_EVENT_IDS = 512;
 const TIMEOUT_MS = 25_000;
 const HANDSHAKE_TIMEOUT_MS = 8_000;
+const MAX_ATTEMPTS = 2;
+const RETRY_INSTRUCTIONS = `For this retry, answer in at most two short plain-text sentences, using only the broad, clearly visible evidence needed for the same question. Do not use Markdown, lists, headings, code blocks, tables, aligned columns, or runs of spaces. Do not transcribe file lists or lengthy screen text. Preserve uncertainty rather than filling gaps. Do not mention the retry or any previous partial output.`;
 const SILENT_SECOND = Buffer.alloc(
   QWEN_REALTIME_INPUT_SAMPLE_RATE * 2,
 ).toString('base64');
@@ -64,6 +66,86 @@ type VisualAnalysisErrorCode =
   | 'visual_analysis_failed'
   | 'visual_analysis_timeout'
   | 'visual_analysis_aborted';
+
+type RetryReason = 'provider_repeat' | 'network' | 'timeout';
+interface AttemptFailureMetadata {
+  errorCode: string;
+  providerSessionId?: string;
+  responseId?: string;
+  providerEventId?: string;
+}
+
+/** Internal opt-in only; malformed input/protocol/tool events never get this tag. */
+class RetryableVisualAnalysisError extends QwenRealtimeError {
+  constructor(
+    code: VisualAnalysisErrorCode,
+    readonly retryReason: RetryReason,
+    readonly metadata: AttemptFailureMetadata,
+  ) {
+    super(analysisError(code).message, code, true, { kind: 'transient' });
+  }
+}
+
+function attemptTimeout(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(value, TIMEOUT_MS)
+    : TIMEOUT_MS;
+}
+
+function networkErrorCode(error: unknown): string | undefined {
+  try {
+    if (!record(error)) return;
+    if (
+      error instanceof QwenRealtimeError &&
+      ['configuration', 'quota'].includes(error.kind)
+    )
+      return;
+    const explicitStatus = error['status'] ?? error['statusCode'];
+    if (
+      typeof explicitStatus === 'number' &&
+      explicitStatus >= 400 &&
+      explicitStatus < 500
+    )
+      return;
+    const code = error['code'];
+    if (
+      typeof code === 'string' &&
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'EAI_AGAIN',
+        'ENETUNREACH',
+        'EHOSTUNREACH',
+        'EPIPE',
+      ].includes(code)
+    )
+      return code;
+    if (typeof code === 'string' && /auth|token|cert|tls|invalid/iu.test(code))
+      return;
+    // ws emits this form for a failed HTTP upgrade. Never retry auth/4xx here.
+    const status =
+      typeof error['message'] === 'string'
+        ? /unexpected server response:\s*(5\d\d)\b/i.exec(error['message'])?.[1]
+        : undefined;
+    return status ? `http_${status}` : undefined;
+  } catch {
+    return;
+  }
+}
+
+function isRepeatError(value: unknown): boolean {
+  return (
+    record(value) &&
+    value['code'] === 'COMMON_ERROR' &&
+    value['message'] === 'model repeat output happened' &&
+    (value['type'] === undefined || value['type'] === 'server_error') &&
+    (value['status'] === undefined ||
+      (typeof value['status'] === 'number' &&
+        value['status'] >= 500 &&
+        value['status'] <= 599))
+  );
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -147,10 +229,58 @@ function finalText(response: Record<string, unknown>): string {
   return parts.join('\n').trim();
 }
 
-/** One snapshot, one disposable text-only inference, with no tool capability. */
-export function analyzeQwenRealtimeImage(
+/** One pinned snapshot; at most one retry, never another capture or tool action. */
+export async function analyzeQwenRealtimeImage(
   options: QwenRealtimeImageAnalysisOptions,
   deps: QwenRealtimeImageAnalysisDeps = {},
+): Promise<QwenRealtimeImageAnalysisResult> {
+  const pinned = {
+    ...options,
+    ...(options.debugContext
+      ? { debugContext: { ...options.debugContext } }
+      : {}),
+  };
+  const pinnedDeps = { ...deps };
+  const timeoutMs = attemptTimeout(pinnedDeps.timeoutMs);
+  const deadline = Date.now() + timeoutMs * MAX_ATTEMPTS;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (pinned.signal?.aborted) throw analysisError('visual_analysis_aborted');
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw analysisError('visual_analysis_timeout');
+    try {
+      return await analyzeImageAttempt(
+        pinned,
+        { ...pinnedDeps, timeoutMs: Math.min(timeoutMs, remaining) },
+        attempt,
+      );
+    } catch (error) {
+      if (pinned.signal?.aborted)
+        throw analysisError('visual_analysis_aborted');
+      if (
+        !(error instanceof RetryableVisualAnalysisError) ||
+        attempt === MAX_ATTEMPTS
+      )
+        throw error;
+      try {
+        pinned.onDebug?.('visual_analysis.retrying', {
+          attempt,
+          nextAttempt: attempt + 1,
+          reason: error.retryReason,
+          ...error.metadata,
+        });
+      } catch {
+        /* A diagnostic observer cannot change retry or cancellation. */
+      }
+    }
+  }
+  throw analysisError('visual_analysis_failed');
+}
+
+/** A disposable, tool-free attempt with its own socket, transcript and timer. */
+function analyzeImageAttempt(
+  options: QwenRealtimeImageAnalysisOptions,
+  deps: QwenRealtimeImageAnalysisDeps,
+  attempt: number,
 ): Promise<QwenRealtimeImageAnalysisResult> {
   return new Promise((resolve, reject) => {
     // Pin the validated request. Later caller/UI changes must not replace the
@@ -181,12 +311,7 @@ export function analyzeQwenRealtimeImage(
       reject(analysisError('visual_analysis_failed'));
       return;
     }
-    const timeoutMs =
-      typeof deps.timeoutMs === 'number' &&
-      Number.isFinite(deps.timeoutMs) &&
-      deps.timeoutMs > 0
-        ? Math.min(deps.timeoutMs, TIMEOUT_MS)
-        : TIMEOUT_MS;
+    const timeoutMs = attemptTimeout(deps.timeoutMs);
     const createWebSocket =
       deps.createWebSocket ??
       ((address, settings) =>
@@ -207,6 +332,7 @@ export function analyzeQwenRealtimeImage(
       typeof value === 'string' &&
       value.length > 0 &&
       value.length <= 256 &&
+      /^[A-Za-z0-9_.:-]+$/u.test(value) &&
       !/[\r\n\t]/u.test(value) &&
       !FORBIDDEN_CONTROLS.test(value) &&
       !(apiKey && value.includes(apiKey))
@@ -215,6 +341,7 @@ export function analyzeQwenRealtimeImage(
     const debug = (event: string, details: Record<string, unknown> = {}) => {
       try {
         onDebug?.(`visual_analysis.${event}`, {
+          attempt,
           ...(metadata(providerSessionId)
             ? { providerSessionId: metadata(providerSessionId) }
             : {}),
@@ -242,22 +369,50 @@ export function analyzeQwenRealtimeImage(
     const finish = (
       result?: QwenRealtimeImageAnalysisResult,
       code: VisualAnalysisErrorCode = 'visual_analysis_failed',
+      retryReason?: RetryReason,
+      failure: { errorCode?: string; providerEventId?: string } = {},
     ) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
+      const failureMetadata: AttemptFailureMetadata = {
+        errorCode: failure.errorCode ?? code,
+        ...(metadata(providerSessionId)
+          ? { providerSessionId: metadata(providerSessionId) }
+          : {}),
+        ...(metadata(responseId) ? { responseId: metadata(responseId) } : {}),
+        ...(metadata(failure.providerEventId)
+          ? { providerEventId: metadata(failure.providerEventId) }
+          : {}),
+      };
       debug(result ? 'completed' : 'failed', {
         durationMs: Date.now() - startedAt,
-        ...(result ? { answerChars: result.answer.length } : { code, phase }),
+        ...(result
+          ? { answerChars: result.answer.length }
+          : {
+              code,
+              phase,
+              ...failureMetadata,
+              retryable: retryReason !== undefined,
+            }),
       });
       closeSocket();
       if (result) resolve(result);
-      else reject(analysisError(code));
+      else
+        reject(
+          retryReason
+            ? new RetryableVisualAnalysisError(
+                code,
+                retryReason,
+                failureMetadata,
+              )
+            : analysisError(code),
+        );
     };
     const abort = () => finish(undefined, 'visual_analysis_aborted');
     const timer = setTimeout(
-      () => finish(undefined, 'visual_analysis_timeout'),
+      () => finish(undefined, 'visual_analysis_timeout', 'timeout'),
       timeoutMs,
     );
     signal?.addEventListener('abort', abort, { once: true });
@@ -275,8 +430,14 @@ export function analyzeQwenRealtimeImage(
         socket.send(JSON.stringify({ event_id: eventId, ...body }));
         debug('request_sent', { type: body['type'], eventId });
         return !settled;
-      } catch {
-        finish();
+      } catch (error) {
+        const errorCode = networkErrorCode(error);
+        finish(
+          undefined,
+          'visual_analysis_failed',
+          errorCode ? 'network' : undefined,
+          { errorCode },
+        );
         return false;
       }
     };
@@ -302,6 +463,7 @@ export function analyzeQwenRealtimeImage(
           debugArchive: options.debugArchive,
           info: {
             ...options.debugContext,
+            attempt,
             kind: 'visual',
             model: options.model,
             endpoint: options.endpoint,
@@ -309,9 +471,50 @@ export function analyzeQwenRealtimeImage(
           },
         },
       );
-      socket.on('error', () => finish());
-      socket.on('unexpected-response', () => finish());
-      socket.on('close', () => finish());
+      socket.on('error', (error) => {
+        const errorCode = networkErrorCode(error);
+        finish(
+          undefined,
+          'visual_analysis_failed',
+          errorCode ? 'network' : undefined,
+          { errorCode },
+        );
+      });
+      socket.on('unexpected-response', (_request, response) => {
+        const status = record(response) ? response['statusCode'] : undefined;
+        const retryable =
+          typeof status === 'number' &&
+          Number.isInteger(status) &&
+          status >= 500 &&
+          status <= 599;
+        finish(
+          undefined,
+          'visual_analysis_failed',
+          retryable ? 'network' : undefined,
+          {
+            errorCode:
+              typeof status === 'number' && Number.isInteger(status)
+                ? `http_${status}`
+                : undefined,
+          },
+        );
+      });
+      socket.on('close', (code) => {
+        const retryable =
+          typeof code === 'number' &&
+          [1001, 1006, 1011, 1012, 1013].includes(code);
+        finish(
+          undefined,
+          'visual_analysis_failed',
+          retryable ? 'network' : undefined,
+          {
+            errorCode:
+              typeof code === 'number' && Number.isInteger(code)
+                ? `socket_${code}`
+                : undefined,
+          },
+        );
+      });
       socket.on('message', (...args) => {
         if (settled) return;
         try {
@@ -333,7 +536,16 @@ export function analyzeQwenRealtimeImage(
             if (seenEventIds.size > MAX_EVENT_IDS)
               seenEventIds.delete(seenEventIds.values().next().value!);
           }
-          if (type === 'error') throw analysisError('visual_analysis_failed');
+          if (type === 'error') {
+            if (isRepeatError(value['error'])) {
+              finish(undefined, 'visual_analysis_failed', 'provider_repeat', {
+                errorCode: 'COMMON_ERROR',
+                providerEventId: eventId,
+              });
+              return;
+            }
+            throw analysisError('visual_analysis_failed');
+          }
           if (type === 'session.created') {
             if (phase !== 'connect') return;
             if (record(value['session']))
@@ -345,7 +557,10 @@ export function analyzeQwenRealtimeImage(
                 modalities: ['text'],
                 voice: 'Tina',
                 smooth_output: false,
-                instructions: VISUAL_ANALYSIS_INSTRUCTIONS,
+                instructions:
+                  attempt === 1
+                    ? VISUAL_ANALYSIS_INSTRUCTIONS
+                    : `${VISUAL_ANALYSIS_INSTRUCTIONS}\n${RETRY_INSTRUCTIONS}`,
                 tools: [],
                 tool_choice: 'none',
                 enable_search: false,
@@ -473,6 +688,22 @@ export function analyzeQwenRealtimeImage(
           if (type === 'response.done') {
             const response = value['response'];
             if (
+              record(response) &&
+              response['status'] === 'failed' &&
+              (response['output'] === undefined ||
+                (Array.isArray(response['output']) &&
+                  response['output'].length === 0)) &&
+              (isRepeatError(response['error']) ||
+                (record(response['status_details']) &&
+                  isRepeatError(response['status_details']['error'])))
+            ) {
+              finish(undefined, 'visual_analysis_failed', 'provider_repeat', {
+                errorCode: 'COMMON_ERROR',
+                providerEventId: eventId,
+              });
+              return;
+            }
+            if (
               !record(response) ||
               response['status'] !== 'completed' ||
               response['error'] != null ||
@@ -507,8 +738,14 @@ export function analyzeQwenRealtimeImage(
         if (settled) closeSocket();
         else abort();
       }
-    } catch {
-      finish();
+    } catch (error) {
+      const errorCode = networkErrorCode(error);
+      finish(
+        undefined,
+        'visual_analysis_failed',
+        errorCode ? 'network' : undefined,
+        { errorCode },
+      );
     }
   });
 }

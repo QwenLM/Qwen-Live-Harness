@@ -18,16 +18,66 @@ class Socket extends EventEmitter {
   bufferedAmount = 0;
   readonly sent: Record<string, unknown>[] = [];
 
+  private contextSequence = 0;
+  private latestContextItemId?: string;
+  private readonly responseParents: Array<string | undefined> = [];
   send(data: string | Uint8Array): void {
-    this.sent.push(JSON.parse(String(data)) as Record<string, unknown>);
+    const event = JSON.parse(String(data)) as Record<string, unknown>;
+    this.sent.push(event);
+    this.acknowledgeContext(event);
   }
 
+  /** Real providers echo user context and assign the item ID before inference. */
+  private acknowledgeContext(event: Record<string, unknown>): void {
+    if (event['type'] === 'response.create')
+      this.responseParents.push(this.latestContextItemId);
+    const item = event['item'] as Record<string, unknown> | undefined;
+    if (
+      event['type'] !== 'conversation.item.create' ||
+      item?.['type'] !== 'message' ||
+      item['role'] !== 'user'
+    )
+      return;
+    const previous = this.latestContextItemId;
+    const id = `context-${++this.contextSequence}`;
+    this.latestContextItemId = id;
+    this.message({
+      type: 'conversation.item.created',
+      previous_item_id: previous ?? null,
+      item: { ...item, id, status: 'completed' },
+    });
+  }
+  private outputAncestry(event: Record<string, unknown>): void {
+    if (event['type'] !== 'response.created') return;
+    const parent = this.responseParents.shift();
+    const response = event['response'] as Record<string, unknown> | undefined;
+    if (!parent || typeof response?.['id'] !== 'string') return;
+    const responseId = response['id'];
+    const item = {
+      id: `assistant-${responseId}`,
+      type: 'message',
+      role: 'assistant',
+      content: [],
+    };
+    this.message({
+      type: 'conversation.item.created',
+      previous_item_id: parent,
+      item,
+    });
+    this.message({
+      type: 'response.output_item.added',
+      response_id: responseId,
+      output_index: 0,
+      item,
+    });
+  }
   close(): void {
     this.readyState = 3;
   }
 
   message(event: Record<string, unknown>): void {
     this.emit('message', JSON.stringify(event), false);
+    this.outputAncestry(event);
   }
 
   acknowledge(callId: string): void {

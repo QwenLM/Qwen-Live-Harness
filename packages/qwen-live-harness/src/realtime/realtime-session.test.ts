@@ -81,6 +81,11 @@ class FakeSocket {
   readyState = this.OPEN;
   bufferedAmount = 0;
   autoAcknowledgeToolOutputs = true;
+  autoAcknowledgeNotifications = true;
+  autoNotificationAncestry = true;
+  private contextSequence = 0;
+  private latestContextItemId?: string;
+  private readonly requestedParents: Array<string | undefined> = [];
   readonly sent: Array<string | Uint8Array> = [];
   private readonly functionOutputs = new Map<
     string,
@@ -95,6 +100,24 @@ class FakeSocket {
     this.sent.push(data);
     const event = sentJsonEntry(data);
     const item = event['item'] as Record<string, unknown> | undefined;
+    if (event['type'] === 'response.create')
+      this.requestedParents.push(this.latestContextItemId);
+    if (
+      this.autoAcknowledgeNotifications &&
+      event['type'] === 'conversation.item.create' &&
+      item?.['type'] === 'message' &&
+      item['role'] === 'user'
+    ) {
+      const previous = this.latestContextItemId;
+      const id = `context-${++this.contextSequence}`;
+      this.latestContextItemId = id;
+      this.message({
+        type: 'conversation.item.created',
+        event_id: `ack-${id}`,
+        previous_item_id: previous ?? null,
+        item: { ...item, id, status: 'completed' },
+      });
+    }
     if (
       this.autoAcknowledgeToolOutputs &&
       event['type'] === 'conversation.item.create' &&
@@ -184,6 +207,36 @@ class FakeSocket {
       };
     }
     this.emit('message', JSON.stringify(body), false);
+    if (body['type'] === 'response.created') {
+      const parent = this.requestedParents.shift();
+      const response = body['response'] as Record<string, unknown> | undefined;
+      if (
+        this.autoNotificationAncestry &&
+        parent &&
+        typeof response?.['id'] === 'string'
+      ) {
+        const responseId = response['id'];
+        const item = {
+          id: `assistant-${responseId}`,
+          type: 'message',
+          role: 'assistant',
+          content: [],
+        };
+        this.message({
+          type: 'conversation.item.created',
+          event_id: `parent-${responseId}`,
+          previous_item_id: parent,
+          item,
+        });
+        this.message({
+          type: 'response.output_item.added',
+          event_id: `item-${responseId}`,
+          response_id: responseId,
+          output_index: 0,
+          item,
+        });
+      }
+    }
   }
 }
 
@@ -308,6 +361,782 @@ async function connect(
   sessionUpdated(socket, 'session-updated');
   return opening;
 }
+
+describe('notification acknowledgement and response ancestry', () => {
+  const evidence = JSON.stringify({
+    query: 'Current screen?',
+    answer: 'A terminal is visible.',
+  });
+  const audio = Buffer.from([1, 0, 2, 0]).toString('base64');
+  const callbacks = () => ({
+    onResponseCreated: vi.fn(),
+    onResponseDone: vi.fn(),
+    onOutputAudioDelta: vi.fn(),
+    onOutputAudioDone: vi.fn(),
+    onOutputTextDone: vi.fn(),
+    onError: vi.fn(),
+    onProtocolDebug: vi.fn(),
+    onFunctionCall: vi.fn(),
+    onDialogue: vi.fn(),
+  });
+  async function manual(deps: Omit<QwenRealtimeDeps, 'createWebSocket'> = {}) {
+    const socket = new FakeSocket();
+    socket.autoAcknowledgeNotifications = false;
+    socket.autoNotificationAncestry = false;
+    const observed = callbacks();
+    return {
+      socket,
+      observed,
+      session: (await connect(socket, observed, deps)) as QwenRealtimeSession &
+        Required<
+          Pick<
+            QwenRealtimeSession,
+            | 'canDeliverExternalAudio'
+            | 'respondToSearchResult'
+            | 'respondToVisualResult'
+          >
+        >,
+    };
+  }
+  function ack(
+    socket: FakeSocket,
+    id = 'server-notification',
+    previous: string | null = null,
+  ) {
+    const sent = socket.sent.map(sentJsonEntry).findLast((event) => {
+      const item = event['item'] as Record<string, unknown> | undefined;
+      return (
+        event['type'] === 'conversation.item.create' &&
+        item?.['role'] === 'user'
+      );
+    });
+    expect(sent).toBeDefined();
+    socket.message({
+      type: 'conversation.item.created',
+      previous_item_id: previous,
+      item: { ...(sent!['item'] as object), id, status: 'completed' },
+    });
+  }
+  function ancestry(
+    socket: FakeSocket,
+    id = 'assistant-item',
+    previous = 'server-notification',
+  ) {
+    socket.message({
+      type: 'conversation.item.created',
+      previous_item_id: previous,
+      item: { id, type: 'message', role: 'assistant', content: [] },
+    });
+  }
+  function output(
+    socket: FakeSocket,
+    responseId = 'notice-response',
+    id = 'assistant-item',
+  ) {
+    socket.message({
+      type: 'response.output_item.added',
+      response_id: responseId,
+      output_index: 0,
+      item: { id, type: 'message', role: 'assistant', content: [] },
+    });
+  }
+  function speak(
+    socket: FakeSocket,
+    responseId = 'notice-response',
+    itemId: string | null = 'assistant-item',
+  ) {
+    socket.message({
+      type: 'response.audio.delta',
+      response_id: responseId,
+      ...(itemId ? { item_id: itemId } : {}),
+      delta: audio,
+    });
+  }
+
+  it('waits for the exact echoed notification and adopts the provider-assigned ID', async () => {
+    const { socket, session, observed } = await manual();
+    try {
+      expect(session.respondToSearchResult(evidence)).toBe(true);
+      expect(sentTypes(socket)).toEqual([
+        'session.update',
+        'conversation.item.create',
+      ]);
+      expect(session.canDeliverExternalAudio()).toBe(false);
+      expect(session.respondToVisualResult(evidence)).toBe(false);
+      expect(session.respondToProactiveEvent('another event')).toBe(false);
+      const item = sentJson(socket, 1)['item'] as Record<string, unknown>;
+      socket.message({
+        type: 'conversation.item.created',
+        item: {
+          ...item,
+          id: 'wrong-text',
+          content: [{ type: 'input_text', text: 'not the notification' }],
+        },
+      });
+      socket.message({
+        type: 'conversation.item.created',
+        item: { ...item, id: 'unfinished', status: 'in_progress' },
+      });
+      expect(sentTypes(socket)).not.toContain('response.create');
+      ack(socket);
+      expect(sentTypes(socket)).toEqual([
+        'session.update',
+        'conversation.item.create',
+        'response.create',
+      ]);
+      responseCreated(socket, 'notice-response');
+      expect(observed.onResponseCreated).not.toHaveBeenCalled();
+      output(socket);
+      speak(socket);
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      ancestry(socket);
+      expect(observed.onResponseCreated).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          authority: 'search_result',
+          responseId: 'notice-response',
+        }),
+      );
+      expect(observed.onOutputAudioDelta).toHaveBeenCalledOnce();
+      responseDone(socket, 'notice-response');
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          authority: 'search_result',
+          status: 'completed',
+        }),
+      );
+      expect(observed.onError).not.toHaveBeenCalled();
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it('exposes one side-effect-free external speech gate through context, response and configuration settlement', async () => {
+    const { socket, session } = await manual();
+    try {
+      const gate = (expected: boolean) => {
+        const sent = socket.sent.length;
+        expect(session.canStartExternalSpeech?.()).toBe(expected);
+        expect(session.canDeliverExternalAudio()).toBe(expected);
+        expect(socket.sent).toHaveLength(sent);
+      };
+      gate(true);
+      session.respondToSearchResult(evidence);
+      gate(false);
+      ack(socket);
+      gate(false);
+      responseCreated(socket, 'notice-response');
+      gate(false);
+      ancestry(socket);
+      speak(socket);
+      gate(false);
+      responseDone(socket, 'notice-response');
+      gate(true);
+      session.configure({ tools: [] });
+      gate(false);
+      sessionUpdated(socket, 'new-tools-ready');
+      gate(true);
+      session.close({ discardPendingInput: true });
+      gate(false);
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it.each([
+    'audio-before-ancestry',
+    'ancestry-before-audio',
+    'done-inventory',
+    'idless-done',
+    'intervening-context',
+  ] as const)(
+    'uses alternative provider item evidence without requiring every optional event: %s',
+    async (mode) => {
+      const { socket, session, observed } = await manual();
+      try {
+        session.respondToVisualResult(evidence);
+        // Some services omit ACK status and return text rather than input_text.
+        const sent = sentJson(socket, 1)['item'] as Record<string, unknown>;
+        socket.message({
+          type: 'conversation.item.created',
+          item: {
+            ...sent,
+            id: 'server-notification',
+            content: (sent['content'] as Array<Record<string, unknown>>).map(
+              (part) => ({ ...part, type: 'text' }),
+            ),
+          },
+        });
+        responseCreated(socket, 'notice-response');
+        if (mode === 'audio-before-ancestry') speak(socket);
+        if (mode === 'intervening-context')
+          socket.message({
+            type: 'conversation.item.created',
+            previous_item_id: 'server-notification',
+            item: {
+              id: 'silent-context',
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'runtime context' }],
+            },
+          });
+        ancestry(
+          socket,
+          'assistant-item',
+          mode === 'intervening-context'
+            ? 'silent-context'
+            : 'server-notification',
+        );
+        if (mode !== 'audio-before-ancestry')
+          speak(
+            socket,
+            'notice-response',
+            mode === 'done-inventory' || mode === 'idless-done'
+              ? null
+              : 'assistant-item',
+          );
+        if (mode === 'done-inventory' || mode === 'idless-done')
+          expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+        socket.message({
+          type: 'response.done',
+          response: {
+            ...(mode === 'idless-done' ? {} : { id: 'notice-response' }),
+            status: 'completed',
+            output: [
+              {
+                id: 'assistant-item',
+                type: 'message',
+                role: 'assistant',
+                content: [],
+              },
+            ],
+          },
+        });
+        expect(observed.onOutputAudioDelta).toHaveBeenCalledOnce();
+        expect(observed.onResponseDone).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            authority: 'visual_result',
+            status: 'completed',
+          }),
+        );
+        expect(observed.onError).not.toHaveBeenCalled();
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
+
+  it('replays the recorded rejected-continuation/old-receipt sequence without speaking or delivering the wrong result', async () => {
+    const { socket, session, observed } = await manual();
+    socket.autoAcknowledgeToolOutputs = false;
+    try {
+      commitFinalInput(socket, 'user-input', 'Please inspect the screen.');
+      responseCreated(socket, 'tool-response');
+      functionCall(socket, 'tool-response', 'snapshot-call', 'appshot', '{}');
+      responseDone(socket, 'tool-response');
+      expect(
+        session.submitFunctionOutput(
+          { callEpoch: 7, callId: 'snapshot-call' },
+          '{"status":"accepted","taskId":"visual:fixture"}',
+          { taskAdmission: true },
+        ),
+      ).toBe(true);
+      socket.message({
+        type: 'conversation.item.created',
+        item: {
+          id: 'old-receipt',
+          type: 'function_call_output',
+          call_id: 'snapshot-call',
+          status: 'completed',
+        },
+      });
+      socket.message({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Input speech was not accepted by semantic turn detection',
+        },
+      });
+      observed.onResponseCreated.mockClear();
+      observed.onResponseDone.mockClear();
+      observed.onError.mockClear();
+      const createsBefore = sentTypes(socket).filter(
+        (type) => type === 'response.create',
+      ).length;
+      expect(session.respondToVisualResult(evidence)).toBe(true);
+      expect(
+        sentTypes(socket).filter((type) => type === 'response.create'),
+      ).toHaveLength(createsBefore);
+      ack(socket, 'server-notification', 'old-receipt');
+      responseCreated(socket, 'late-receipt-response');
+      output(socket, 'late-receipt-response', 'late-assistant');
+      ancestry(socket, 'late-assistant', 'old-receipt');
+      speak(socket, 'late-receipt-response', 'late-assistant');
+      socket.message({
+        type: 'response.audio_transcript.done',
+        response_id: 'late-receipt-response',
+        item_id: 'late-assistant',
+        transcript: 'I have captured it and will take a look.',
+      });
+      responseDone(socket, 'late-receipt-response');
+      expect(observed.onResponseCreated).not.toHaveBeenCalled();
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(observed.onOutputTextDone).not.toHaveBeenCalled();
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          authority: 'visual_result',
+          responseId: 'late-receipt-response',
+          status: 'failed',
+        }),
+      );
+      expect(observed.onProtocolDebug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'notification.response_unverified',
+          reason: 'older_item_ancestry',
+        }),
+      );
+      expect(session.canDeliverExternalAudio()).toBe(true);
+      expect(observed.onError).not.toHaveBeenCalled();
+      commitFinalInput(socket, 'new-input', 'Hello again.');
+      responseCreated(socket, 'new-direct');
+      speak(socket, 'new-direct');
+      responseDone(socket, 'new-direct');
+      expect(observed.onOutputAudioDelta).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ responseId: 'new-direct' }),
+      );
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it('drains an old response arriving before the notification ACK without borrowing result authority', async () => {
+    const { socket, session, observed } = await manual();
+    try {
+      session.respondToSearchResult(evidence);
+      responseCreated(socket, 'old-response');
+      speak(socket, 'old-response');
+      ack(socket);
+      expect(
+        sentTypes(socket).filter((type) => type === 'response.create'),
+      ).toHaveLength(0);
+      responseDone(socket, 'old-response');
+      await Promise.resolve();
+      expect(
+        sentTypes(socket).filter((type) => type === 'response.create'),
+      ).toHaveLength(1);
+      responseCreated(socket, 'notice-response');
+      ancestry(socket);
+      speak(socket);
+      responseDone(socket, 'notice-response');
+      expect(observed.onOutputAudioDelta).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ responseId: 'notice-response' }),
+      );
+      expect(observed.onResponseDone).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          authority: 'search_result',
+          status: 'completed',
+        }),
+      );
+      expect(observed.onError).not.toHaveBeenCalled();
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it('times out a missing item ACK without creating a response, then ignores the late ACK', async () => {
+    vi.useFakeTimers();
+    const { socket, session, observed } = await manual({
+      notificationItemAckTimeoutMs: 20,
+    });
+    try {
+      session.respondToSearchResult(evidence);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(sentTypes(socket)).not.toContain('response.create');
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          authority: 'search_result',
+          status: 'failed',
+        }),
+      );
+      ack(socket);
+      expect(sentTypes(socket)).not.toContain('response.create');
+      expect(session.canDeliverExternalAudio()).toBe(true);
+      expect(observed.onError).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(socket.OPEN);
+    } finally {
+      session.close({ discardPendingInput: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects repeated content while its timed-out earlier ACK is still ambiguous', async () => {
+    vi.useFakeTimers();
+    const { socket, session, observed } = await manual({
+      notificationItemAckTimeoutMs: 20,
+    });
+    try {
+      session.respondToSearchResult(evidence);
+      await vi.advanceTimersByTimeAsync(25);
+      const length = socket.sent.length;
+      expect(session.respondToSearchResult(evidence)).toBe(true);
+      await Promise.resolve();
+      expect(socket.sent).toHaveLength(length);
+      expect(observed.onResponseDone).toHaveBeenCalledTimes(2);
+      expect(observed.onProtocolDebug).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'ambiguous_repeated_content' }),
+      );
+      ack(socket);
+      expect(session.respondToSearchResult(evidence)).toBe(true);
+      expect(socket.sent).toHaveLength(length + 1);
+    } finally {
+      session.close({ discardPendingInput: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends an uncorrelated notification after a bounded grace without forwarding audio or closing the call', async () => {
+    vi.useFakeTimers();
+    const { socket, session, observed } = await manual({
+      notificationProvenanceTimeoutMs: 20,
+    });
+    try {
+      session.respondToSearchResult(evidence);
+      ack(socket);
+      responseCreated(socket, 'notice-response');
+      speak(socket, 'notice-response', null);
+      responseDone(socket, 'notice-response');
+      expect(observed.onResponseDone).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(observed.onResponseCreated).not.toHaveBeenCalled();
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          status: 'failed',
+          authority: 'search_result',
+        }),
+      );
+      expect(session.canDeliverExternalAudio()).toBe(true);
+      expect(observed.onError).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(socket.OPEN);
+    } finally {
+      session.close({ discardPendingInput: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reuse an old server item ACK for a later identical notification', async () => {
+    vi.useFakeTimers();
+    const { socket, session, observed } = await manual({
+      notificationItemAckTimeoutMs: 20,
+    });
+    try {
+      session.respondToSearchResult(evidence);
+      await vi.advanceTimersByTimeAsync(25);
+      ack(socket, 'old-server-item');
+      session.respondToSearchResult(evidence);
+      // The provider may repeat the old item under a different event_id.
+      ack(socket, 'old-server-item');
+      expect(sentTypes(socket)).not.toContain('response.create');
+      ack(socket, 'new-server-item');
+      expect(
+        sentTypes(socket).filter((type) => type === 'response.create'),
+      ).toHaveLength(1);
+      responseCreated(socket, 'notice-response');
+      ancestry(socket, 'assistant-item', 'new-server-item');
+      speak(socket);
+      responseDone(socket, 'notice-response');
+      expect(observed.onOutputAudioDelta).toHaveBeenCalledOnce();
+      expect(observed.onResponseDone).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'completed' }),
+      );
+    } finally {
+      session.close({ discardPendingInput: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not treat a newer user-media turn as a notification descendant even before VAD catches up', async () => {
+    const { socket, session, observed } = await manual();
+    try {
+      session.respondToSearchResult(evidence);
+      ack(socket);
+      responseCreated(socket, 'notice-response');
+      socket.message({
+        type: 'conversation.item.created',
+        previous_item_id: 'server-notification',
+        item: {
+          id: 'new-user-media',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_audio' }],
+        },
+      });
+      ancestry(socket, 'assistant-item', 'new-user-media');
+      speak(socket);
+      responseDone(socket, 'notice-response');
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status: 'failed' }),
+      );
+      expect(observed.onProtocolDebug).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'intervening_user_media' }),
+      );
+      expect(observed.onError).not.toHaveBeenCalled();
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it('releases a provenance timeout once even when the provider terminal event arrives much later', async () => {
+    vi.useFakeTimers();
+    const { socket, session, observed } = await manual({
+      notificationProvenanceTimeoutMs: 20,
+    });
+    try {
+      session.respondToSearchResult(evidence);
+      ack(socket);
+      responseCreated(socket, 'notice-response');
+      speak(socket);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(observed.onResponseDone).toHaveBeenCalledOnce();
+      ancestry(socket);
+      speak(socket);
+      responseDone(socket, 'notice-response');
+      expect(observed.onResponseDone).toHaveBeenCalledOnce();
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(session.canDeliverExternalAudio()).toBe(true);
+    } finally {
+      session.close({ discardPendingInput: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['ack', 'ancestry'] as const)(
+    'user speech cancels the pending %s stage and cannot unquarantine old audio',
+    async (stage) => {
+      const { socket, session, observed } = await manual();
+      try {
+        session.respondToSearchResult(evidence);
+        if (stage === 'ancestry') {
+          ack(socket);
+          responseCreated(socket, 'notice-response');
+          speak(socket);
+        }
+        socket.message({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'real-user',
+        });
+        if (stage === 'ack') ack(socket);
+        else {
+          ancestry(socket);
+          responseDone(socket, 'notice-response', 'cancelled');
+        }
+        commitFinalInput(socket, 'real-user', 'Please stop.');
+        await Promise.resolve();
+        responseCreated(socket, 'user-response');
+        speak(socket, 'user-response');
+        responseDone(socket, 'user-response');
+        expect(observed.onOutputAudioDelta).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ responseId: 'user-response' }),
+        );
+        expect(observed.onResponseDone).toHaveBeenCalledWith(
+          expect.objectContaining({
+            authority: 'search_result',
+            status: 'cancelled',
+          }),
+        );
+        expect(observed.onError).not.toHaveBeenCalled();
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
+
+  it('bounds unverified media and does not dispatch quarantined functions', async () => {
+    const { socket, session, observed } = await manual();
+    try {
+      session.respondToSearchResult(evidence);
+      ack(socket);
+      responseCreated(socket, 'notice-response');
+      const frame = Buffer.alloc(200 * 1024).toString('base64');
+      for (let i = 0; i < 5; i++)
+        socket.message({
+          type: 'response.audio.delta',
+          response_id: 'notice-response',
+          delta: frame,
+        });
+      functionCall(
+        socket,
+        'notice-response',
+        'injected-call',
+        'handoff',
+        '{"task":"must not run"}',
+      );
+      responseDone(socket, 'notice-response');
+      expect(observed.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(observed.onFunctionCall).not.toHaveBeenCalled();
+      expect(observed.onResponseDone).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status: 'failed' }),
+      );
+      expect(observed.onError).not.toHaveBeenCalled();
+      expect(observed.onProtocolDebug).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'quarantine_limit' }),
+      );
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it.each(['ack', 'response-create', 'ancestry'] as const)(
+    'a committed user turn without speech_started supersedes the %s notification stage',
+    async (stage) => {
+      const { socket, session, observed } = await manual();
+      try {
+        session.respondToSearchResult(evidence);
+        if (stage !== 'ack') ack(socket);
+        if (stage === 'ancestry') {
+          responseCreated(socket, 'notice-response');
+          speak(socket);
+        }
+        commitFinalInput(socket, 'no-start-user', 'Please stop.');
+        if (stage === 'ack') ack(socket);
+        else {
+          if (stage === 'response-create')
+            responseCreated(socket, 'notice-response');
+          ancestry(socket);
+          responseDone(socket, 'notice-response', 'cancelled');
+        }
+        await Promise.resolve();
+        responseCreated(socket, 'new-user-response');
+        speak(socket, 'new-user-response');
+        responseDone(socket, 'new-user-response');
+        expect(observed.onOutputAudioDelta).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ responseId: 'new-user-response' }),
+        );
+        expect(observed.onResponseDone).toHaveBeenCalledWith(
+          expect.objectContaining({
+            authority: 'search_result',
+            status: 'cancelled',
+          }),
+        );
+        expect(observed.onError).not.toHaveBeenCalled();
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
+});
+
+describe('recoverable image append diagnostics', () => {
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
+  const message = 'Error append image before append audio.';
+  it('records the exact ready-session error only in protocol logs and keeps media and later dialogue usable', async () => {
+    const socket = new FakeSocket();
+    const observed = {
+      onError: vi.fn(),
+      onClose: vi.fn(),
+      onRecoveryNeeded: vi.fn(),
+      onProtocolDebug: vi.fn(),
+      onOutputAudioDelta: vi.fn(),
+    };
+    const session = await connect(socket, observed);
+    try {
+      session.pushAudio(new Uint8Array([1, 0]));
+      session.pushImage(image);
+      const sentBeforeError = socket.sent.length;
+      socket.message({
+        type: 'error',
+        event_id: 'image-rejected-event',
+        error: { type: 'invalid_request_error', message },
+      });
+      expect(socket.sent).toHaveLength(sentBeforeError);
+      expect(observed.onError).not.toHaveBeenCalled();
+      expect(observed.onClose).not.toHaveBeenCalled();
+      expect(observed.onRecoveryNeeded).not.toHaveBeenCalled();
+      expect(observed.onProtocolDebug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'input_image_buffer.rejected',
+          code: 'image_audio_prerequisite',
+          eventId: 'image-rejected-event',
+          fatal: false,
+        }),
+      );
+      expect(session.pushAudio(new Uint8Array([2, 0]))).toBe(true);
+      expect(session.pushImage(image)).toBe(true);
+      commitFinalInput(socket, 'healthy-input', 'Continue please.');
+      responseCreated(socket, 'healthy-response');
+      socket.message({
+        type: 'response.audio.delta',
+        response_id: 'healthy-response',
+        delta: Buffer.from([1, 0]).toString('base64'),
+      });
+      responseDone(socket, 'healthy-response');
+      expect(observed.onOutputAudioDelta).toHaveBeenCalledOnce();
+      expect(socket.readyState).toBe(socket.OPEN);
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+  it('ignores a throwing diagnostic observer without surfacing a failure', async () => {
+    const socket = new FakeSocket();
+    const onError = vi.fn();
+    const session = await connect(socket, {
+      onError,
+      onProtocolDebug: () => {
+        throw new Error('diagnostic fixture');
+      },
+    });
+    try {
+      socket.message({
+        type: 'error',
+        error: { type: 'invalid_request_error', message },
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(session.pushAudio(new Uint8Array([1, 0]))).toBe(true);
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+  it('does not reinterpret a connection-setup failure as a ready-session image rejection', async () => {
+    const socket = new FakeSocket();
+    const opening = openQwenRealtimeSession(
+      {
+        endpoint: 'wss://fixture.example/realtime',
+        model: 'fixture',
+        callEpoch: 1,
+        instructions: 'Fixture',
+        tools: [],
+      },
+      {},
+      { createWebSocket: () => socket },
+    );
+    const rejected = expect(opening).rejects.toMatchObject({
+      fatal: true,
+      message,
+    });
+    socket.message({
+      type: 'error',
+      error: { type: 'invalid_request_error', message },
+    });
+    await rejected;
+    expect(socket.readyState).not.toBe(socket.OPEN);
+  });
+  it.each([
+    { type: 'invalid_request_error', message: 'Other protocol failure.' },
+    { type: 'invalid_request_error', message, status: 401 },
+    { type: 'server_error', message },
+    { type: 'invalid_request_error', code: 'quota_exceeded', message },
+  ])('does not swallow another provider error: %j', async (error) => {
+    const socket = new FakeSocket();
+    const onError = vi.fn();
+    const session = await connect(socket, { onError });
+    socket.message({ type: 'error', error });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ fatal: true }),
+    );
+    expect(socket.readyState).not.toBe(socket.OPEN);
+    session.close({ discardPendingInput: true });
+  });
+});
 
 describe('merged upstream response boundaries', () => {
   it('ignores an unowned idless completion while idle and accepts the next real user turn', async () => {
@@ -1859,7 +2688,10 @@ describe('realtime-session', () => {
     // have their own lifecycle trace and are tested separately below.
     const received = events.filter((event) => event['direction'] === 'in');
     expect(received.map((event) => event['eventId'])).toEqual([
+      'ack-context-1',
       'response-proactive-debug-created',
+      'parent-response-proactive-debug',
+      'item-response-proactive-debug',
       'cancel-before-vad',
       'vad-start-debug',
       'vad-stop-debug',
@@ -1867,13 +2699,17 @@ describe('realtime-session', () => {
       'committed-debug',
       'asr-debug',
       'response-direct-debug-created',
+      'parent-response-direct-debug',
+      'item-response-direct-debug',
       'response-direct-debug-done',
     ]);
-    expect(received[0]).toMatchObject({
+    const eventById = (id: string) =>
+      received.find((event) => event['eventId'] === id);
+    expect(eventById('response-proactive-debug-created')).toMatchObject({
       hasPendingResponseCreate: true,
       hasSentInputAudio: true,
     });
-    expect(received[1]).toMatchObject({
+    expect(eventById('cancel-before-vad')).toMatchObject({
       responseStatus: 'cancelled',
       statusType: 'cancelled',
       statusReason: 'turn_detected',
@@ -1881,18 +2717,18 @@ describe('realtime-session', () => {
       responseCancelled: false,
       speechInputInProgress: false,
     });
-    expect(received[2]).toMatchObject({
+    expect(eventById('vad-start-debug')).toMatchObject({
       pendingSpeechItems: 0,
       speechInputInProgress: false,
       speechCommitPending: false,
     });
-    expect(received[3]).toMatchObject({
+    expect(eventById('vad-stop-debug')).toMatchObject({
       pendingSpeechItems: 1,
       hasPendingSpeechItem: true,
       speechInputInProgress: true,
       speechCommitPending: true,
     });
-    expect(received[4]).toMatchObject({
+    expect(eventById('created-debug')).toMatchObject({
       itemType: 'message',
       role: 'user',
       contentKinds: ['input_audio'],
@@ -1901,13 +2737,13 @@ describe('realtime-session', () => {
       hasCommittedInputItem: false,
       speechInputInProgress: false,
     });
-    expect(received[5]).toMatchObject({
+    expect(eventById('committed-debug')).toMatchObject({
       pendingSpeechItems: 1,
       committedInputItems: 0,
       hasCommittedInputItem: false,
       speechCommitPending: true,
     });
-    expect(received[6]).toMatchObject({
+    expect(eventById('asr-debug')).toMatchObject({
       itemId: 'input-debug',
       committedInputItems: 1,
       completedInputTranscripts: 0,
@@ -2024,7 +2860,7 @@ describe('realtime-session', () => {
     expect(serialized).not.toContain('status_details');
     expect(serialized).not.toContain('error');
     const received = events.filter((event) => event['direction'] === 'in');
-    expect(received).toHaveLength(5);
+    expect(received).toHaveLength(8);
     expect(events[0]).toMatchObject({
       eventId: 'safe-event',
       itemId: 'safe-item',
@@ -2036,7 +2872,7 @@ describe('realtime-session', () => {
     expect(events[1]?.['itemType']).toBeUndefined();
     expect(events[2]?.['eventId']).toBeUndefined();
     expect(events[2]?.['itemId']).toBeUndefined();
-    expect(received[4]?.['statusReason']).toBeUndefined();
+    expect(received.at(-1)?.['statusReason']).toBeUndefined();
     expect(onError).not.toHaveBeenCalled();
     session.close({ discardPendingInput: true });
   });

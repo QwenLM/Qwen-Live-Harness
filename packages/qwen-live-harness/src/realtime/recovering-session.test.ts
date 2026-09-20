@@ -17,14 +17,64 @@ class Socket extends EventEmitter {
   readyState = 1;
   readonly sent: Record<string, unknown>[] = [];
   private readonly tools = new Map<string, Record<string, unknown>[]>();
+  private contextSequence = 0;
+  private latestContextItemId?: string;
+  private readonly responseParents: Array<string | undefined> = [];
   send(data: string | Uint8Array): void {
-    this.sent.push(JSON.parse(String(data)) as Record<string, unknown>);
+    const event = JSON.parse(String(data)) as Record<string, unknown>;
+    this.sent.push(event);
+    this.acknowledgeContext(event);
+  }
+  /** Real providers echo user context and assign the item ID before inference. */
+  private acknowledgeContext(event: Record<string, unknown>): void {
+    if (event['type'] === 'response.create')
+      this.responseParents.push(this.latestContextItemId);
+    const item = event['item'] as Record<string, unknown> | undefined;
+    if (
+      event['type'] !== 'conversation.item.create' ||
+      item?.['type'] !== 'message' ||
+      item['role'] !== 'user'
+    )
+      return;
+    const previous = this.latestContextItemId;
+    const id = `context-${++this.contextSequence}`;
+    this.latestContextItemId = id;
+    this.message({
+      type: 'conversation.item.created',
+      previous_item_id: previous ?? null,
+      item: { ...item, id, status: 'completed' },
+    });
+  }
+  private outputAncestry(event: Record<string, unknown>): void {
+    if (event['type'] !== 'response.created') return;
+    const parent = this.responseParents.shift();
+    const response = event['response'] as Record<string, unknown> | undefined;
+    if (!parent || typeof response?.['id'] !== 'string') return;
+    const responseId = response['id'];
+    const item = {
+      id: `assistant-${responseId}`,
+      type: 'message',
+      role: 'assistant',
+      content: [],
+    };
+    this.message({
+      type: 'conversation.item.created',
+      previous_item_id: parent,
+      item,
+    });
+    this.message({
+      type: 'response.output_item.added',
+      response_id: responseId,
+      output_index: 0,
+      item,
+    });
   }
   close(): void {
     this.readyState = 3;
   }
   message(message: Record<string, unknown>): void {
     this.emit('message', JSON.stringify(message), false);
+    this.outputAncestry(message);
   }
   ready(): void {
     this.message({ type: 'session.created', session: { id: 'session-test' } });
@@ -119,6 +169,25 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}) {
 }
 
 describe('response state recovery', () => {
+  it('keeps independent speech blocked while a notification or replacement transport is unsettled', async () => {
+    const r = await rig();
+    expect(r.session.canStartExternalSpeech?.()).toBe(true);
+    r.session.askPermission?.('A command requires approval.');
+    expect(r.session.canStartExternalSpeech?.()).toBe(false);
+    r.sockets[0]!.user('latest-user', 'Stop that task.');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(r.sockets).toHaveLength(2);
+    expect(r.session.canStartExternalSpeech?.()).toBe(false);
+    r.sockets[1]!.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.session.canStartExternalSpeech?.()).toBe(false);
+    r.sockets[1]!.response('restored-user');
+    r.sockets[1]!.done('restored-user');
+    expect(r.session.canStartExternalSpeech?.()).toBe(true);
+    r.session.close({ discardPendingInput: true });
+    expect(r.session.canStartExternalSpeech?.()).toBe(false);
+  });
+
   it.each(['respondToSearchResult', 'speakPeerReport'] as const)(
     'retains explicit notification language through the recovering %s facade',
     async (route) => {

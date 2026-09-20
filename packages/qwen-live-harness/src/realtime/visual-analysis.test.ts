@@ -6,9 +6,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SocketLike } from './socket.js';
+import type { DebugArchive } from '../log/debug-archive.js';
 import { QWEN_REALTIME_LIMITS } from './realtime-session.js';
 import {
   analyzeQwenRealtimeImage,
+  type QwenRealtimeImageAnalysisDeps,
   type QwenRealtimeImageAnalysisOptions,
 } from './visual-analysis.js';
 
@@ -89,8 +91,13 @@ function fixture(
   timeoutMs?: number,
 ) {
   const socket = new VisualSocket();
+  const sockets: VisualSocket[] = [];
   const debug = vi.fn();
-  const createWebSocket = vi.fn(() => socket);
+  const createWebSocket = vi.fn(() => {
+    const next = sockets.length === 0 ? socket : new VisualSocket();
+    sockets.push(next);
+    return next;
+  });
   const promise = analyzeQwenRealtimeImage(
     { ...OPTIONS, onDebug: debug, ...overrides },
     {
@@ -98,7 +105,7 @@ function fixture(
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     },
   );
-  return { socket, debug, createWebSocket, promise };
+  return { socket, sockets, debug, createWebSocket, promise };
 }
 
 function responseOutput(text: string): Record<string, unknown> {
@@ -546,19 +553,23 @@ describe('isolated Qwen Realtime snapshot analysis', () => {
     expect(socket.sent).toEqual([]);
   });
 
-  it('times out waiting for the real commit ACK, closes once, and clears its timer', async () => {
+  it('bounds both commit-ACK attempts, closes each socket once, and clears all timers', async () => {
     vi.useFakeTimers();
-    const { socket, promise } = fixture({}, 100);
+    const { socket, sockets, promise, createWebSocket } = fixture({}, 100);
     const rejected = expect(promise).rejects.toMatchObject({
       code: 'visual_analysis_timeout',
     });
     socket.configure();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(createWebSocket).toHaveBeenCalledTimes(2);
+    sockets[1]!.configure();
     await vi.advanceTimersByTimeAsync(100);
     await rejected;
     expect(
       socket.sent.some((event) => event['type'] === 'response.create'),
     ).toBe(false);
     expect(socket.close).toHaveBeenCalledOnce();
+    expect(sockets[1]!.close).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -675,5 +686,397 @@ describe('isolated Qwen Realtime snapshot analysis', () => {
         code: 'visual_analysis_failed',
       });
     }
+  });
+});
+
+describe('one bounded visual-analysis retry', () => {
+  const repeat = {
+    type: 'error',
+    event_id: 'event-repeat',
+    error: { code: 'COMMON_ERROR', message: 'model repeat output happened' },
+  };
+  const nextAttempt = async () => {
+    for (let index = 0; index < 5; index++) await Promise.resolve();
+  };
+
+  it('retries 314 partial deltas plus COMMON_ERROR once with the same image and a short-answer policy', async () => {
+    const options = { ...OPTIONS, debugContext: { taskId: 'visual:fixture' } };
+    const sockets: VisualSocket[] = [];
+    const debug = vi.fn();
+    const factory = vi.fn(() => {
+      const socket = new VisualSocket();
+      sockets.push(socket);
+      return socket;
+    });
+    const promise = analyzeQwenRealtimeImage(
+      { ...options, onDebug: debug },
+      { createWebSocket: factory },
+    );
+    const first = sockets[0]!;
+    first.configure();
+    first.committed();
+    first.message({
+      type: 'response.created',
+      response: { id: 'response-first' },
+    });
+    for (let index = 0; index < 314; index++)
+      first.message({
+        type: 'response.text.delta',
+        response_id: 'response-first',
+        event_id: `delta-${index}`,
+        delta: index === 0 ? 'PRIVATE_PARTIAL_NOT_CONFIRMED' : 'part ',
+      });
+    first.message(repeat);
+    await nextAttempt();
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(first.close).toHaveBeenCalledOnce();
+    const second = sockets[1]!;
+    second.configure();
+    second.committed();
+    second.message({
+      type: 'response.created',
+      response: { id: 'response-second' },
+    });
+    second.done({
+      id: 'response-second',
+      ...responseOutput('A terminal is visible.'),
+    });
+    await expect(promise).resolves.toEqual({
+      answer: 'A terminal is visible.',
+      providerSessionId: 'sess_visual',
+      responseId: 'response-second',
+    });
+    const policies = sockets.map((socket) =>
+      String(
+        (socket.sent[0]!['session'] as Record<string, unknown>)['instructions'],
+      ),
+    );
+    expect(policies[0]).not.toContain('For this retry');
+    expect(policies[1]).toContain('at most two short plain-text sentences');
+    expect(policies[1]).toContain('Do not use Markdown');
+    for (const socket of sockets) {
+      expect(
+        socket.sent
+          .filter((event) => event['type'] === 'input_image_buffer.append')
+          .map((event) => event['image']),
+      ).toEqual([IMAGE, IMAGE]);
+      expect(
+        socket.sent.filter((event) => event['type'] === 'response.create'),
+      ).toEqual([
+        expect.objectContaining({
+          response: {
+            instructions: JSON.stringify({
+              source: OPTIONS.source,
+              question: OPTIONS.question.trim(),
+            }),
+          },
+        }),
+      ]);
+      expect(socket.sent[0]).toMatchObject({
+        session: {
+          tools: [],
+          tool_choice: 'none',
+          enable_search: false,
+          smooth_output: false,
+        },
+      });
+      expect(JSON.stringify(socket.sent)).not.toContain(
+        'PRIVATE_PARTIAL_NOT_CONFIRMED',
+      );
+      expect(socket.close).toHaveBeenCalledOnce();
+    }
+    expect(debug).toHaveBeenCalledWith(
+      'visual_analysis.retrying',
+      expect.objectContaining({
+        attempt: 1,
+        nextAttempt: 2,
+        reason: 'provider_repeat',
+        errorCode: 'COMMON_ERROR',
+        providerSessionId: 'sess_visual',
+        responseId: 'response-first',
+        providerEventId: 'event-repeat',
+      }),
+    );
+    expect(debug).toHaveBeenCalledWith(
+      'visual_analysis.failed',
+      expect.objectContaining({
+        attempt: 1,
+        errorCode: 'COMMON_ERROR',
+        retryable: true,
+      }),
+    );
+    expect(debug).toHaveBeenCalledWith(
+      'visual_analysis.completed',
+      expect.objectContaining({ attempt: 2, responseId: 'response-second' }),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain(OPTIONS.apiKey);
+    expect(JSON.stringify(debug.mock.calls)).not.toContain(
+      'PRIVATE_PARTIAL_NOT_CONFIRMED',
+    );
+  });
+
+  it('pins caller options and creates separate attempt archive connections without carrying failed history', async () => {
+    const options = {
+      ...OPTIONS,
+      debugContext: { attempt: 999, taskId: 'visual:fixture' },
+    };
+    const beginConnection = vi.fn((_info: Record<string, unknown>) => ({
+      record: vi.fn(),
+      close: vi.fn(),
+    }));
+    const sockets: VisualSocket[] = [];
+    const createWebSocket = vi.fn((_url: string, _settings: unknown) => {
+      const socket = new VisualSocket();
+      sockets.push(socket);
+      return socket;
+    });
+    const deps: QwenRealtimeImageAnalysisDeps = { createWebSocket };
+    const request = {
+      ...options,
+      debugArchive: { beginConnection } as unknown as DebugArchive,
+    };
+    const promise = analyzeQwenRealtimeImage(request, deps);
+    sockets[0]!.ready();
+    request.image = 'invalid changed image';
+    request.question = 'changed task';
+    request.source = 'camera';
+    request.model = 'changed-model';
+    request.apiKey = 'changed-key';
+    request.debugContext.taskId = 'changed-task';
+    deps.createWebSocket = vi.fn(() => {
+      throw new Error('Changed dependency must not execute');
+    });
+    sockets[0]!.message(repeat);
+    await nextAttempt();
+    const second = sockets[1]!;
+    second.ready();
+    second.done(responseOutput('Same original image.'));
+    await promise;
+    expect(createWebSocket).toHaveBeenCalledTimes(2);
+    expect(createWebSocket.mock.calls.map(([url]) => url)).toEqual([
+      expect.stringContaining(OPTIONS.model),
+      expect.stringContaining(OPTIONS.model),
+    ]);
+    expect(createWebSocket.mock.calls[1]?.[1]).toMatchObject({
+      headers: { Authorization: `Bearer ${OPTIONS.apiKey}` },
+    });
+    expect(beginConnection.mock.calls.map(([info]) => info)).toMatchObject([
+      { kind: 'visual', attempt: 1, taskId: 'visual:fixture' },
+      { kind: 'visual', attempt: 2, taskId: 'visual:fixture' },
+    ]);
+    expect(
+      second.sent
+        .filter((event) => event['type'] === 'input_image_buffer.append')
+        .map((event) => event['image']),
+    ).toEqual([IMAGE, IMAGE]);
+    expect(second.sent.at(-1)).toMatchObject({
+      response: {
+        instructions: JSON.stringify({
+          source: 'screen',
+          question: OPTIONS.question.trim(),
+        }),
+      },
+    });
+  });
+
+  it('caps repeated provider failures at two sockets and one retry notification', async () => {
+    const { socket, sockets, promise, createWebSocket, debug } = fixture();
+    const rejected = expect(promise).rejects.toMatchObject({
+      code: 'visual_analysis_failed',
+    });
+    socket.ready();
+    socket.message(repeat);
+    await nextAttempt();
+    sockets[1]!.ready();
+    sockets[1]!.message(repeat);
+    await rejected;
+    await nextAttempt();
+    expect(createWebSocket).toHaveBeenCalledTimes(2);
+    expect(
+      debug.mock.calls.filter(
+        ([event]) => event === 'visual_analysis.retrying',
+      ),
+    ).toHaveLength(1);
+    expect(
+      debug.mock.calls.filter(([event]) => event === 'visual_analysis.failed'),
+    ).toHaveLength(2);
+    for (const attempt of sockets) expect(attempt.close).toHaveBeenCalledOnce();
+  });
+
+  it('retries a failed response with an explicit repeat error but no output inventory', async () => {
+    const { socket, sockets, promise } = fixture();
+    socket.ready();
+    socket.done({ status: 'failed', status_details: { error: repeat.error } });
+    await nextAttempt();
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.ready();
+    sockets[1]!.done(responseOutput('Recovered.'));
+    await expect(promise).resolves.toMatchObject({ answer: 'Recovered.' });
+  });
+
+  it('retries a timed-out attempt once and preserves the total two-attempt deadline', async () => {
+    vi.useFakeTimers();
+    const { socket, sockets, promise, debug } = fixture({}, 100);
+    const rejected = expect(promise).rejects.toMatchObject({
+      code: 'visual_analysis_timeout',
+    });
+    socket.configure();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets).toHaveLength(2);
+    expect(debug).toHaveBeenCalledWith(
+      'visual_analysis.retrying',
+      expect.objectContaining({
+        errorCode: 'visual_analysis_timeout',
+        reason: 'timeout',
+      }),
+    );
+    sockets[1]!.ready();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(sockets[1]!.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it.each(['reset', 'close', 'http-503', 'upgrade-error'] as const)(
+    'recovers only a recognized transient transport failure: %s',
+    async (failure) => {
+      const { socket, sockets, promise, createWebSocket } = fixture();
+      if (failure === 'reset')
+        socket.emit(
+          'error',
+          Object.assign(new Error(`PRIVATE ${OPTIONS.apiKey}`), {
+            code: 'ECONNRESET',
+          }),
+        );
+      if (failure === 'close') socket.emit('close', 1006, Buffer.alloc(0));
+      if (failure === 'http-503')
+        socket.emit('unexpected-response', {}, { statusCode: 503 });
+      if (failure === 'upgrade-error')
+        socket.emit('error', new Error('Unexpected server response: 503'));
+      await nextAttempt();
+      expect(createWebSocket).toHaveBeenCalledTimes(2);
+      sockets[1]!.ready();
+      sockets[1]!.done(responseOutput('Recovered transport.'));
+      await expect(promise).resolves.toMatchObject({
+        answer: 'Recovered transport.',
+      });
+    },
+  );
+
+  it.each([401, 403, 404, 429])(
+    'does not retry an HTTP %s upgrade failure',
+    async (statusCode) => {
+      const { socket, promise, createWebSocket } = fixture();
+      socket.emit('unexpected-response', {}, { statusCode });
+      await expect(promise).rejects.toMatchObject({
+        code: 'visual_analysis_failed',
+      });
+      expect(createWebSocket).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { code: 'InvalidApiKey', message: 'Invalid API key' },
+    { code: 'COMMON_ERROR', message: 'Another provider failure' },
+    { ...repeat.error, status: 401 },
+    { ...repeat.error, type: 'authentication_error' },
+  ])(
+    'does not widen retry classification to authentication or other provider errors: %j',
+    async (error) => {
+      const { socket, promise, createWebSocket } = fixture();
+      socket.ready();
+      socket.message({ type: 'error', error });
+      await expect(promise).rejects.toMatchObject({
+        code: 'visual_analysis_failed',
+      });
+      expect(createWebSocket).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['empty', 'cancelled', 'tools', 'oversized', 'bad-json'] as const)(
+    'does not retry unsafe or unsupported output: %s',
+    async (kind) => {
+      const { socket, promise, createWebSocket } = fixture();
+      socket.ready();
+      if (kind === 'empty') socket.done();
+      if (kind === 'cancelled')
+        socket.done({ status: 'cancelled', error: repeat.error });
+      if (kind === 'tools')
+        socket.done({
+          status: 'failed',
+          error: repeat.error,
+          output: [{ type: 'function_call', name: 'handoff', arguments: '{}' }],
+        });
+      if (kind === 'oversized') socket.text('x'.repeat(16001));
+      if (kind === 'bad-json') socket.emit('message', 'not-json', false);
+      await expect(promise).rejects.toMatchObject({
+        code: 'visual_analysis_failed',
+      });
+      socket.message(repeat);
+      await nextAttempt();
+      expect(createWebSocket).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('honors cancellation in the retry notification before a replacement socket can open', async () => {
+    const controller = new AbortController();
+    const { socket, promise, createWebSocket } = fixture({
+      signal: controller.signal,
+      onDebug: (event) => {
+        if (event === 'visual_analysis.retrying') controller.abort();
+      },
+    });
+    socket.ready();
+    socket.message(repeat);
+    await expect(promise).rejects.toMatchObject({
+      code: 'visual_analysis_aborted',
+    });
+    expect(createWebSocket).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+
+  it('aborts the replacement socket and ignores stale first-attempt success or duplicate errors', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const { socket, sockets, promise, createWebSocket } = fixture({
+      signal: controller.signal,
+    });
+    socket.ready();
+    socket.message(repeat);
+    await nextAttempt();
+    socket.done(responseOutput('Stale first result'));
+    socket.message(repeat);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.ready();
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({
+      code: 'visual_analysis_aborted',
+    });
+    sockets[1]!.done(responseOutput('Late second result'));
+    await vi.advanceTimersByTimeAsync(100000);
+    expect(createWebSocket).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    for (const attempt of sockets) {
+      expect(attempt.close).toHaveBeenCalledOnce();
+      expect(attempt.terminate).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('does not let a failing diagnostic callback cancel an otherwise eligible retry', async () => {
+    const { socket, sockets, promise } = fixture({
+      onDebug: () => {
+        throw new Error('Diagnostic fixture');
+      },
+    });
+    socket.ready();
+    socket.message(repeat);
+    await nextAttempt();
+    sockets[1]!.ready();
+    sockets[1]!.done(responseOutput('Visible evidence.'));
+    await expect(promise).resolves.toMatchObject({
+      answer: 'Visible evidence.',
+    });
   });
 });

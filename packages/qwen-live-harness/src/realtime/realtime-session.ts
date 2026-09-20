@@ -16,7 +16,7 @@
  * `onFunctionCall`, expecting a prompt receipt-style output for each call via
  * `submitFunctionOutput`.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { SocketLike } from './socket.js';
 import type { DebugArchive } from '../log/debug-archive.js';
@@ -62,6 +62,9 @@ const NON_DIRECT_RESPONSE_CREATED_TIMEOUT_MS = 15_000;
 const NON_DIRECT_RESPONSE_DONE_TIMEOUT_MS = 120_000;
 const CANCELLATION_GRACE_MS = 2_000;
 const FUNCTION_OUTPUT_ACK_TIMEOUT_MS = 10_000;
+const NOTIFICATION_ITEM_ACK_TIMEOUT_MS = 10_000;
+const NOTIFICATION_PROVENANCE_TIMEOUT_MS = 5_000;
+const MAX_NOTIFICATION_QUARANTINE_BYTES = 1024 * 1024;
 const MUTED_INPUT_HEARTBEAT_INTERVAL_MS = 30_000;
 const MUTED_INPUT_HEARTBEAT_DURATION_MS = 1_000;
 const MUTED_INPUT_HEARTBEAT_AUDIO = Buffer.alloc(
@@ -152,6 +155,8 @@ export interface QwenRealtimeDeps {
   responseDoneTimeoutMs?: number;
   cancellationGraceMs?: number;
   functionOutputAckTimeoutMs?: number;
+  notificationItemAckTimeoutMs?: number;
+  notificationProvenanceTimeoutMs?: number;
 }
 
 export interface RealtimeEventContext {
@@ -356,6 +361,8 @@ export interface QwenRealtimeSession {
   readonly closed: Promise<RealtimeCloseInfo>;
   /** True only while no input, response or tool receipt is awaiting settlement. */
   canDeliverExternalAudio?: () => boolean;
+  /** Read-only admission check for an independent result/permission narrator. */
+  canStartExternalSpeech?: () => boolean;
   flushDialogue: () => void;
   configure: (update: { tools: readonly RealtimeToolDefinition[] }) => boolean;
   pushAudio: (pcm16: Uint8Array) => boolean;
@@ -526,6 +533,19 @@ interface ResponseCreateRequest {
   suppressAudio?: boolean;
   silentReceiptDrain?: boolean;
   admissionReceipts?: ReadonlyMap<string, AdmissionReceipt>;
+  /** Provider-assigned user item, acknowledged by its exact echoed contents. */
+  notificationItemId?: string;
+}
+
+interface NotificationResponse {
+  request: ResponseCreateRequest;
+  created: ProviderMessage;
+  firstOutputItemId?: string;
+  state: 'pending' | 'verified' | 'rejected';
+  queued: Array<{ message: ProviderMessage; type: string }>;
+  queuedBytes: number;
+  timer?: ReturnType<typeof setTimeout>;
+  failureReported?: boolean;
 }
 
 interface AdmissionReceipt {
@@ -839,6 +859,22 @@ export function openQwenRealtimeSession(
     let lastCompletedResponseId: string | undefined;
     let activeAudioResponseId: string | undefined;
     let pendingResponseCreate: ResponseCreateRequest | undefined;
+    let pendingNotificationItem:
+      | {
+          request: ResponseCreateRequest;
+          text: string;
+          afterItemOrder: number;
+          timer?: ReturnType<typeof setTimeout>;
+        }
+      | undefined;
+    const retiredNotificationTexts = new Set<string>();
+    const notificationResponses = new Map<string, NotificationResponse>();
+    const conversationItems = new Map<
+      string,
+      { previous?: string | null; order: number; userMedia?: boolean }
+    >();
+    let conversationItemOrder = 0;
+    let hasNotificationHistory = false;
     let responseCreateQueue: ResponseCreateRequest[] = [];
     let speechGeneration = 0;
     let speechGenerationAdvancedForInput = false;
@@ -1026,6 +1062,9 @@ export function openQwenRealtimeSession(
             : {}),
           activeResponseId: identifier(activeResponseId),
           pendingRequestId: identifier(pendingResponseCreate?.requestId),
+          pendingNotificationRequestId: identifier(
+            pendingNotificationItem?.request.requestId,
+          ),
           pendingAuthority: pendingResponseCreate?.authority,
           activeResponseAuthority,
           responseCancelled:
@@ -1154,6 +1193,14 @@ export function openQwenRealtimeSession(
       audioSuppressedResponses.clear();
       silentReceiptDrains.clear();
       responseAdmissionReceipts.clear();
+      if (pendingNotificationItem?.timer)
+        clearTimeout(pendingNotificationItem.timer);
+      pendingNotificationItem = undefined;
+      for (const response of notificationResponses.values()) {
+        if (response.timer) clearTimeout(response.timer);
+      }
+      notificationResponses.clear();
+      retiredNotificationTexts.clear();
     };
 
     const removeAbortListener = () => {
@@ -1435,6 +1482,7 @@ export function openQwenRealtimeSession(
         !ready ||
         activeResponseId ||
         pendingResponseCreate ||
+        pendingNotificationItem ||
         responseCreatedInProgress
       )
         return true;
@@ -1502,6 +1550,14 @@ export function openQwenRealtimeSession(
       }
       cancelledResponseIds.add(responseId);
       cancelledResponseReasons.set(responseId, reason);
+      const notification = notificationResponses.get(responseId);
+      if (notification) {
+        if (notification.timer) clearTimeout(notification.timer);
+        notification.timer = undefined;
+        notification.state = 'rejected';
+        notification.queued = [];
+        notification.queuedBytes = 0;
+      }
       for (const [callId, call] of pendingCalls) {
         if (
           call.responseId === responseId &&
@@ -1704,6 +1760,143 @@ export function openQwenRealtimeSession(
       responseCreateQueue.push(request);
     };
 
+    const notificationDiagnostic = (
+      type: string,
+      request: ResponseCreateRequest,
+      details: Record<string, unknown> = {},
+    ): void => {
+      try {
+        callbacks.onProtocolDebug?.({
+          type,
+          ...eventContext(),
+          requestId: request.requestId,
+          authority: request.authority,
+          notificationItemId: request.notificationItemId,
+          ...details,
+        });
+      } catch {
+        // Correlation failures are diagnostics, not fatal provider failures.
+      }
+    };
+
+    const finishNotificationAdmission = (
+      request: ResponseCreateRequest,
+      reason: 'ack_timeout' | 'user_interrupted' | 'ambiguous_repeated_content',
+    ): void => {
+      if (terminal || closedByClient) return;
+      notificationDiagnostic('notification.admission_failed', request, {
+        reason,
+      });
+      callback(() =>
+        callbacks.onResponseDone?.({
+          ...eventContext(),
+          responseId: `unacknowledged-${request.requestId}`,
+          authority: request.authority,
+          status: reason === 'user_interrupted' ? 'cancelled' : 'failed',
+          ...(reason === 'user_interrupted'
+            ? { cancellationReason: 'user_interrupted' as const }
+            : {}),
+        }),
+      );
+    };
+
+    const retireNotificationItem = (
+      reason: 'ack_timeout' | 'user_interrupted',
+    ): void => {
+      const pending = pendingNotificationItem;
+      if (!pending) return;
+      pendingNotificationItem = undefined;
+      if (pending.timer) clearTimeout(pending.timer);
+      // A late echoed ACK must not authorize another identical notification.
+      retiredNotificationTexts.add(
+        createHash('sha256').update(pending.text).digest('hex'),
+      );
+      finishNotificationAdmission(pending.request, reason);
+      queueMicrotask(flushResponseCreate);
+    };
+
+    const sendNotificationItem = (request: ResponseCreateRequest): boolean => {
+      const text = responseMessage(request);
+      // Bound tombstones without forgetting an ambiguous, still-unacknowledged
+      // duplicate. New calls get a fresh transport and correlation state.
+      if (
+        retiredNotificationTexts.has(
+          createHash('sha256').update(text).digest('hex'),
+        ) ||
+        retiredNotificationTexts.size >= 64
+      ) {
+        queueMicrotask(() =>
+          finishNotificationAdmission(request, 'ambiguous_repeated_content'),
+        );
+        return true;
+      }
+      const pending: NonNullable<typeof pendingNotificationItem> = {
+        request,
+        text,
+        afterItemOrder: conversationItemOrder,
+      };
+      pendingNotificationItem = pending;
+      hasNotificationHistory = true;
+      if (!sendBackendConversationItem(text, '')) {
+        if (pendingNotificationItem === pending)
+          pendingNotificationItem = undefined;
+        return false;
+      }
+      if (pendingNotificationItem !== pending || terminal || closedByClient)
+        return true;
+      pending.timer = setTimeout(() => {
+        if (pendingNotificationItem === pending)
+          retireNotificationItem('ack_timeout');
+      }, deps.notificationItemAckTimeoutMs ?? NOTIFICATION_ITEM_ACK_TIMEOUT_MS);
+      pending.timer.unref?.();
+      return true;
+    };
+
+    const acknowledgeNotificationItem = (
+      item: Record<string, unknown>,
+    ): void => {
+      if (
+        item['type'] !== 'message' ||
+        item['role'] !== 'user' ||
+        !Array.isArray(item['content'])
+      )
+        return;
+      // Do not match a text prefix, client-supplied ID, or another user item.
+      // The service may replace client IDs but echoes notification text.
+      const parts = item['content'];
+      if (
+        parts.length !== 1 ||
+        !isRecord(parts[0]) ||
+        !['input_text', 'text'].includes(String(parts[0]['type'])) ||
+        typeof parts[0]['text'] !== 'string'
+      )
+        return;
+      const text = parts[0]['text'];
+      if (
+        retiredNotificationTexts.delete(
+          createHash('sha256').update(text).digest('hex'),
+        )
+      )
+        return;
+      const pending = pendingNotificationItem;
+      const itemId = identifier(item['id']);
+      if (
+        !pending ||
+        !itemId ||
+        (conversationItems.get(itemId)?.order ?? 0) <= pending.afterItemOrder ||
+        text !== pending.text ||
+        (item['status'] !== undefined && item['status'] !== 'completed')
+      )
+        return;
+      pendingNotificationItem = undefined;
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.request.notificationItemId = itemId;
+      notificationDiagnostic('notification.item_acknowledged', pending.request);
+      if (activeResponseId || pendingResponseCreate)
+        enqueueResponseCreate(pending.request);
+      else sendResponseCreate(pending.request);
+    };
+
     const sendResponseCreate = (request: ResponseCreateRequest): boolean => {
       if (request.speechGeneration !== speechGeneration) {
         if (request.authority !== 'tool_continuation') return true;
@@ -1732,12 +1925,12 @@ export function openQwenRealtimeSession(
         enqueueResponseCreate(request);
         return true;
       }
-      if (
-        request.speechMessage !== undefined &&
-        !sendBackendConversationItem(responseMessage(request), '')
-      ) {
-        return false;
+      if (pendingNotificationItem) {
+        enqueueResponseCreate(request);
+        return true;
       }
+      if (request.speechMessage !== undefined && !request.notificationItemId)
+        return sendNotificationItem(request);
       pendingResponseCreate = request;
       request.eventId = randomUUID();
       if (
@@ -1787,6 +1980,7 @@ export function openQwenRealtimeSession(
           configurationUpdatesPending > 0 ||
           pendingFunctionOutputs.size > 0 ||
           pendingResponseCreate !== undefined ||
+          pendingNotificationItem !== undefined ||
           activeResponseId !== undefined ||
           toolContinuationStates.size > 0 ||
           responseCreateQueue.length > 0)
@@ -1864,6 +2058,7 @@ export function openQwenRealtimeSession(
       };
       if (
         pendingResponseCreate ||
+        pendingNotificationItem ||
         activeResponseId ||
         responseCreateQueue.some(
           (queued) => queued.authority === 'tool_continuation',
@@ -1878,7 +2073,11 @@ export function openQwenRealtimeSession(
     };
 
     const flushResponseCreate = (): void => {
-      if (pendingResponseCreate || activeResponseId) {
+      if (
+        pendingResponseCreate ||
+        pendingNotificationItem ||
+        activeResponseId
+      ) {
         return;
       }
       if (!flushConfiguration()) return;
@@ -2301,16 +2500,22 @@ export function openQwenRealtimeSession(
       }
       lastCompletedResponseId = responseId;
       cancelledResponseIds.delete(responseId);
-      callback(() =>
-        callbacks.onResponseDone?.({
-          ...eventContext(),
-          responseId,
-          ...(responseInputItemId ? { inputItemId: responseInputItemId } : {}),
-          status: 'cancelled',
-          authority,
-          ...(cancellationReason ? { cancellationReason } : {}),
-        }),
-      );
+      const notificationFailureReported =
+        notificationResponses.get(responseId)?.failureReported;
+      disposeNotificationResponse(responseId);
+      if (!notificationFailureReported)
+        callback(() =>
+          callbacks.onResponseDone?.({
+            ...eventContext(),
+            responseId,
+            ...(responseInputItemId
+              ? { inputItemId: responseInputItemId }
+              : {}),
+            status: 'cancelled',
+            authority,
+            ...(cancellationReason ? { cancellationReason } : {}),
+          }),
+        );
       cancelledResponseReasons.delete(responseId);
       responseAuthorities.delete(responseId);
       responseToolCapabilities.delete(responseId);
@@ -2406,6 +2611,38 @@ export function openQwenRealtimeSession(
       lastCompletedResponseId = undefined;
       committedInputItemIds.add(itemId);
       recoveryInput.committed(itemId);
+      // A committed real utterance can arrive without speech_started. It still
+      // supersedes a notification; missing VAD metadata must not release old audio.
+      retireNotificationItem('user_interrupted');
+      if (
+        pendingResponseCreate?.notificationItemId &&
+        !pendingResponseCreate.cancelled
+      ) {
+        pendingResponseCreate.cancelled = true;
+        pendingResponseCreate.cancellationReason = 'user_interrupted';
+        clearResponseCreatedTimer();
+        armCancellationGrace(
+          pendingResponseCreate.authority,
+          `unacknowledged-${pendingResponseCreate.requestId}`,
+          pendingResponseCreate,
+        );
+      }
+      if (
+        activeResponseId &&
+        notificationResponses.has(activeResponseId) &&
+        !cancelledResponseIds.has(activeResponseId)
+      ) {
+        const interrupted = activeResponseId;
+        callback(() =>
+          callbacks.onBargeIn?.({
+            ...eventContext(message),
+            responseId: interrupted,
+          }),
+        );
+        markResponseCancelled(interrupted, true, 'user_interrupted');
+        sendJson({ type: 'response.cancel' });
+        armCancellationGrace(activeResponseAuthority ?? 'direct', interrupted);
+      }
       if (
         activeDirectResponse &&
         activeResponseId &&
@@ -2753,25 +2990,29 @@ export function openQwenRealtimeSession(
       }
     };
 
+    const canStartExternalSpeech = (): boolean =>
+      ready &&
+      !terminal &&
+      !closedByClient &&
+      !speechInputInProgress &&
+      !speechCommitPending &&
+      !directResponsePending &&
+      !responseCreatedInProgress &&
+      !pendingResponseCreate &&
+      !pendingNotificationItem &&
+      !activeResponseId &&
+      !configurationDirty &&
+      configurationUpdatesPending === 0 &&
+      pendingCalls.size === 0 &&
+      pendingFunctionOutputs.size === 0 &&
+      toolContinuationStates.size === 0 &&
+      responseCreateQueue.length === 0;
+
     const session: QwenRealtimeSession = {
       callEpoch: config.callEpoch,
       closed,
-      canDeliverExternalAudio: () =>
-        ready &&
-        !terminal &&
-        !closedByClient &&
-        !speechInputInProgress &&
-        !speechCommitPending &&
-        !directResponsePending &&
-        !responseCreatedInProgress &&
-        !pendingResponseCreate &&
-        !activeResponseId &&
-        !configurationDirty &&
-        configurationUpdatesPending === 0 &&
-        pendingCalls.size === 0 &&
-        pendingFunctionOutputs.size === 0 &&
-        toolContinuationStates.size === 0 &&
-        responseCreateQueue.length === 0,
+      canDeliverExternalAudio: canStartExternalSpeech,
+      canStartExternalSpeech,
       flushDialogue: () => {
         if (activeResponseId) collectDialogueResponse(activeResponseId, true);
       },
@@ -3097,6 +3338,7 @@ export function openQwenRealtimeSession(
           responseCreatedInProgress ||
           directResponsePending ||
           pendingResponseCreate !== undefined ||
+          pendingNotificationItem !== undefined ||
           activeResponseId !== undefined ||
           toolContinuationStates.size > 0 ||
           responseCreateQueue.length > 0
@@ -3138,6 +3380,7 @@ export function openQwenRealtimeSession(
           speechCommitPending ||
           directResponsePending ||
           pendingResponseCreate !== undefined ||
+          pendingNotificationItem !== undefined ||
           activeResponseId !== undefined ||
           toolContinuationStates.size > 0 ||
           responseCreateQueue.length > 0
@@ -3215,64 +3458,188 @@ export function openQwenRealtimeSession(
       });
     };
 
-    ws.on('message', (...args: unknown[]) => {
-      if (terminal || closedByClient) return;
-      if (args[1] === true) {
-        protocolError(
-          'Realtime provider sent an unexpected binary message.',
-          'unexpected_binary_message',
-        );
-        return;
-      }
-      const raw = String(args[0]);
+    const disposeNotificationResponse = (responseId: string): void => {
+      const notification = notificationResponses.get(responseId);
+      if (notification?.timer) clearTimeout(notification.timer);
+      notificationResponses.delete(responseId);
+    };
+
+    const rejectNotificationResponse = (
+      responseId: string,
+      reason: string,
+    ): void => {
+      const notification = notificationResponses.get(responseId);
+      if (!notification || notification.state === 'rejected') return;
+      if (notification.timer) clearTimeout(notification.timer);
+      notification.timer = undefined;
+      notification.state = 'rejected';
+      const done = notification.queued.find(
+        (entry) => entry.type === 'response.done',
+      );
+      notification.queued = [];
+      notification.queuedBytes = 0;
+      notificationDiagnostic(
+        'notification.response_unverified',
+        notification.request,
+        {
+          responseId,
+          firstOutputItemId: notification.firstOutputItemId,
+          reason,
+        },
+      );
+      // Release the caller's delivery queue, but keep the server response fenced
+      // until its terminal event. Never guess that a different task was delivered.
+      notification.failureReported = true;
+      callback(() =>
+        callbacks.onResponseDone?.({
+          ...eventContext(),
+          responseId,
+          authority: notification.request.authority,
+          status: 'failed',
+        }),
+      );
+      if (done) processProviderMessage(done.message, done.type, true);
+    };
+
+    const verifyNotificationResponse = (responseId: string): void => {
+      const notification = notificationResponses.get(responseId);
       if (
-        Buffer.byteLength(raw) > QWEN_REALTIME_LIMITS.maxIncomingMessageBytes
-      ) {
-        protocolError(
-          'Realtime provider message exceeded the allowed size.',
-          'message_too_large',
-        );
+        !notification ||
+        notification.state !== 'pending' ||
+        !notification.firstOutputItemId
+      )
         return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        protocolError(
-          'Realtime provider sent invalid JSON.',
-          'invalid_provider_message',
-        );
-        return;
-      }
-      if (!isRecord(parsed)) {
-        protocolError(
-          'Realtime provider message must be an object.',
-          'invalid_provider_message',
-        );
-        return;
-      }
-      const message = parsed as ProviderMessage;
-      const type = optionalString(message.type);
-      if (!type) {
-        protocolError(
-          'Realtime provider message omitted its type.',
-          'invalid_provider_message',
-        );
-        return;
-      }
-      const eventId = optionalString(message.event_id);
-      if (eventId) {
-        if (recentEventIds.has(eventId)) {
-          ignoreEvent(message, type, 'duplicate_event');
+      const expected = notification.request.notificationItemId!;
+      const expectedOrder = conversationItems.get(expected)?.order;
+      let itemId: string | null | undefined = notification.firstOutputItemId;
+      const visited = new Set<string>();
+      while (itemId !== expected) {
+        if (itemId === null || (itemId && visited.has(itemId))) {
+          rejectNotificationResponse(responseId, 'different_ancestry');
           return;
         }
-        recentEventIds.add(eventId);
-        if (recentEventIds.size > MAX_RECENT_EVENT_IDS) {
-          const oldest = recentEventIds.values().next().value;
-          if (typeof oldest === 'string') recentEventIds.delete(oldest);
+        if (!itemId) return;
+        visited.add(itemId);
+        if (visited.size > 32) {
+          rejectNotificationResponse(responseId, 'ancestry_limit');
+          return;
+        }
+        const item = conversationItems.get(itemId);
+        if (!item) return;
+        if (item.userMedia) {
+          rejectNotificationResponse(responseId, 'intervening_user_media');
+          return;
+        }
+        if (expectedOrder !== undefined && item.order < expectedOrder) {
+          rejectNotificationResponse(responseId, 'older_item_ancestry');
+          return;
+        }
+        itemId = item.previous;
+      }
+      notification.state = 'verified';
+      if (notification.timer) clearTimeout(notification.timer);
+      notification.timer = undefined;
+      notificationDiagnostic(
+        'notification.response_verified',
+        notification.request,
+        {
+          responseId,
+          firstOutputItemId: notification.firstOutputItemId,
+        },
+      );
+      const response = isRecord(notification.created['response'])
+        ? notification.created['response']
+        : undefined;
+      if (
+        !callback(() =>
+          callbacks.onResponseCreated?.({
+            ...eventContext(notification.created),
+            responseId,
+            authority: notification.request.authority,
+            status: optionalString(response?.['status']),
+          }),
+        )
+      )
+        return;
+      const queued = notification.queued;
+      notification.queued = [];
+      notification.queuedBytes = 0;
+      for (const entry of queued) {
+        if (
+          terminal ||
+          closedByClient ||
+          activeResponseId !== responseId ||
+          cancelledResponseIds.has(responseId)
+        )
+          break;
+        processProviderMessage(entry.message, entry.type, true);
+      }
+    };
+
+    const observeNotificationProvenance = (
+      message: ProviderMessage,
+      type: string,
+    ): void => {
+      const item = isRecord(message['item']) ? message['item'] : undefined;
+      if (type === 'conversation.item.created' && item) {
+        const itemId = identifier(item['id']);
+        if (itemId) {
+          const previous =
+            message['previous_item_id'] === null
+              ? null
+              : identifier(message['previous_item_id']);
+          const existing = conversationItems.get(itemId);
+          conversationItems.set(itemId, {
+            ...existing,
+            order: existing?.order ?? ++conversationItemOrder,
+            ...(previous !== undefined ? { previous } : {}),
+            ...(item['role'] === 'user' &&
+            Array.isArray(item['content']) &&
+            item['content'].some(
+              (part) =>
+                isRecord(part) &&
+                ['input_audio', 'input_image'].includes(String(part['type'])),
+            )
+              ? { userMedia: true }
+              : {}),
+          });
+          while (conversationItems.size > MAX_RECENT_EVENT_IDS)
+            conversationItems.delete(conversationItems.keys().next().value!);
+          for (const responseId of notificationResponses.keys())
+            verifyNotificationResponse(responseId);
         }
       }
+      const responseId =
+        readResponseId(message, type === 'response.done') ??
+        readResponseId(message) ??
+        (type === 'response.done' ? activeResponseId : undefined);
+      if (!responseId) return;
+      const notification = notificationResponses.get(responseId);
+      if (!notification || notification.state !== 'pending') return;
+      let itemId = identifier(item?.['id'] ?? message['item_id']);
+      if (type === 'response.done') {
+        const response = isRecord(message['response'])
+          ? message['response']
+          : undefined;
+        const first = Array.isArray(response?.['output'])
+          ? response['output'][0]
+          : undefined;
+        itemId = isRecord(first) ? identifier(first['id']) : itemId;
+      }
+      if (
+        itemId &&
+        (message['output_index'] === undefined || message['output_index'] === 0)
+      )
+        notification.firstOutputItemId ??= itemId;
+      verifyNotificationResponse(responseId);
+    };
 
+    const processProviderMessage = (
+      message: ProviderMessage,
+      type: string,
+      replayed = false,
+    ): void => {
+      if (terminal || closedByClient) return;
       if (type === 'session.created' || type === 'session.updated') {
         const providerSession = isRecord(message['session'])
           ? message['session']
@@ -3282,7 +3649,38 @@ export function openQwenRealtimeSession(
         providerSessionId =
           identifier(providerSession?.['id']) ?? providerSessionId;
       }
-      protocolDebug(message, type);
+      if (!replayed) protocolDebug(message, type);
+      if (!replayed) observeNotificationProvenance(message, type);
+      const outputResponseId =
+        readResponseId(message, type === 'response.done') ??
+        readResponseId(message) ??
+        (type === 'response.done' ? activeResponseId : undefined);
+      const notification = outputResponseId
+        ? notificationResponses.get(outputResponseId)
+        : undefined;
+      if (
+        !replayed &&
+        notification &&
+        type.startsWith('response.') &&
+        type !== 'response.created'
+      ) {
+        if (notification.state === 'pending') {
+          const bytes = Buffer.byteLength(JSON.stringify(message));
+          if (
+            notification.queuedBytes + bytes >
+            MAX_NOTIFICATION_QUARANTINE_BYTES
+          ) {
+            rejectNotificationResponse(outputResponseId!, 'quarantine_limit');
+            if (type !== 'response.done') return;
+          } else {
+            notification.queuedBytes += bytes;
+            notification.queued.push({ message, type });
+            return;
+          }
+        }
+        if (notification.state === 'rejected' && type !== 'response.done')
+          return;
+      }
       switch (type) {
         case 'session.created': {
           sendSessionUpdate();
@@ -3349,6 +3747,7 @@ export function openQwenRealtimeSession(
             speechGeneration += 1;
             speechGenerationAdvancedForInput = true;
           }
+          retireNotificationItem('user_interrupted');
           const pendingReceiptContinuations: ResponseCreateRequest[] = [];
           const pendingNotifications: ResponseCreateRequest[] = [];
           for (const request of responseCreateQueue) {
@@ -3459,6 +3858,7 @@ export function openQwenRealtimeSession(
         }
         case 'conversation.item.created': {
           const item = isRecord(message['item']) ? message['item'] : undefined;
+          if (item) acknowledgeNotificationItem(item);
           if (item?.['type'] === 'function_call_output') {
             const callId = optionalString(item['call_id']);
             const pending = callId
@@ -3637,7 +4037,35 @@ export function openQwenRealtimeSession(
           }
           responseCreatedInProgress = true;
           try {
-            const responseRequest = pendingResponseCreate;
+            let responseRequest = pendingResponseCreate;
+            if (
+              !responseRequest &&
+              (pendingNotificationItem || hasNotificationHistory) &&
+              ![...committedInputItemIds].some(
+                (id) => !consumedInputItemIds.has(id),
+              ) &&
+              !(
+                activeResponseId &&
+                responseToolCapabilities.get(activeResponseId) === 'direct'
+              )
+            ) {
+              // An unsolicited late receipt cannot borrow a newly queued result
+              // or become an audible direct answer without a real user turn.
+              responseRequest = {
+                requestId: randomUUID(),
+                authority: 'tool_continuation',
+                speechGeneration,
+                cancelled: false,
+                toolCapability: 'none',
+                suppressAudio: true,
+                silentReceiptDrain: true,
+              };
+              notificationDiagnostic(
+                'notification.unowned_response_drained',
+                responseRequest,
+                { responseId },
+              );
+            }
             let splitResponseInputItemId: string | undefined;
             let splitDialogueText: string | undefined;
             let splitSuppressAudio = false;
@@ -3799,17 +4227,34 @@ export function openQwenRealtimeSession(
             const response = isRecord(message['response'])
               ? message['response']
               : undefined;
-            callback(() =>
-              callbacks.onResponseCreated?.({
-                ...eventContext(message),
-                responseId,
-                ...(responseInputItemId
-                  ? { inputItemId: responseInputItemId }
-                  : {}),
-                authority: responseAuthority,
-                status: optionalString(response?.['status']),
-              }),
-            );
+            if (responseRequest?.notificationItemId) {
+              const pending: NotificationResponse = {
+                request: responseRequest,
+                created: message,
+                state: 'pending',
+                queued: [],
+                queuedBytes: 0,
+              };
+              notificationResponses.set(responseId, pending);
+              pending.timer = setTimeout(
+                () =>
+                  rejectNotificationResponse(responseId, 'ancestry_timeout'),
+                deps.notificationProvenanceTimeoutMs ??
+                  NOTIFICATION_PROVENANCE_TIMEOUT_MS,
+              );
+              pending.timer.unref?.();
+            } else
+              callback(() =>
+                callbacks.onResponseCreated?.({
+                  ...eventContext(message),
+                  responseId,
+                  ...(responseInputItemId
+                    ? { inputItemId: responseInputItemId }
+                    : {}),
+                  authority: responseAuthority,
+                  status: optionalString(response?.['status']),
+                }),
+              );
             break;
           } finally {
             responseCreatedInProgress = false;
@@ -4197,18 +4642,22 @@ export function openQwenRealtimeSession(
               activeAudioResponseId = undefined;
             }
             lastCompletedResponseId = responseId;
-            callback(() =>
-              callbacks.onResponseDone?.({
-                ...eventContext(message),
-                responseId,
-                ...(responseInputItemId
-                  ? { inputItemId: responseInputItemId }
-                  : {}),
-                status: 'cancelled',
-                authority,
-                ...(cancellationReason ? { cancellationReason } : {}),
-              }),
-            );
+            const notificationFailureReported =
+              notificationResponses.get(responseId)?.failureReported;
+            disposeNotificationResponse(responseId);
+            if (!notificationFailureReported)
+              callback(() =>
+                callbacks.onResponseDone?.({
+                  ...eventContext(message),
+                  responseId,
+                  ...(responseInputItemId
+                    ? { inputItemId: responseInputItemId }
+                    : {}),
+                  status: 'cancelled',
+                  authority,
+                  ...(cancellationReason ? { cancellationReason } : {}),
+                }),
+              );
             cancelledResponseReasons.delete(responseId);
             queueMicrotask(flushResponseCreate);
             responseAuthorities.delete(responseId);
@@ -4229,7 +4678,13 @@ export function openQwenRealtimeSession(
           const response = isRecord(message['response'])
             ? message['response']
             : undefined;
-          const status = optionalString(response?.['status']);
+          const providerStatus = optionalString(response?.['status']);
+          const notification = notificationResponses.get(responseId);
+          const status =
+            notification && notification.state !== 'verified'
+              ? 'failed'
+              : providerStatus;
+          const notificationFailureReported = notification?.failureReported;
           const responseAuthority =
             responseAuthorities.get(responseId) ??
             activeResponseAuthority ??
@@ -4267,18 +4722,20 @@ export function openQwenRealtimeSession(
           silentReceiptDrains.delete(responseId);
           responseAdmissionReceipts.delete(responseId);
           collectedDirectResponseIds.delete(responseId);
-          callback(() =>
-            callbacks.onResponseDone?.({
-              ...eventContext(message),
-              responseId,
-              ...(responseInputItemId
-                ? { inputItemId: responseInputItemId }
-                : {}),
-              status,
-              authority: responseAuthority,
-            }),
-          );
-          if (status === 'failed') {
+          disposeNotificationResponse(responseId);
+          if (!notificationFailureReported)
+            callback(() =>
+              callbacks.onResponseDone?.({
+                ...eventContext(message),
+                responseId,
+                ...(responseInputItemId
+                  ? { inputItemId: responseInputItemId }
+                  : {}),
+                status,
+                authority: responseAuthority,
+              }),
+            );
+          if (providerStatus === 'failed') {
             notifyError(responseFailureError(response, config.apiKey));
           }
           queueMicrotask(flushResponseCreate);
@@ -4309,6 +4766,32 @@ export function openQwenRealtimeSession(
           );
           const rejectedCallId = unknownCall?.[1];
           const rejectedEventId = optionalString(providerError?.['event_id']);
+          if (
+            ready &&
+            (status === undefined || status === 400) &&
+            (code === undefined || code === 'invalid_request_error') &&
+            (providerType === undefined ||
+              providerType === 'invalid_request_error') &&
+            errorMessage.trim() === 'Error append image before append audio.'
+          ) {
+            // The provider rejects this image, not the logical call. Real API
+            // probes confirmed the same socket still accepts audio and images.
+            // Keep this diagnostic-only: no user-visible failure, fabricated
+            // audio, retry of a captured frame, buffer reset, or reconnection.
+            try {
+              callbacks.onProtocolDebug?.({
+                type: 'input_image_buffer.rejected',
+                ...eventContext(message),
+                code: 'image_audio_prerequisite',
+                message: 'Error append image before append audio.',
+                rejectedEventId: identifier(rejectedEventId),
+                fatal: false,
+              });
+            } catch {
+              /* diagnostic only */
+            }
+            break;
+          }
           if (
             ready &&
             (status === undefined || status === 400) &&
@@ -4459,6 +4942,66 @@ export function openQwenRealtimeSession(
         default:
           break;
       }
+    };
+
+    ws.on('message', (...args: unknown[]) => {
+      if (terminal || closedByClient) return;
+      if (args[1] === true) {
+        protocolError(
+          'Realtime provider sent an unexpected binary message.',
+          'unexpected_binary_message',
+        );
+        return;
+      }
+      const raw = String(args[0]);
+      if (
+        Buffer.byteLength(raw) > QWEN_REALTIME_LIMITS.maxIncomingMessageBytes
+      ) {
+        protocolError(
+          'Realtime provider message exceeded the allowed size.',
+          'message_too_large',
+        );
+        return;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        protocolError(
+          'Realtime provider sent invalid JSON.',
+          'invalid_provider_message',
+        );
+        return;
+      }
+      if (!isRecord(parsed)) {
+        protocolError(
+          'Realtime provider message must be an object.',
+          'invalid_provider_message',
+        );
+        return;
+      }
+      const message = parsed as ProviderMessage;
+      const type = optionalString(message.type);
+      if (!type) {
+        protocolError(
+          'Realtime provider message omitted its type.',
+          'invalid_provider_message',
+        );
+        return;
+      }
+      const eventId = optionalString(message.event_id);
+      if (eventId) {
+        if (recentEventIds.has(eventId)) {
+          ignoreEvent(message, type, 'duplicate_event');
+          return;
+        }
+        recentEventIds.add(eventId);
+        if (recentEventIds.size > MAX_RECENT_EVENT_IDS) {
+          const oldest = recentEventIds.values().next().value;
+          if (typeof oldest === 'string') recentEventIds.delete(oldest);
+        }
+      }
+      processProviderMessage(message, type);
     });
 
     ws.on('unexpected-response', (...args: unknown[]) => {

@@ -109,6 +109,14 @@ export interface FakeDashScopeServer {
   autoAckResponses: boolean;
   /** Confirm accepted function_call_output items before any continuation. */
   autoAckToolOutputs: boolean;
+  /** Acknowledge accepted user text, including disposable speech inputs. */
+  autoAckUserItems: boolean;
+  /** Script a disposable speech-only connection separately from the foreground. */
+  speechResponder?: (
+    connection: FakeDashScopeConnection,
+    input: JsonObject,
+    request: JsonObject,
+  ) => string | undefined;
   /** Response id automatically sent for this exact inbox request. */
   autoResponseIdFor(request: JsonObject): string | undefined;
   waitForConnection(timeoutMs?: number): Promise<FakeDashScopeConnection>;
@@ -155,6 +163,34 @@ export function contextTextOf(message: JsonObject): string | undefined {
   return typeof first['text'] === 'string' ? first['text'] : undefined;
 }
 
+/** Quoted input for the isolated no-tools speech helper, not foreground context. */
+export function speechSummaryOf(message: JsonObject): string | undefined {
+  const text = contextTextOf(message);
+  if (!text) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return isRecord(value) && typeof value['summary'] === 'string'
+      ? value['summary']
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A locally fixed approval sentence, deliberately separate from summaries. */
+export function speechAnnouncementOf(message: JsonObject): string | undefined {
+  const text = contextTextOf(message);
+  if (!text) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return isRecord(value) && typeof value['announcement'] === 'string'
+      ? value['announcement']
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Typed runtime data carried in a user item, never response instructions. */
 export function notificationOf(message: JsonObject):
   | {
@@ -168,7 +204,29 @@ export function notificationOf(message: JsonObject):
   const body = contextTextOf(message)?.match(
     /^(?:\[(?:BACKEND|MERGE_WITH_USER)\] )?\[NOTIFICATION\]\s+([\s\S]+)$/u,
   )?.[1];
-  if (!body) return undefined;
+  if (!body) {
+    const summary = speechSummaryOf(message);
+    if (!summary) return undefined;
+    try {
+      const payload: unknown = JSON.parse(summary);
+      if (
+        isRecord(payload) &&
+        typeof payload['query'] === 'string' &&
+        typeof payload['answer'] === 'string'
+      )
+        return {
+          kind: 'searchStatus' in payload ? 'search_result' : 'visual_result',
+          payload: summary,
+        };
+    } catch {
+      /* Managed results and peer reports use an attributed prefix. */
+    }
+    if (/^\[(?:COMPLETE|ERROR|CANCELLED) /u.test(summary))
+      return { kind: 'task_result', payload: summary };
+    if (summary.startsWith('[PEER_REPORT]'))
+      return { kind: 'peer_report', payload: summary };
+    return undefined;
+  }
   try {
     const value: unknown = JSON.parse(body);
     if (
@@ -252,7 +310,7 @@ export function taskResultPayloadOf(message: JsonObject):
   const text =
     notification?.kind === 'task_result'
       ? notification.payload
-      : contextTextOf(message);
+      : (speechSummaryOf(message) ?? contextTextOf(message));
   const body = text?.match(
     /^(?:\[(?:BACKEND|MERGE_WITH_USER)\] )?\[(?:COMPLETE|ERROR|CANCELLED) [^\]]+\]\s+([\s\S]+)$/u,
   )?.[1];
@@ -310,6 +368,7 @@ export async function startFakeDashScopeServer(
     inbox,
     autoAckResponses: true,
     autoAckToolOutputs: true,
+    autoAckUserItems: true,
     autoResponseIdFor: (request) => autoResponseIds.get(request),
     waitForConnection: (timeoutMs = 15_000) => {
       if (connections.length > 0) return Promise.resolve(connections[0]);
@@ -409,15 +468,53 @@ export async function startFakeDashScopeServer(
       socket.send(JSON.stringify({ event_id: `evt-${++eventSeq}`, ...body }));
     };
 
+    let latestInputId: string | undefined;
+    const responseInputs = new Map<string, string | undefined>();
+    const messageItems = new Set<string>();
+    const announceMessage = (
+      responseId: string,
+      itemId = `item-message-${++itemSeq}`,
+    ) => {
+      if (messageItems.has(responseId)) return;
+      messageItems.add(responseId);
+      const item = {
+        id: itemId,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [],
+      };
+      const outputs =
+        responseOutputs.get(responseId) ?? new Map<string, JsonObject>();
+      outputs.set(itemId, item);
+      responseOutputs.set(responseId, outputs);
+      sendJson({
+        type: 'response.output_item.added',
+        response_id: responseId,
+        item,
+      });
+      sendJson({
+        type: 'conversation.item.created',
+        previous_item_id: responseInputs.get(responseId),
+        item,
+      });
+    };
+
     const beginResponse = (): string => {
       const responseId = `resp-${++responseSeq}`;
+      responseInputs.set(responseId, latestInputId);
       sendJson({
         type: 'response.created',
-        response: { id: responseId, status: 'in_progress' },
+        response: {
+          id: responseId,
+          status: 'in_progress',
+          ...(latestInputId ? { reference_input_item_id: latestInputId } : {}),
+        },
       });
       return responseId;
     };
     const finishResponse = (responseId: string, status = 'completed') => {
+      if (!responseOutputs.get(responseId)?.size) announceMessage(responseId);
       sendJson({
         type: 'response.done',
         response: {
@@ -427,6 +524,8 @@ export async function startFakeDashScopeServer(
         },
       });
       responseOutputs.delete(responseId);
+      responseInputs.delete(responseId);
+      messageItems.delete(responseId);
     };
     const sendAudio = (
       responseId: string,
@@ -436,6 +535,7 @@ export async function startFakeDashScopeServer(
       if (pcm16.byteLength === 0 || pcm16.byteLength % 2 !== 0)
         throw new Error('Audio needs a non-empty PCM16 buffer');
       const itemId = `item-audio-${responseSeq}`;
+      announceMessage(responseId, itemId);
       sendJson({
         type: 'response.audio.delta',
         response_id: responseId,
@@ -455,6 +555,8 @@ export async function startFakeDashScopeServer(
     let queuedFunctionCall: FakeDashScopeFunctionCall | undefined;
     let nativeSearch = false;
     let visualAnalysis = false;
+    let speechOnly = false;
+    let speechInput: JsonObject | undefined;
     const connectionInbox: JsonObject[] = [];
 
     const connection: FakeDashScopeConnection = {
@@ -467,6 +569,7 @@ export async function startFakeDashScopeServer(
       send: sendJson,
       speakTranscript: (text) => {
         const itemId = `item-${++itemSeq}`;
+        latestInputId = itemId;
         sendJson({
           type: 'input_audio_buffer.speech_started',
           item_id: itemId,
@@ -501,6 +604,30 @@ export async function startFakeDashScopeServer(
         const responseId = beginResponse();
         if (call.preamble)
           sendAudio(responseId, call.preamble.audio, call.preamble.transcript);
+        sendJson({
+          type: 'response.output_item.added',
+          response_id: responseId,
+          item: {
+            id: `item-${call.callId}`,
+            type: 'function_call',
+            status: 'in_progress',
+            name: call.name,
+            call_id: call.callId,
+            arguments: call.argumentsJson,
+          },
+        });
+        sendJson({
+          type: 'conversation.item.created',
+          previous_item_id: responseInputs.get(responseId),
+          item: {
+            id: `item-${call.callId}`,
+            type: 'function_call',
+            status: 'completed',
+            name: call.name,
+            call_id: call.callId,
+            arguments: call.argumentsJson,
+          },
+        });
         sendJson({
           type: 'response.output_item.done',
           response_id: responseId,
@@ -543,10 +670,19 @@ export async function startFakeDashScopeServer(
       if (!isRecord(parsed)) return;
       inbox.push(parsed);
       connectionInbox.push(parsed);
+      if (
+        speechOnly &&
+        (speechSummaryOf(parsed) !== undefined ||
+          speechAnnouncementOf(parsed) !== undefined)
+      )
+        speechInput = parsed;
       if (parsed['type'] === 'session.update') {
         const session = isRecord(parsed['session']) ? parsed['session'] : {};
         if (typeof session['enable_search'] === 'boolean')
           nativeSearch = session['enable_search'];
+        speechOnly =
+          typeof session['instructions'] === 'string' &&
+          session['instructions'].includes('speech-only');
         if (Array.isArray(session['modalities']))
           visualAnalysis =
             session['modalities'].length === 1 &&
@@ -570,21 +706,25 @@ export async function startFakeDashScopeServer(
         sendJson({
           type: 'session.updated',
           session: {
-            id: 'sess-1',
+            id: `sess-${connection.index + 1}`,
             ...(nativeSearch ? { enable_search: true } : {}),
           },
         });
       } else if (
-        handle.autoAckToolOutputs &&
         parsed['type'] === 'conversation.item.create' &&
         isRecord(parsed['item']) &&
-        parsed['item']['type'] === 'function_call_output'
+        ((handle.autoAckToolOutputs &&
+          parsed['item']['type'] === 'function_call_output') ||
+          (handle.autoAckUserItems &&
+            parsed['item']['type'] === 'message' &&
+            parsed['item']['role'] === 'user'))
       ) {
+        latestInputId = `item-${++itemSeq}`;
         sendJson({
           type: 'conversation.item.created',
           item: {
             ...parsed['item'],
-            id: `item-${++itemSeq}`,
+            id: latestInputId,
             status: 'completed',
           },
         });
@@ -597,7 +737,23 @@ export async function startFakeDashScopeServer(
           item_id: `item-${++itemSeq}`,
         });
       } else if (parsed['type'] === 'response.create') {
-        if (visualAnalysis && options.visualAnalysisReply !== undefined) {
+        if (
+          speechOnly &&
+          speechInput &&
+          (handle.speechResponder || handle.autoAckResponses)
+        ) {
+          const responseId = handle.speechResponder
+            ? handle.speechResponder(connection, speechInput, parsed)
+            : connection.respondWithAudio(
+                Buffer.alloc(4800, 2),
+                speechAnnouncementOf(speechInput) ??
+                  'The background result is ready.',
+              );
+          if (responseId) autoResponseIds.set(parsed, responseId);
+        } else if (
+          visualAnalysis &&
+          options.visualAnalysisReply !== undefined
+        ) {
           const responseId = beginResponse();
           sendJson({
             type: 'response.text.done',

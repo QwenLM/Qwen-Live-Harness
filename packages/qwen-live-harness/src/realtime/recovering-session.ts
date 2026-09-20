@@ -379,6 +379,8 @@ export async function openRecoveringQwenRealtimeSession(
     closed,
     canDeliverExternalAudio: () =>
       !recovering && !ended && (active?.canDeliverExternalAudio?.() ?? false),
+    canStartExternalSpeech: () =>
+      !recovering && !ended && (active?.canStartExternalSpeech?.() ?? false),
     flushDialogue: () => active?.flushDialogue(),
     configure: (update) => {
       if (ended) return false;
