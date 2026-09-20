@@ -105,7 +105,9 @@ Host 通过回环地址上的 WebSocket 端点 `/live/host` 连接 daemon。默�
 
 Appshot 是随 Host 构建的内置模块，不依赖单独的截图应用、CLI、MCP 服务或运行时下载。Screen On Demand、Live Feed 和视觉 Proactive Monitor 都采集选定显示器的完整画面，并排除 Host 自身窗口。On Demand 保存原始 PNG 资产，再按分辨率配置和传输上限编码截图；完整显示器采集不需要辅助功能权限。摄像头使用同一引擎提供预览、实时帧和单次截图，隐藏预览不会停止采集。
 
-daemon 将 On Demand 截图交给只读视觉分析子智能体，再把文字结果交回主对话。Host 在 Subagents 中展示进度和结果，不直接调用模型。Live Feed 和 Proactive 使用各自的输入通路。来源、模式、分辨率和使用限制见[配置指南](../../docs/configuration_ZH.md)。
+daemon 将 On Demand 截图交给只读视觉分析子智能体，其文字结果由隔离的纯播报连接生成语音，同时作为静默证据保留在主对话中。视觉、搜索和后台任务结果共用无工具的播报通路；Host 只播放结果音频，并回报真实的播放开始／完成状态。Host 在 Subagents 中展示进度和结果，不直接调用模型。Live Feed 和 Proactive 使用各自的输入通路。来源、模式、分辨率和使用限制见[配置指南](../../docs/configuration_ZH.md)。
+
+Subagents 展示后台提供的命令／参数、工作目录和资源，并提供当前请求的允许／拒绝按钮。设置中的全局**后台 Harness 授权**选择 `permissionMode: "ask"`（默认）或 `"allow-all"`，后者自动处理当前等待及之后的请求；界面只采用 daemon 确认保存成功后的状态。每次批准都使用后台单次选项，不创建原生持久授权。通话中会播报重要自动操作，普通目录／状态检查只记录，没有通话就不播放音频。批准与开始执行是两种不同事实。旧逐项策略文件被忽略，不会删除；见[语音授权与持续允许](../qwen-live-harness/README_ZH.md#语音授权与持续允许)。
 
 采集尺寸和协议上限需要分开校验：实时帧目前最多 `1920 × 1080`、每帧 `190 KiB`，截图资产上限为 `8 MiB`。即使请求了更大的采集尺寸，传输前也可能缩小。摄像头原生截图优先使用拍照接口，不可用时尝试按视频采集约束获取画面；不支持的请求应返回明确错误。修改尺寸或编码策略时，同时检查 [`camera-engine.ts`](src/preload/camera-engine.ts)、[`appshot-capture.ts`](src/main/appshot-capture.ts) 和共享协议限制。
 

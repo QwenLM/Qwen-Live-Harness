@@ -17,6 +17,7 @@ After setup, most everyday options are available in **Settings** on the voice ca
 | Enable memory, select a library, or rename it      | Settings → Personalization → Memory                |
 | Change the color palette                           | Settings → Personalization → Color palette         |
 | Switch language or light/dark theme                | Settings → Personalization → Language / Appearance |
+| Choose how background requests are approved        | Settings → Background Harness permissions          |
 | Change a model, API key, resolution, or frame rate | Settings → Open configuration                      |
 | Start or end a call                                | Start call / End call, or `Command+E`              |
 
@@ -114,7 +115,9 @@ Choose **what to see**, then **when to see it**:
 - **Capture Mode → On Demand**: capture a snapshot when needed; this is the default.
 - **Capture Mode → Live Feed**: continuously send recent frames during a call, so you can ask about what is visible now.
 
-**On Demand does not require a coding agent.** When you ask a visual question, a read-only Visual Analysis subagent analyzes one snapshot and returns text for Omni to answer. You can view its status and result or stop it in Subagents. Ending the call cancels unfinished analyses. It uses the same model, API key, and region as the main conversation; no extra model configuration is needed.
+**On Demand does not require a coding agent.** When you ask a visual question, a read-only Visual Analysis subagent analyzes one snapshot. A separate speech-only helper reads the result using the same model and voice, while the main conversation retains the text for follow-up questions. You can view its status and result or stop it in Subagents. Ending the call cancels unfinished analyses. It uses the same API key and region as the main conversation; no extra model configuration is needed.
+
+If visual analysis fails with the service's repeat-output error, a temporary network failure, or a timeout, it retries **once** using the same captured image and question with a shorter answer format. It does not capture another image or execute a background task. Cancellation, authentication/configuration errors, invalid input, and unsafe output are not retried. Each attempt is limited to 25 seconds, for a maximum of 50 seconds; if the retry also fails, the failure is reported normally.
 
 Screen Live Feed, On Demand, and visual monitors capture the full selected display, not just the foreground window. With multiple displays, choose one under **Display**; the default is the primary display. On Demand does not send the image directly to the main conversation. A failed analysis or missing metadata does not mean the desktop is blank. File and app operations still require a coding agent.
 
@@ -302,18 +305,30 @@ Keep the empty array. Omitting `backends` selects the default local Qwen Serve c
 
 With or without a coding agent, a search subagent can look up public information. It uses the main conversation's complete model ID, including any invitation-only alias, endpoint, and API key; no separate search model is needed. The app does not restrict search by model name. Native search availability depends on the service.
 
-Qwen Omni briefly acknowledges a lookup, then searches in the background. You can continue talking or request other independent searches. Searches run concurrently; ready results wait for the current speech and playback to finish, then are answered in order. Conversation that does not need current information is answered directly.
+Qwen Omni briefly acknowledges a lookup, then searches in the background. You can continue talking or request other independent searches. Searches run concurrently; ready results wait for the current speech and playback to finish, then are answered in order by a separate speech-only helper using the same model and voice. Visual, search, and background task results use this helper without tools or further searching; their text remains available in the main conversation and Subagents. Interrupted announcements are not automatically replayed. Conversation that does not need current information is answered directly.
 
-If search fails, including when the service does not support native search, a configured coding agent takes over the same read-only query. Without one, the app reports the failure. The handoff uses a separate task, does not interrupt other work, and does not approve permissions for you.
+If search fails, including when the service does not support native search, a configured coding agent takes over the same read-only query. Without one, the app reports the failure. The handoff uses a separate task without interrupting other work; its permission requests follow your selected global permission mode.
 
 Use **Subagents → Web Search** to inspect the query, status, and result, or stop a search. A successful fallback also creates a separate background task entry. Ending the call cancels the searches and their automatic fallback tasks, but not unrelated background jobs. If a backend has not confirmed cancellation, use the task panel's actual status.
 
 Use **Subagents** to inspect tasks, stop them, or respond to permissions. Closing details does not stop a task. If a backend reports a file-permission error without offering an approval button, check the coding agent's own configuration: Live can only display permission requests the agent actually sends.
 
+### Permission choices in Subagents
+
+After configuring a background Harness, `init` asks how to handle its permission requests. You can change the choice later under **Settings → Background Harness permissions**, or edit the top-level `permissionMode` field in `config.json`:
+
+- **Ask every time** (`"ask"`, default): review the command, arguments, working folder, and affected files in Subagents, then allow or deny the current operation. There is no per-request “always allow” choice.
+- **Allow all by default** (`"allow-all"`): automatically approve currently waiting and future requests. Important operations are announced during calls; simple checks such as `pwd`, `ls`, and `git status` are recorded without speech. Requests can still be processed when no call is active, without starting audio.
+
+Every approval uses a one-time backend option, not a persistent backend grant. If no such option is available, Live cancels and explains why. An automatic-approval announcement confirms approval, not that the command has started or finished. Switching back to **Ask every time** stops future automatic approvals, but does not undo approvals already issued. Backend restrictions still apply, and Live only handles requests the backend actually sends.
+
+Older development versions may have created `permission-policies.json`. It is now ignored and left untouched; you do not need to delete it when changing mode. If a coding agent already has its own persistent permissions, revoke those separately in that agent's settings. See [Spoken permissions and persistent approval](../packages/qwen-live-harness/README.md#spoken-permissions-and-persistent-approval) for developer details.
+
 ## Which UI choices are saved?
 
 - **Video Source / Capture Mode** take effect immediately but are not written to the configuration. Edit `visualInput.source` / `mode` to change the next startup's defaults.
-- Confirmed **Display, Language, and Memory** settings are saved.
+- Confirmed **Display, Language, Memory, and background Harness permission** settings are saved.
+- **Background Harness permissions** are saved to `config.json` and apply immediately after Settings confirms success, including requests already waiting.
 - The desktop app saves microphone selection, appearance, and window positions locally. The color palette is saved in `config.json`.
 - Manual configuration-file edits require a full quit and restart.
 
