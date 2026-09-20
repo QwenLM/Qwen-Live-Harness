@@ -5,6 +5,7 @@ import { MemoryPanel } from './memory-panel.ts';
 import {
   liveText,
   displayLiveMessage,
+  displayLiveError,
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 import { uiText, uiLabel, localizeUi } from './ui-text.ts';
@@ -81,7 +82,7 @@ export class SettingsPanel {
   );
   private readonly configStatus = document.createElement('p');
   private openingConfig = false;
-  private configError = '';
+  private configError: unknown = '';
   private readonly language = document.createElement('select');
   private readonly systemTheme = button(
     'theme.system',
@@ -106,7 +107,8 @@ export class SettingsPanel {
   private deviceKey = '';
   private deviceLabels = new Map<HTMLOptionElement, string>();
   private selectedDeviceId = '';
-  private error = '';
+  private error: unknown = '';
+  private errorKey: LiveMessageKey = 'ui.actionFailed';
   private returnFocus?: HTMLElement;
   private opening = false;
   private openingGeneration = 0;
@@ -133,7 +135,7 @@ export class SettingsPanel {
   constructor(
     private readonly api: LiveHostApi,
     private readonly visibilityChanged: (open: boolean) => void,
-    private readonly reportError: (error: string) => void = () => {},
+    private readonly reportError: (error: unknown) => void = () => {},
   ) {
     this.element.className = 'settings-layer';
     this.element.hidden = true;
@@ -355,9 +357,7 @@ export class SettingsPanel {
       } catch (error) {
         if (this.disposed || generation !== this.openingGeneration) return;
         this.hide();
-        this.reportError(
-          error instanceof Error ? error.message : String(error),
-        );
+        this.reportError(error);
       }
     })();
   }
@@ -369,9 +369,7 @@ export class SettingsPanel {
     this.element.hidden = true;
     void this.api.setSettingsOpen(false).catch((error: unknown) => {
       if (!this.disposed && generation === this.openingGeneration)
-        this.reportError(
-          error instanceof Error ? error.message : String(error),
-        );
+        this.reportError(error);
     });
     this.visibilityChanged(false);
     this.returnFocus?.focus();
@@ -417,16 +415,16 @@ export class SettingsPanel {
       unavailable ||
       !state.canOpenConfig ||
       Boolean(state.quitState);
-    this.configStatus.textContent =
-      displayLiveMessage(language, this.configError) ||
-      liveText(
-        language,
-        this.openingConfig
-          ? 'ui.openingConfig'
-          : state.canOpenConfig
-            ? 'ui.openConfigHint'
-            : 'host.config.unavailable',
-      );
+    this.configStatus.textContent = this.configError
+      ? displayLiveError(language, this.configError, 'host.config.openFailed')
+      : liveText(
+          language,
+          this.openingConfig
+            ? 'ui.openingConfig'
+            : state.canOpenConfig
+              ? 'ui.openConfigHint'
+              : 'host.config.unavailable',
+        );
     this.configStatus.classList.toggle('error', Boolean(this.configError));
     this.openConfig.title = this.configStatus.textContent;
     this.configStatus.hidden =
@@ -463,7 +461,11 @@ export class SettingsPanel {
       for (const item of displays) {
         const option = document.createElement('option');
         option.value = item.id;
-        option.textContent = `${item.name} · ${item.width} × ${item.height}`;
+        option.textContent = liveText(language, 'ui.displayOption', {
+          name: displayLiveMessage(language, item.name),
+          width: item.width,
+          height: item.height,
+        });
         options.push(option);
       }
       if (
@@ -482,7 +484,11 @@ export class SettingsPanel {
       this.display.value = selectedDisplay;
     }
     this.displayHint.textContent = state.screenDisplaysError
-      ? displayLiveMessage(language, state.screenDisplaysError)
+      ? displayLiveError(
+          language,
+          state.screenDisplaysError,
+          'host.error.displayUnavailable',
+        )
       : liveText(
           language,
           state.canSelectScreenDisplay
@@ -524,16 +530,18 @@ export class SettingsPanel {
         !state.canSetThemeColor ||
         Boolean(state.quitState);
     }
-    this.status.textContent =
-      displayLiveMessage(
-        language,
-        this.error || state.visualSettingsError || '',
-      ) ||
-      (this.busy
+    const error = this.error || state.visualSettingsError;
+    this.status.textContent = error
+      ? displayLiveError(
+          language,
+          error,
+          this.error ? this.errorKey : 'host.error.visualSettingsFailed',
+        )
+      : this.busy
         ? liveText(language, 'ui.applying')
         : this.loadingDevices
           ? liveText(language, 'ui.loadingDevices')
-          : '');
+          : '';
     this.status.classList.toggle(
       'error',
       Boolean(this.error || state.visualSettingsError),
@@ -549,7 +557,7 @@ export class SettingsPanel {
     try {
       await this.api.openConfig();
     } catch (error) {
-      this.configError = error instanceof Error ? error.message : String(error);
+      this.configError = error;
     } finally {
       this.openingConfig = false;
       this.render();
@@ -561,11 +569,12 @@ export class SettingsPanel {
       return;
     this.busy = true;
     this.error = '';
+    this.errorKey = 'ui.actionFailed';
     this.render();
     try {
       await action();
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = error;
     } finally {
       this.busy = false;
       this.render();
@@ -610,8 +619,10 @@ export class SettingsPanel {
         localizeUi(this.element, this.state?.language ?? 'en');
       }
     } catch (error) {
-      if (generation === this.deviceGeneration)
-        this.error = error instanceof Error ? error.message : String(error);
+      if (generation === this.deviceGeneration) {
+        this.error = error;
+        this.errorKey = 'ui.devicesFailed';
+      }
     } finally {
       if (generation === this.deviceGeneration) {
         this.loadingDevices = false;

@@ -183,6 +183,81 @@ function setup(overrides: Partial<LiveHostApi> = {}) {
 }
 
 describe('persistent Live orb and Settings', () => {
+  it('localizes unknown action and device errors without exposing native details, including after a language change', async () => {
+    const sentinel = 'PRIVATE /Users/example/config.json Authorization: secret';
+    const h = setup({
+      setInputMuted: async () => {
+        throw new Error(sentinel);
+      },
+      listInputDevices: async () => {
+        throw { message: sentinel };
+      },
+    });
+    h.click(liveText('en', 'ui.muteInput'));
+    await settled();
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'ui.actionFailed'),
+    );
+    h.update({ ...h.state(), language: 'zh-CN' });
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('zh-CN', 'ui.actionFailed'),
+    );
+    assert(!h.get('.voice-status').textContent?.includes(sentinel));
+    h.click(liveText('zh-CN', 'ui.settings'));
+    await settled();
+    assert.equal(
+      h.get('.settings-status').textContent,
+      liveText('zh-CN', 'ui.devicesFailed'),
+    );
+    h.update({ ...h.state(), language: 'en' });
+    assert.equal(
+      h.get('.settings-status').textContent,
+      liveText('en', 'ui.devicesFailed'),
+    );
+    assert(!h.get('.settings-status').textContent?.includes(sentinel));
+  });
+
+  it('keeps owned error details translatable but rejects raw daemon, camera and connection errors', () => {
+    const h = setup();
+    const sentinel = 'ENOENT /Users/private/credential-file';
+    for (const language of ['en', 'zh-CN'] as const) {
+      h.update({ ...h.state(), language, visualError: sentinel });
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(language, 'host.error.visualFailed'),
+      );
+      h.update({ ...h.state(), visualError: undefined, audioError: sentinel });
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(language, 'host.audio.failed'),
+      );
+      h.update({
+        ...h.state(),
+        audioError: undefined,
+        live: { ...h.state().live, state: 'error', message: sentinel },
+      });
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(language, 'ui.callEnded'),
+      );
+      h.update({
+        ...h.state(),
+        live: {
+          ...baseline.live,
+          state: 'error',
+          message: liveMessage('host.error.notReady'),
+        },
+      });
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(language, 'host.error.notReady'),
+      );
+      h.update({ ...baseline, language });
+    }
+  });
+
   it('keeps the card, settings, input selection, dragging and Quit usable after an audio timeout', async () => {
     const h = setup();
     const state = h.state();
@@ -195,10 +270,9 @@ describe('persistent Live orb and Settings', () => {
     });
     assert.equal(h.layouts.at(-1), 'orb');
     assert.equal(h.get('.voice-orb'), orb);
-    assert(
-      h
-        .get('.voice-status-primary')
-        .textContent?.includes('Microphone startup timed out'),
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'host.audio.timeout'),
     );
     const header = h.get('.voice-header');
     h.pointer(header, 'pointerdown', 100, 100);
@@ -218,7 +292,7 @@ describe('persistent Live orb and Settings', () => {
     h.click('Start call');
     await settled();
     assert(h.calls.some(([name]) => name === 'toggle'));
-    h.click('Quit Host');
+    h.click(liveText('en', 'ui.quit'));
     await settled();
     assert(h.calls.some(([name]) => name === 'quit'));
   });
@@ -384,13 +458,9 @@ describe('persistent Live orb and Settings', () => {
     for (const language of ['en', 'zh-CN'] as const) {
       for (const [inputMuted, outputMuted, expected] of [
         [false, false, ''],
-        [true, false, language === 'en' ? 'Mic off' : '麦克风已关闭'],
-        [false, true, language === 'en' ? 'Speaker muted' : '播报已静音'],
-        [
-          true,
-          true,
-          language === 'en' ? 'Mic off · Muted' : '麦克风关闭 · 静音',
-        ],
+        [true, false, liveText(language, 'ui.micOff')],
+        [false, true, liveText(language, 'ui.speakerMuted')],
+        [true, true, liveText(language, 'ui.micAndSpeakerMutedCompact')],
       ] as const) {
         h.update({
           ...h.state(),
@@ -478,15 +548,21 @@ describe('persistent Live orb and Settings', () => {
     assert.equal(h.get('.permission-link').hidden, false);
     assert.equal(status.contains(h.get('.permission-link')), true);
     assert.equal(h.get('.voice-status-primary').hidden, true);
-    assert.equal(h.get('.voice-status-audio').textContent, 'Mic off · Muted');
+    assert.equal(
+      h.get('.voice-status-audio').textContent,
+      liveText('en', 'ui.micAndSpeakerMutedCompact'),
+    );
     for (const quitState of ['pending', 'failed'] as const) {
       h.update({ ...h.state(), quitState });
       assert.equal(h.get('.permission-link').hidden, true);
       assert.equal(h.get('.voice-status-primary').hidden, false);
       assert.equal(h.get('.voice-status-audio').hidden, false);
-      assert.match(
-        h.get('.voice-status-primary').textContent ?? '',
-        quitState === 'pending' ? /Quitting/ : /retry Quit/,
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(
+          'en',
+          quitState === 'pending' ? 'ui.quitting' : 'ui.quitFailed',
+        ),
       );
     }
     const error = 'Connection failed: '.repeat(12);
@@ -501,8 +577,14 @@ describe('persistent Live orb and Settings', () => {
         outputMuted: true,
       },
     });
-    assert.equal(h.get('.voice-status-primary').textContent, error);
-    assert.equal(h.get('.voice-status-primary').title, error);
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'ui.callEnded'),
+    );
+    assert.equal(
+      h.get('.voice-status-primary').title,
+      liveText('en', 'ui.callEnded'),
+    );
     assert.equal(
       h.get('.voice-status-primary').closest('[data-live-interactive]'),
       h.get('.voice-status-primary'),
@@ -664,7 +746,10 @@ describe('persistent Live orb and Settings', () => {
     await settled();
     assert.equal(h.get('.settings-layer').hidden, true);
     assert.equal(Boolean(h.get('.voice-surface').inert), false);
-    assert.match(h.get('.voice-status').textContent ?? '', /Placement failed/);
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'ui.actionFailed'),
+    );
   });
 
   it('reflects real microphone peaks in bars, releases smoothly and resets on mute without scaling the disc', (context) => {
@@ -1015,7 +1100,10 @@ describe('persistent Live orb and Settings', () => {
     });
     h.get<HTMLButtonElement>('.quit-control').click();
     await settled();
-    assert.match(h.get('.voice-status').textContent ?? '', /Please retry Quit/);
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'ui.quitFailed'),
+    );
     assert.equal(h.get<HTMLButtonElement>('.quit-control').disabled, false);
     h.get<HTMLButtonElement>('.quit-control').click();
     await settled();
@@ -1153,7 +1241,10 @@ describe('persistent Live orb and Settings', () => {
     h.update({ ...h.state(), quitState: 'failed' });
     assert.equal(h.get('.voice-surface').hidden, false);
     assert.equal(h.get<HTMLButtonElement>('.quit-control').disabled, false);
-    assert.match(h.get('.voice-status').textContent ?? '', /Please retry Quit/);
+    assert.equal(
+      h.get('.voice-status-primary').textContent,
+      liveText('en', 'ui.quitFailed'),
+    );
   });
 
   it('hides preview and disables stale call controls while Quit is pending or failed', () => {
@@ -1196,9 +1287,12 @@ describe('persistent Live orb and Settings', () => {
       assert.equal(h.get('.voice-status').hidden, false);
       assert.equal(h.get('.permission-link').hidden, true);
       assert.equal(h.get<HTMLButtonElement>('.permission-link').disabled, true);
-      assert.match(
-        h.get('.voice-status').textContent ?? '',
-        quitState === 'pending' ? /Quitting/ : /retry Quit/,
+      assert.equal(
+        h.get('.voice-status-primary').textContent,
+        liveText(
+          'en',
+          quitState === 'pending' ? 'ui.quitting' : 'ui.quitFailed',
+        ),
       );
     }
   });
@@ -1258,7 +1352,7 @@ describe('persistent Live orb and Settings', () => {
     assert.equal(h.get('[data-permission="accessibility"]').hidden, true);
     assert.equal(panel.querySelector('.memory-settings'), null);
     assert.equal(panel.querySelector('[aria-label="Audio Source"]'), null);
-    h.click('Allow camera');
+    h.click(liveText('en', 'ui.allowCamera'));
     await settled();
     assert.deepEqual(h.calls, [['permission', 'camera']]);
   });
@@ -1279,9 +1373,9 @@ describe('persistent Live orb and Settings', () => {
     select.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }));
     await settled();
     assert.equal(select.value, 'mic-1');
-    assert.match(
-      h.get('.settings-status').textContent ?? '',
-      /Device unavailable/,
+    assert.equal(
+      h.get('.settings-status').textContent,
+      liveText('en', 'ui.actionFailed'),
     );
     assert.equal(select.disabled, false);
   });

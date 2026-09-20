@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import { join } from 'node:path';
-import type { LiveLanguage } from 'qwen-live-harness/i18n';
+import { liveText, type LiveLanguage } from 'qwen-live-harness/i18n';
 import {
   parseSubagentsControlRequest,
   type SubagentsControlRequest,
@@ -150,7 +150,10 @@ export class SubagentsWindows {
           (snapshot?.deliveryRevision ?? 0) ||
         (this.snapshot?.reportRevision ?? 0) !==
           (snapshot?.reportRevision ?? 0));
+    const languageChanged = this.language !== language;
     this.language = language;
+    if (languageChanged && this.window && !this.window.isDestroyed())
+      this.window.setTitle(liveText(language, 'subagents.title'));
     this.connected = connected;
     this.controlsAvailable =
       controlsAvailable && Boolean(this.options.requestControl);
@@ -402,7 +405,7 @@ export class SubagentsWindows {
       hasShadow: false,
       transparent: true,
       backgroundColor: '#00000000',
-      title: 'Subagents',
+      title: liveText(this.language, 'subagents.title'),
       webPreferences: {
         preload: join(this.options.baseDirectory, 'subagents-preload.cjs'),
         contextIsolation: true,

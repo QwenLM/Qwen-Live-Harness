@@ -43,6 +43,31 @@ const snapshot = {
   tasks: [task],
 };
 describe('subagent snapshot identity and value validation', () => {
+  it('accepts optional display output without changing raw output and rejects malformed or oversized fields', () => {
+    expect(parseSubagentsSnapshot(snapshot)).toEqual(snapshot);
+    const withDisplay = {
+      ...task,
+      kind: 'search',
+      output: 'Original model-facing text',
+      outputMessage: 'qwen-live-harness-ui:{"key":"search.failed","params":{}}',
+    };
+    expect(
+      parseSubagentsSnapshot({ ...snapshot, tasks: [withDisplay] })?.tasks[0],
+    ).toEqual(withDisplay);
+    expect(
+      parseSubagentsControlResult({
+        type: 'page',
+        page: { snapshot, selected: withDisplay, offset: 0, total: 1 },
+      }),
+    ).toBeDefined();
+    for (const outputMessage of [null, 1, {}, [], 'x'.repeat(513)])
+      expect(
+        parseSubagentsSnapshot({
+          ...snapshot,
+          tasks: [{ ...task, outputMessage }],
+        }),
+      ).toBeUndefined();
+  });
   it('accepts visual task identity and truthful delivery states', () => {
     for (const notification of [
       'queued',
@@ -186,6 +211,11 @@ describe('subagent management contracts', () => {
         response({ sessionReports: [], sessionReportsOmitted: 3 }),
       ),
     ).toBeDefined();
+    expect(
+      parseSubagentsControlResult(
+        response({ sessionReports: [{ ...report, source: '' }] }),
+      ),
+    ).toBeDefined();
     const invalidRows = [
       { ...report, id: '' },
       { ...report, backend: 'x'.repeat(257) },
@@ -200,6 +230,10 @@ describe('subagent management contracts', () => {
       { ...report, announcement: ['announced'] },
       { ...report, announcement: 'delivered' },
       { ...report, note: 'x'.repeat(1025) },
+      { ...report, sourceIsFallback: false },
+      { ...report, sourceIsFallback: true },
+      { ...report, sourceIsFallback: 'true' },
+      { ...report, sourceIsFallback: null },
       { ...report, msgId: 'transport-id' },
       { ...report, token: 'secret' },
       { ...report, socketPath: '/private/socket' },

@@ -20,6 +20,7 @@ import {
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BackendConfig, LiveConfig } from './config.js';
+import { liveText } from './i18n/messages.js';
 import { LIVE_HOST_PROTOCOL_VERSION } from './host/types.js';
 import {
   diagnoseQwenPeers,
@@ -179,7 +180,7 @@ describe('read-only Qwen peer diagnostics', () => {
         language === 'en' ? 'grant validity unverified' : '授权有效性未验证',
       );
       expect(formatted).toContain(
-        language === 'en' ? 'do not automatically resend' : '不要自动重发',
+        liveText(language, 'peers.doctor.hint.unknownDelivery'),
       );
       expect(formatted).not.toMatch(/\{\w+\}/u);
       for (const secret of [

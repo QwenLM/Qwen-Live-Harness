@@ -25,6 +25,7 @@ import {
   validateLibraryId,
 } from './store.js';
 import { indexText } from './tokenize.js';
+import { liveText } from '../i18n/messages.js';
 
 describe('MemoryStore', () => {
   let temporary: string;
@@ -221,7 +222,9 @@ describe('MemoryStore', () => {
       directory: join(temporary, 'memories'),
       defaultId: 'default',
     });
-    expect(() => store.database('default')).toThrow(/schema version/u);
+    expect(() => store.database('default')).toThrow(
+      liveText('en', 'memoryUI.schema'),
+    );
   });
 
   it('rejects symbolic-link library and database targets', () => {

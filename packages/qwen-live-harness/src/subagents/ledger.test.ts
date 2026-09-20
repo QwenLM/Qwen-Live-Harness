@@ -35,6 +35,34 @@ function task(
 afterEach(() => vi.useRealTimers());
 
 describe('SubagentsLedger', () => {
+  it('keeps bounded display messages separate from raw task output', () => {
+    const ledger = new SubagentsLedger();
+    const outputMessage =
+      'qwen-live-harness-ui:{"key":"search.failed","params":{}}';
+    try {
+      ledger.upsert({ ...task('search:display'), kind: 'search' });
+      ledger.result(
+        'search:display',
+        'failed',
+        'Raw model-facing failure',
+        outputMessage,
+      );
+      expect(ledger.get('search:display')).toMatchObject({
+        output: 'Raw model-facing failure',
+        outputMessage,
+      });
+      expect(parseSubagentsSnapshot(ledger.snapshot())).toBeDefined();
+      ledger.upsert({
+        ...task('search:oversized'),
+        outputMessage: 'x'.repeat(513),
+      });
+      expect(ledger.get('search:oversized')).not.toHaveProperty(
+        'outputMessage',
+      );
+    } finally {
+      ledger.dispose();
+    }
+  });
   it('counts search work and delivery with other tasks while keeping failed and cancelled outcomes distinct', () => {
     const ledger = new SubagentsLedger();
     try {

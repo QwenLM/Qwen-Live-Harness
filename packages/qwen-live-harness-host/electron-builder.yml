@@ -36,14 +36,22 @@ mac:
   minimumSystemVersion: '12.0.0'
   extendInfo:
     LSUIElement: true
+    CFBundleDevelopmentRegion: 'en'
+    CFBundleLocalizations:
+      - 'en'
+      - 'zh-Hans'
     QwenLiveHarnessProtocolVersion: 9
-    NSMicrophoneUsageDescription: 'Qwen Live Harness Host uses the microphone for live voice conversations with Qwen Live Harness.'
-    NSCameraUsageDescription: 'Qwen Live Harness Host uses the camera to share visual context with Qwen Live Harness when you turn it on.'
+    NSMicrophoneUsageDescription: 'Qwen Live Harness Host uses your microphone for voice conversations with Qwen Omni.'
+    NSCameraUsageDescription: 'Qwen Live Harness Host uses your camera to provide visual context to Qwen Omni.'
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: 'build/entitlements.mac.plist'
   entitlementsInherit: 'build/entitlements.mac.plist'
   extraResources:
+    - from: 'resources/localizations/en.lproj'
+      to: 'en.lproj'
+    - from: 'resources/localizations/zh-Hans.lproj'
+      to: 'zh-Hans.lproj'
     - from: 'dist/icon.png'
       to: 'qwen-live-harness-host-icon.png'
     - from: 'dist/native/qwen-live-harness-appshot.node'

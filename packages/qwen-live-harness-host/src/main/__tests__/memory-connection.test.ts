@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { displayLiveMessage } from 'qwen-live-harness/i18n';
+import { displayLiveMessage, liveText } from 'qwen-live-harness/i18n';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -200,8 +200,11 @@ describe('memory requests over the Host connection', () => {
       libraryId: 'default',
       name: 'Personal',
     });
-    const rejection = assert.rejects(result, (error: Error) =>
-      /disconnected/.test(displayLiveMessage('en', error.message)),
+    const rejection = assert.rejects(
+      result,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'host.error.memoryDisconnected'),
     );
     assert.equal((await frame).action, 'rename');
     peer.close();

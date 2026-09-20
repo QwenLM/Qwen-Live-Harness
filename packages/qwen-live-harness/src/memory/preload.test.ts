@@ -24,6 +24,7 @@ import {
   type DialogueSegmentRow,
 } from './render.js';
 import { MemoryStore } from './store.js';
+import { liveText } from '../i18n/messages.js';
 
 describe('memory preload and reading', () => {
   let temporary: string;
@@ -206,7 +207,9 @@ describe('memory preload and reading', () => {
     );
     expect(result.stm.expired).toHaveLength(1);
     expect(result.last_consolidation).toBe(null);
-    expect(() => readContents(store, 'missing')).toThrow(/does not exist/u);
+    expect(() => readContents(store, 'missing')).toThrow(
+      liveText('en', 'memoryUI.missing'),
+    );
   });
 
   it('preloads once into immutable strings and stores both selection and omission audit', () => {

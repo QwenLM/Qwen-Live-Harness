@@ -1132,6 +1132,115 @@ function searchTaskFrom(rig: Rig, taskId: string) {
     .tasks.find((task) => task.id === taskId);
 }
 
+describe('LiveSession display projection boundaries', () => {
+  it.each(['search', 'visual'] as const)(
+    'localizes an owned %s failure for Host while keeping model evidence unchanged',
+    async (kind) => {
+      const rig = await startSession(undefined, {
+        withoutBackends: true,
+        getLanguage: () => 'zh-CN',
+        searchRealtime: vi
+          .fn<typeof searchQwenRealtime>()
+          .mockRejectedValue(new Error('provider failure')),
+        analyzeRealtimeImage: vi
+          .fn<typeof analyzeQwenRealtimeImage>()
+          .mockRejectedValue(new Error('analysis failure')),
+      });
+      try {
+        callTool(rig.callbacks, kind === 'search' ? 'web_search' : 'appshot', {
+          query: 'A user question',
+        });
+        const [receipt] = await awaitReceipts(rig.realtime, 1);
+        const respond =
+          kind === 'search'
+            ? rig.realtime.respondToSearchResult
+            : rig.realtime.respondToVisualResult;
+        await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce());
+        const expectedRaw = liveText(
+          'en',
+          kind === 'search' ? 'runtime.webSearchFailed' : 'visual.failed',
+        );
+        const expectedMessage = liveMessage(
+          kind === 'search' ? 'search.failed' : 'visual.failed',
+        );
+        expect(JSON.parse(respond.mock.calls[0]![0])).toMatchObject({
+          answer: expectedRaw,
+          failed: true,
+        });
+        expect(respond.mock.calls[0]![0]).not.toContain(
+          'qwen-live-harness-ui:',
+        );
+        const id = String(receipt!['taskId']);
+        expect(searchTaskFrom(rig, id)).toMatchObject({
+          output: expectedRaw,
+          outputMessage: expectedMessage,
+        });
+        rig.callbacks.onResponseCreated?.({
+          callEpoch: 1,
+          responseId: 'display-result',
+          authority: 'search_result',
+        });
+        rig.callbacks.onResponseDone?.({
+          callEpoch: 1,
+          responseId: 'display-result',
+          authority: 'search_result',
+          status: 'completed',
+        });
+        const page = await rig.session.handleSubagentsRequest({
+          action: 'list',
+          selectedId: id,
+        });
+        expect(page.type).toBe('page');
+        if (page.type !== 'page') return;
+        expect(page.page.selected).toMatchObject({
+          output: expectedRaw,
+          outputMessage: expectedMessage,
+        });
+        expect(
+          displayLiveMessage('zh-CN', page.page.selected!.outputMessage!),
+        ).toBe(
+          liveText(
+            'zh-CN',
+            kind === 'search' ? 'search.failed' : 'visual.failed',
+          ),
+        );
+      } finally {
+        rig.session.dispose();
+      }
+    },
+  );
+
+  it('projects owned delivery notes only for Host pages, not the model session_monitor receipt', async () => {
+    const adaptor = new FakeAdaptor();
+    const note =
+      'The send result is uncertain. The instruction may still be received; do not resend automatically.';
+    const delivery: InstructionDelivery = {
+      id: 'private-delivery',
+      target: { id: 'peer', adaptor: adaptor.name, instructionOnly: true },
+      status: 'unknown',
+      tracking: true,
+      createdAt: 1,
+      updatedAt: 2,
+      note,
+    };
+    Object.assign(adaptor, { listInstructionDeliveries: () => [delivery] });
+    const rig = await startSession(adaptor);
+    try {
+      const page = await rig.session.handleSubagentsRequest({ action: 'list' });
+      if (page.type !== 'page') throw new Error('Expected Host page');
+      const shown = page.page.instructionDeliveries![0]!;
+      expect(shown.note).toBe(liveMessage('display.delivery.unconfirmed'));
+      expect(delivery.note).toBe(note);
+      callTool(rig.callbacks, 'session_monitor', { delivery: shown.id });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      expect(receipt).toMatchObject({ note, delivery_status: 'unknown' });
+      expect(JSON.stringify(receipt)).not.toContain('qwen-live-harness-ui:');
+    } finally {
+      rig.session.dispose();
+    }
+  });
+});
+
 describe('LiveSession microphone mute heartbeat wiring', () => {
   it('records the fixed 24 kHz output sample rate', async () => {
     const rig = await startSession(undefined, {
@@ -12130,6 +12239,79 @@ describe('call-scoped peer reports', () => {
     return result.page;
   }
 
+  it('localizes the display-only report note without translating source claims or model receipts', async () => {
+    const peer = reporter();
+    const rig = await startSession(peer.adaptor, {
+      getLanguage: () => 'zh-CN',
+    });
+    try {
+      rig.host.isOutputMuted.mockReturnValue(true);
+      expect(
+        peer.send({
+          source: 'Original source',
+          text: 'Original report content',
+        }),
+      ).toBe(true);
+      const shown = (await reportPage(rig.session)).sessionReports![0]!;
+      expect(shown).toMatchObject({
+        source: 'Original source',
+        text: 'Original report content',
+        note: liveMessage('display.report.muted'),
+      });
+      callTool(rig.callbacks, 'session_monitor', { reports: true });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      expect(receipt?.['untrusted_reports']).toMatchObject([
+        {
+          source: 'Original source',
+          text: 'Original report content',
+          note: 'Audio output was muted when this report arrived.',
+        },
+      ]);
+      expect(JSON.stringify(receipt)).not.toContain('qwen-live-harness-ui:');
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
+  it('uses an empty source only for the Host fallback label while keeping the old wire shape and original tool data', async () => {
+    const peer = reporter();
+    const rig = await startSession(peer.adaptor);
+    try {
+      rig.host.isOutputMuted.mockReturnValue(true);
+      expect(
+        peer.send({
+          source: 'Unknown peer',
+          sourceIsFallback: true,
+          text: 'Missing source report',
+        }),
+      ).toBe(true);
+      expect(
+        peer.send({
+          source: 'Unknown peer',
+          text: 'Real same-name source report',
+        }),
+      ).toBe(true);
+      const ui = (await reportPage(rig.session)).sessionReports!;
+      expect(
+        ui.find((row) => row.text === 'Missing source report')?.source,
+      ).toBe('');
+      expect(
+        ui.find((row) => row.text === 'Real same-name source report')?.source,
+      ).toBe('Unknown peer');
+      expect(JSON.stringify(ui)).not.toContain('sourceIsFallback');
+      callTool(rig.callbacks, 'session_monitor', { reports: true });
+      const [receipt] = await awaitReceipts(rig.realtime, 1);
+      expect(receipt?.['untrusted_reports']).toMatchObject([
+        { source: 'Unknown peer' },
+        { source: 'Unknown peer' },
+      ]);
+      expect(JSON.stringify(receipt)).not.toContain('sourceIsFallback');
+      expect(JSON.stringify(receipt)).not.toContain('qwen-live-harness-ui:');
+    } finally {
+      rig.session.dispose();
+    }
+  });
+
   it('passes trusted conversation language for reports instead of the English source text or UI fallback', async () => {
     const peer = reporter();
     const { session, callbacks, realtime } = await startSession(peer.adaptor, {
@@ -12543,7 +12725,7 @@ describe('persisted realtime protocol diagnostics', () => {
       );
       expect(
         displayLiveMessage('zh-CN', String(host.failCall.mock.lastCall?.[1])),
-      ).toBe('连接未能安全恢复，请重新开始交互。');
+      ).toBe(liveText('zh-CN', 'runtime.realtimeRecoveryFailed'));
       expect(JSON.stringify(log.write.mock.calls)).toContain(
         'Technical recovery detail for the operator.',
       );

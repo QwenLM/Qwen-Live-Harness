@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { liveText } from '../packages/qwen-live-harness/src/i18n/messages.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli =
@@ -266,29 +267,29 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: 'y' },
-        { question: 'New backend name', input: '\r' },
-        { question: 'Running qwen serve URL', input: `${baseUrl}\r` },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: 'y' },
+        { question: liveText('en', 'peerSetup.name'), input: '\r' },
+        { question: liveText('en', 'peerSetup.url'), input: `${baseUrl}\r` },
         {
-          question: 'qwen serve authentication token',
+          question: liveText('en', 'peerSetup.serveToken'),
           input: `${serveToken}\r`,
         },
-        { question: 'Local QWEN_HOME', input: `${qwenHome}\r` },
-        { question: 'Receive and announce session reports', input: 'y' },
+        { question: liveText('en', 'peerSetup.home'), input: `${qwenHome}\r` },
+        { question: liveText('en', 'peerSetup.reports'), input: 'y' },
         {
-          question: 'Authorization for terminal instructions',
+          question: liveText('en', 'peerSetup.controller'),
           input: '\x1b[B\r',
         },
         {
-          question: 'Controller token environment variable',
+          question: liveText('en', 'peerSetup.tokenEnv'),
           input: `${ENV_NAME}\r`,
         },
       ],
       { [ENV_NAME]: controllerToken },
     );
     expect(result.code).toBe(0);
-    expect(result.output).toContain('Peer settings saved');
+    expect(result.output).toContain(liveText('en', 'peerSetup.saved'));
     expect(result.output).not.toContain(controllerToken);
     expect(result.output).not.toContain(serveToken);
     const configured = {
@@ -318,23 +319,23 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const unchanged = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: '\r' },
-        { question: 'Local QWEN_HOME', input: '\r' },
-        { question: 'Receive and announce session reports', input: '\r' },
-        { question: 'Authorization for terminal instructions', input: '\r' },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: '\r' },
+        { question: liveText('en', 'peerSetup.home'), input: '\r' },
+        { question: liveText('en', 'peerSetup.reports'), input: '\r' },
+        { question: liveText('en', 'peerSetup.controller'), input: '\r' },
       ],
       { [ENV_NAME]: controllerToken },
     );
     expect(unchanged.code).toBe(0);
-    expect(unchanged.output).toContain('Peer settings are unchanged');
+    expect(unchanged.output).toContain(liveText('en', 'peerSetup.unchanged'));
     expect(await readFile(configPath, 'utf8')).toBe(bytes);
 
     const disabled = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: 'n' },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: 'n' },
       ],
     );
     expect(disabled.code).toBe(0);
@@ -355,12 +356,12 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: 'n' },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: 'n' },
       ],
     );
     expect(result.code).toBe(0);
-    expect(result.output).toContain('Peer settings are unchanged');
+    expect(result.output).toContain(liveText('en', 'peerSetup.unchanged'));
     expect(await snapshot(temporary)).toEqual(before);
     expect(requests).toEqual([]);
   });
@@ -371,11 +372,11 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: 'y' },
-        { question: 'Local QWEN_HOME', input: `${qwenHome}\r` },
-        { question: 'Receive and announce session reports', input: 'y' },
-        { question: 'Authorization for terminal instructions', input: '\x03' },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: 'y' },
+        { question: liveText('en', 'peerSetup.home'), input: `${qwenHome}\r` },
+        { question: liveText('en', 'peerSetup.reports'), input: 'y' },
+        { question: liveText('en', 'peerSetup.controller'), input: '\x03' },
       ],
     );
     expect(result.code).toBe(0);
@@ -390,19 +391,19 @@ describe('peer setup and diagnostics through the public CLI', () => {
     const result = await run(
       ['init', '--peers'],
       [
-        { question: 'Select a Qwen Serve connection', input: '\r' },
-        { question: 'Enable local terminal discovery', input: 'y' },
-        { question: 'Local QWEN_HOME', input: `${qwenHome}\r` },
-        { question: 'Receive and announce session reports', input: 'y' },
+        { question: liveText('en', 'peerSetup.backend'), input: '\r' },
+        { question: liveText('en', 'peerSetup.enabled'), input: 'y' },
+        { question: liveText('en', 'peerSetup.home'), input: `${qwenHome}\r` },
+        { question: liveText('en', 'peerSetup.reports'), input: 'y' },
         {
-          question: 'Authorization for terminal instructions',
+          question: liveText('en', 'peerSetup.controller'),
           input: '\r',
           beforeInput: () => writeFile(configPath, external),
         },
       ],
     );
     expect(result.code).toBe(1);
-    expect(result.output).toContain('config.json changed while setup was open');
+    expect(result.output).toContain(liveText('en', 'peerSetup.concurrentEdit'));
     expect(await readFile(configPath, 'utf8')).toBe(external);
     expect(await readdir(data)).toEqual(['config.json']);
     expect(await snapshot(home)).toEqual({});
@@ -429,10 +430,16 @@ describe('peer setup and diagnostics through the public CLI', () => {
     });
     expect(result.code).toBe(0);
     expect(result.output).toContain('existing-daemon');
-    expect(result.output).toContain('grant validity unverified');
+    expect(result.output).toContain(
+      liveText('en', 'peers.doctor.state.configured-unverified'),
+    );
     expect(result.output).not.toContain(controllerToken);
     expect(result.output).not.toContain(serveToken);
-    expect(result.output).not.toContain('Unknown argument');
+    for (const argument of ['doctor', '--peers']) {
+      expect(result.output).not.toContain(
+        liveText('en', 'cli.unknownArgument', { argument }),
+      );
+    }
     expect(requests).toEqual([
       { method: 'GET', url: '/capabilities', authorized: true },
     ]);

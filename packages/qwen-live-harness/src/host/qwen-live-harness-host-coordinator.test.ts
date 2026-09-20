@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LiveLogger } from '../logger.js';
+import { liveText } from '../i18n/messages.js';
 import { SubagentsLedger } from '../subagents/ledger.js';
 import {
   LiveHostCoordinator,
@@ -2241,7 +2242,7 @@ describe('LiveHostCoordinator', () => {
       expect(value.getStatus()).toMatchObject({
         available: true,
         state: 'error',
-        message: 'Qwen Live Harness voice failed to start.',
+        message: liveText('en', 'runtime.startFailed'),
       });
     });
   });
@@ -2328,7 +2329,7 @@ describe('LiveHostCoordinator', () => {
 
     expect(value.getStatus()).toMatchObject({
       state: 'error',
-      message: 'Qwen Live Harness voice audio transport dropped input.',
+      message: liveText('en', 'runtime.audioDropped'),
     });
   });
 

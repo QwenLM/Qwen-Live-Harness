@@ -52,7 +52,7 @@ vi.mock('./startup-registration.js', () => ({
 
 import { runInit } from './init.js';
 import { DEFAULT_REALTIME_MODEL } from './config.js';
-import { liveText } from './i18n/messages.js';
+import { liveMessage, liveText } from './i18n/messages.js';
 
 const originalApiKey = process.env['DASHSCOPE_API_KEY'];
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -797,6 +797,79 @@ describe('runInit', () => {
     );
   });
 
+  it.each(['en', 'zh-CN'] as const)(
+    'hides unknown Host check and install errors in %s',
+    async (language) => {
+      const raw =
+        'UPSTREAM_PRIVATE_DETAIL /Users/private/credentials Bearer sk-secret';
+      mocks.detectAgents.mockReturnValue([]);
+      answerWithoutBackend(language);
+      for (const phase of ['check', 'install'] as const) {
+        vi.mocked(console.log).mockClear();
+        mocks.refreshHost.mockResolvedValue(
+          phase === 'check'
+            ? { state: 'error', message: raw, retryable: true }
+            : { state: 'missing' },
+        );
+        mocks.installHost.mockResolvedValue({
+          state: 'error',
+          message: raw,
+          retryable: true,
+        });
+
+        await runInit();
+
+        const detail = liveText(language, 'init.unknownError');
+        expect(console.log).toHaveBeenCalledWith(
+          phase === 'check'
+            ? `  ! ${liveText(language, 'init.hostCheckFailed', { detail })}`
+            : `  ✗ ${liveText(language, 'init.hostInstallFailed', { detail })}`,
+        );
+        const displayed = vi.mocked(console.log).mock.calls.flat().join('\n');
+        expect(displayed).not.toMatch(
+          /UPSTREAM_PRIVATE_DETAIL|\/Users\/private|sk-secret|Bearer/,
+        );
+        expect(mocks.writeFileSync).toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['en', 'zh-CN'] as const)(
+    'renders nested owned Host source failures in %s',
+    async (language) => {
+      mocks.detectAgents.mockReturnValue([]);
+      answerWithoutBackend(language);
+      const message = liveMessage('installer.sourcesFailed', {
+        oss: liveMessage('installer.manifestDownload', { status: 503 }),
+        github: liveMessage('installer.checksum'),
+      });
+      const detail = liveText(language, 'installer.sourcesFailed', {
+        oss: liveText(language, 'installer.manifestDownload', { status: 503 }),
+        github: liveText(language, 'installer.checksum'),
+      });
+      for (const phase of ['check', 'install'] as const) {
+        vi.mocked(console.log).mockClear();
+        mocks.refreshHost.mockResolvedValue(
+          phase === 'check'
+            ? { state: 'error', message }
+            : { state: 'missing' },
+        );
+        mocks.installHost.mockResolvedValue({ state: 'error', message });
+
+        await runInit();
+
+        expect(console.log).toHaveBeenCalledWith(
+          phase === 'check'
+            ? `  ! ${liveText(language, 'init.hostCheckFailed', { detail })}`
+            : `  ✗ ${liveText(language, 'init.hostInstallFailed', { detail })}`,
+        );
+        expect(
+          vi.mocked(console.log).mock.calls.flat().join('\n'),
+        ).not.toContain('qwen-live-harness-ui:');
+      }
+    },
+  );
+
   it('registers the configured discovery directory independently of the data directory', async () => {
     answerSetupPrompts();
     vi.stubEnv('QWEN_LIVE_HARNESS_DISCOVERY_DIR', ' ~/harness-discovery ');
@@ -881,21 +954,21 @@ describe('runInit', () => {
           switch (question.message) {
             case liveText('en', 'language.choose'):
               return { value: true };
-            case 'Which agent should be the default backend?':
+            case liveText('en', 'init.defaultAgent'):
               return { value: 'qwen' };
             case liveText('en', 'init.qwenMode'):
               return { value: 'acp' };
             case liveText('en', 'init.endpoint'):
               return { value: false };
-            case 'Use DASHSCOPE_API_KEY from the environment?':
+            case liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }):
               return { value: true };
             case liveText('en', 'init.apiName'):
               return { value: DEFAULT_REALTIME_MODEL };
-            case 'Enable Memory for cross-call recall?':
+            case liveText('en', 'init.memoryEnabled'):
               return { value: enabled };
-            case 'DashScope Memory consolidation model:':
+            case liveText('en', 'init.memoryModel'):
               return { value: 'custom-memory-model' };
-            case 'Default working directory for coding sessions:':
+            case liveText('en', 'init.cwd'):
               return { value: '/tmp/memory-init' };
             default:
               throw new Error(`Unexpected prompt: ${question.message}`);
@@ -917,12 +990,12 @@ describe('runInit', () => {
       expect(
         questions.find(
           (question) =>
-            question['message'] === 'Enable Memory for cross-call recall?',
+            question['message'] === liveText('en', 'init.memoryEnabled'),
         ),
       ).toMatchObject({ initial: true });
       const modelQuestion = questions.find(
         (question) =>
-          question['message'] === 'DashScope Memory consolidation model:',
+          question['message'] === liveText('en', 'init.memoryModel'),
       );
       if (enabled)
         expect(modelQuestion).toMatchObject({ initial: 'qwen3.7-plus' });
@@ -942,21 +1015,21 @@ describe('runInit', () => {
         switch (question.message) {
           case liveText('en', 'language.choose'):
             return { value: true };
-          case 'Which agent should be the default backend?':
+          case liveText('en', 'init.defaultAgent'):
             return { value: 'qwen' };
           case liveText('en', 'init.qwenMode'):
             return { value: 'acp' };
           case liveText('en', 'init.endpoint'):
             return { value: false };
-          case 'Use DASHSCOPE_API_KEY from the environment?':
+          case liveText('en', 'init.useEnv', { name: 'DASHSCOPE_API_KEY' }):
             return { value: true };
           case liveText('en', 'init.apiName'):
             return { value: DEFAULT_REALTIME_MODEL };
-          case 'Enable Memory for cross-call recall?':
+          case liveText('en', 'init.memoryEnabled'):
             return { value: true };
-          case 'DashScope Memory consolidation model:':
+          case liveText('en', 'init.memoryModel'):
             return { value: 'qwen3.7-plus' };
-          case 'Default working directory for coding sessions:':
+          case liveText('en', 'init.cwd'):
             return { value: '/tmp/qwen-live-harness-project' };
           default:
             throw new Error(`Unexpected prompt: ${question.message}`);

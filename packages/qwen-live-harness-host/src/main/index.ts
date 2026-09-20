@@ -2390,7 +2390,11 @@ function registerIpc(): void {
             code: 'microphone_permission_request_failed',
             errorName: hostDiagnosticErrorName(error),
           });
-          throw error;
+          throw new Error(
+            liveMessage('host.permission.requestFailed', {
+              permission: liveMessage('ui.microphone'),
+            }),
+          );
         }
         if (
           generation !== nativeServiceGeneration ||

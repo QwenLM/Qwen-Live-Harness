@@ -18,9 +18,14 @@ const unsubscribe = window.qwenLiveHarnessHost.onState((state) => {
 const unsubscribeLevel = window.qwenLiveHarnessHost.onInputLevel((level) =>
   view.setInputLevel(level),
 );
-void window.qwenLiveHarnessHost.getState().then((state) => {
-  if (!receivedState) view.update(state);
-});
+void window.qwenLiveHarnessHost.getState().then(
+  (state) => {
+    if (!receivedState) view.update(state);
+  },
+  () => {
+    if (!receivedState) view.showLoadFailure();
+  },
+);
 window.addEventListener('beforeunload', () => {
   unsubscribe();
   unsubscribeLevel();

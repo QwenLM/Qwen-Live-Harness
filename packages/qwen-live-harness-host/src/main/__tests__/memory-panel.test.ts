@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { liveText } from 'qwen-live-harness/i18n';
 import { MemoryPanel } from '../../renderer/memory-panel.ts';
 import type { HostPublicState } from '../../shared/host-api.ts';
 import type { MemoryAction, MemoryState } from '../../shared/protocol.ts';
@@ -83,6 +84,25 @@ function setup(
 const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('memory settings panel', () => {
+  it('preserves a failed edit while localizing its safe error in either UI language', async () => {
+    const { panel, button, input, change } = setup(async () => {
+      throw new Error('PRIVATE /Users/example/memory');
+    });
+    button('Rename').click();
+    change(input('#memory-library-name'), 'A user name');
+    button('Save').click();
+    await settled();
+    for (const language of ['en', 'zh-CN', 'en'] as const) {
+      panel.update({ ...state, language });
+      assert.equal(input('#memory-library-name').value, 'A user name');
+      assert.equal(
+        panel.element.querySelector('[role="status"]')?.textContent,
+        liveText(language, 'ui.actionFailed'),
+      );
+      assert(!panel.element.textContent?.includes('PRIVATE'));
+    }
+  });
+
   it('embeds in Settings and retains drafts while disconnected controls are disabled', () => {
     const { panel, button, input, change } = setup();
     assert.equal(panel.element.getAttribute('role'), 'group');
@@ -123,7 +143,7 @@ describe('memory settings panel', () => {
     }
     assert.equal(button('New').disabled, true);
     assert.equal(button('Rename').disabled, false);
-    assert.equal(input('[aria-label="Consolidation model"]').disabled, true);
+    assert.equal(input('[data-live-label="ui.memoryModel"]').disabled, true);
     assert.match(panel.element.textContent ?? '', /End the current call/);
   });
 
@@ -192,7 +212,7 @@ describe('memory settings panel', () => {
         return { ...memory, model: action.model };
       throw new Error('Could not save library name');
     });
-    const model = input('[aria-label="Consolidation model"]');
+    const model = input('[data-live-label="ui.memoryModel"]');
     change(model, 'custom-model');
     panel.update({ ...state, live: { ...state.live, caption: 'updated' } });
     assert.equal(model.value, 'custom-model');
@@ -206,9 +226,9 @@ describe('memory settings panel', () => {
     button('Save').click();
     await settled();
     assert.equal(input('#memory-library-name').value, 'Unsaved name');
-    assert.match(
-      panel.element.querySelector('[role="status"]')?.textContent ?? '',
-      /Could not save/,
+    assert.equal(
+      panel.element.querySelector('[role="status"]')?.textContent,
+      liveText('en', 'ui.actionFailed'),
     );
     panel.update({ ...state, connection: 'disconnected', memory: undefined });
     assert.equal(button('Save').disabled, true);

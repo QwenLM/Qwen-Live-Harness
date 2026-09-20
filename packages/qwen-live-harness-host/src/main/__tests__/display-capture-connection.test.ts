@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { LiveDaemonConnection } from '../daemon-connection.ts';
+import { liveMessage } from 'qwen-live-harness/i18n';
 import {
   LIVE_PROTOCOL_VERSION,
   type HostControlMessage,
@@ -307,7 +308,7 @@ describe('display capture connection', () => {
       type: 'host.visual_capture_result',
       requestId: 'capture-2',
       success: false,
-      error: 'The captured display does not match the selection.',
+      error: liveMessage('runtime.displayCaptureMismatch'),
     });
   });
 
@@ -338,7 +339,7 @@ describe('display capture connection', () => {
       type: 'host.visual_capture_result',
       requestId: 'capture-1',
       success: false,
-      error: 'Update Qwen Live Harness Host to enable full-display capture.',
+      error: liveMessage('runtime.displayCaptureUnsupported'),
     });
     assert.equal(captureRequest(), undefined);
   });

@@ -58,6 +58,8 @@ export interface PeerSessionReport {
   id: string;
   callId: string;
   source: string;
+  /** The source label was supplied by this application, not the reporting terminal. */
+  sourceIsFallback?: true;
   sourceStatus: 'matched' | 'unconfirmed';
   sourceSession?: BackendHandle;
   sourceSessionId?: string;

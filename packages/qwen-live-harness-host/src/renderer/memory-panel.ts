@@ -4,7 +4,7 @@ import type { MemoryAction, MemoryState } from '../shared/protocol.ts';
 import { parseMemoryAction } from '../shared/protocol.ts';
 import {
   liveText,
-  displayLiveMessage,
+  displayLiveError,
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 import { uiText, uiLabel, localizeUi } from './ui-text.ts';
@@ -59,7 +59,7 @@ export class MemoryPanel {
     { action: 'create' } | { action: 'rename'; libraryId: string } | undefined;
   private modelDirty = false;
   private busy = false;
-  private error = '';
+  private error: unknown = '';
   private libraryOptions = '';
 
   constructor(private readonly api: Pick<LiveHostApi, 'memoryAction'>) {
@@ -226,7 +226,13 @@ export class MemoryPanel {
       ? liveText(language, 'ui.memoryConnectHint')
       : this.busy
         ? liveText(language, 'ui.saving')
-        : displayLiveMessage(language, this.error || memory.error || '');
+        : this.error || memory.error
+          ? displayLiveError(
+              language,
+              this.error || memory.error,
+              'ui.actionFailed',
+            )
+          : '';
     this.status.classList.toggle(
       'error',
       !this.busy && Boolean(this.error || memory.error),
@@ -285,7 +291,7 @@ export class MemoryPanel {
       this.memory = await this.api.memoryAction(action);
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = error;
       return false;
     } finally {
       this.busy = false;

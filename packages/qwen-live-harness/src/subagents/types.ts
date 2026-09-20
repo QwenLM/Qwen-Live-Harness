@@ -52,6 +52,8 @@ export type SubagentTask = {
   request: string;
   activity: string;
   output: string;
+  /** Optional application-owned display message; output remains verbatim task data. */
+  outputMessage?: string;
   outputTruncated?: boolean;
   events: SubagentActivity[];
   triggerCount?: number;
@@ -376,6 +378,8 @@ function validTask(task: unknown): task is SubagentTask {
     !text(task['request'], 4096) ||
     !text(task['activity'], 1024) ||
     !text(task['output'], 16384) ||
+    (task['outputMessage'] !== undefined &&
+      !text(task['outputMessage'], 512)) ||
     !Array.isArray(task['events']) ||
     task['events'].length > 24
   )

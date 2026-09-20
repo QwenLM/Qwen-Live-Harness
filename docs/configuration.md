@@ -4,7 +4,7 @@
 
 [Home](../README.md) · [Advanced configuration for developers](../packages/qwen-live-harness/README.md#advanced-configuration)
 
-After initialization, most everyday options are available in **Settings** beside the Pebble interaction card. Open the configuration file when you need to change a model, API key, image resolution, or other advanced option.
+After setup, most everyday options are available in **Settings** on the voice card. Open the configuration file to change a model, API key, image resolution, or other advanced option.
 
 ## Where to change a setting
 
@@ -18,7 +18,7 @@ After initialization, most everyday options are available in **Settings** beside
 | Change the color palette                           | Settings → Personalization → Color palette         |
 | Switch language or light/dark theme                | Settings → Personalization → Language / Appearance |
 | Change a model, API key, resolution, or frame rate | Settings → Open configuration                      |
-| Start or end an interaction                        | Start / End call in the UI, or `Command+E`         |
+| Start or end a call                                | Start call / End call, or `Command+E`              |
 
 ## Edit your configuration in five steps
 
@@ -103,7 +103,7 @@ You can also set the top-level field in your configuration:
 }
 ```
 
-Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. If you edit the file manually, restart Host or reconnect the daemon to apply it; changing the palette in Settings needs no restart. Missing or invalid values use Iris. Light, dark, and system appearance are separate settings under **Personalization → Appearance**.
+Supported values are `iris`, `clay`, `sage`, `tide`, `graphite`, `rose`, and `berry`. If you edit the file manually, reopen the desktop app or reconnect to the background service to apply it; changing the palette in Settings needs no restart. Missing or invalid values use Iris. Light, dark, and system appearance are separate settings under **Personalization → Appearance**.
 
 ## Visual input
 
@@ -114,9 +114,9 @@ Choose **what to see**, then **when to see it**:
 - **Capture Mode → On Demand**: capture a snapshot when needed; this is the default.
 - **Capture Mode → Live Feed**: continuously send recent frames during a call, so you can ask about what is visible now.
 
-**On Demand can understand snapshots without a background Harness.** When you ask a visual question, a read-only Visual Analysis subagent inspects one snapshot and returns evidence for Omni to answer. Its status and result appear in Subagents, where it can be stopped. Ending the call cancels unfinished analyses. It uses the same model, API key, and region as the main conversation; no extra model configuration is needed.
+**On Demand does not require a coding agent.** When you ask a visual question, a read-only Visual Analysis subagent analyzes one snapshot and returns text for Omni to answer. You can view its status and result or stop it in Subagents. Ending the call cancels unfinished analyses. It uses the same model, API key, and region as the main conversation; no extra model configuration is needed.
 
-Screen Live Feed, On Demand, and visual monitors capture the full selected display, not just the foreground window. With multiple displays, choose one under **Display**; the default follows the primary display. On Demand sends the snapshot to the visual helper and its text analysis to main Omni, not the image pixels directly. If analysis fails, no visual contents are confirmed; an empty metadata field does not mean a blank desktop. File and app operations still need a background Harness.
+Screen Live Feed, On Demand, and visual monitors capture the full selected display, not just the foreground window. With multiple displays, choose one under **Display**; the default is the primary display. On Demand does not send the image directly to the main conversation. A failed analysis or missing metadata does not mean the desktop is blank. File and app operations still require a coding agent.
 
 ### Frame rate and resolution
 
@@ -166,7 +166,7 @@ This does not change the camera preview or Live Feed resolution. `native` is sup
 
 ### Camera preview and permissions
 
-Selecting Camera shows a preview by default. Its eye button only shows or hides the preview: **hiding it does not turn off camera input**. A local preview may remain after a call ends; switch to Screen or quit Host to close the camera flow.
+Selecting Camera shows a preview by default. Its eye button only shows or hides the preview: **hiding it does not turn off camera input**. A local preview may remain after a call ends; switch to Screen or quit the app to close the camera.
 
 Grant the permissions requested for your current source. Camera does not require screen permission first. Screen Live Feed and on-demand screen snapshots both require Screen Recording, not Accessibility.
 
@@ -248,7 +248,7 @@ If the model is speaking, proactive notifications wait and play in order after i
 
 If a Proactive response finishes normally without generating speech, Live can try one independent announcement using the same model and voice. It reads the Monitor's observation summary, not the raw media again; no extra model setting is needed. This adds one model call, not another monitoring trigger.
 
-In Subagents, **Preparing announcement** means a response is still being prepared; **Announcing** starts only after the device confirms playback start. The independent fallback is **Announcement delivered** only after playback completion, or **Not announced** if it was not fully delivered. A one-shot can therefore be completed while its announcement is undelivered; a repeat monitor continues after this fallback fails.
+In Subagents, **Preparing announcement** means a response is still being prepared; **Announcing** starts only after the device confirms playback start. The fallback shows **Announced** only after playback completes, or **Not announced** if it was not played in full. A one-shot task can therefore be completed while its announcement remains unheard; a repeating monitor continues after this fallback fails.
 
 The helper has a 20-second generation timeout and follows the announcement deadline. A queued fallback waits for earlier replies or receipt processing; user speech, output mute, cancellation, or End call discards it. Interrupted fallback generation/playback is not replayed. Muting the primary path consumes the notification without replaying it on unmute: a completed event while muted does not mean you heard it.
 
@@ -284,7 +284,7 @@ This compression setting applies only to Proactive visual monitors, not foregrou
 
 ## Do you need a background Harness?
 
-You can use conversation, live visual input, Memory, and Proactive without installing a coding agent. Select **Continue without a background Harness** during initialization.
+You can talk, share images, and use Memory and Proactive without installing a coding agent. Select **Continue without a coding agent** during setup.
 
 To edit files, run commands, or perform background work, first install and sign in to an agent using its official guide, then select it during initialization. Supported options include [Qwen Code](https://github.com/QwenLM/qwen-code), [Qoder CLI](https://qoder.com/cli), [Codex](https://developers.openai.com/codex/cli), [Claude Code](https://code.claude.com/docs/en/setup), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
@@ -300,11 +300,11 @@ Keep the empty array. Omitting `backends` selects the default local Qwen Serve c
 
 ### Web search
 
-With or without a background Harness, a search subagent can look up public information. No separate search model is needed: it uses the main conversation's complete model ID, including any invitation-only alias, endpoint, and API key. Live does not maintain a model-name allowlist; native search availability depends on the service.
+With or without a coding agent, a search subagent can look up public information. It uses the main conversation's complete model ID, including any invitation-only alias, endpoint, and API key; no separate search model is needed. The app does not restrict search by model name. Native search availability depends on the service.
 
 Qwen Omni briefly acknowledges a lookup, then searches in the background. You can continue talking or request other independent searches. Searches run concurrently; ready results wait for the current speech and playback to finish, then are answered in order. Conversation that does not need current information is answered directly.
 
-If search fails, including when the service rejects native search, a configured background Harness takes over the same read-only query. Without a background Harness, Live reports the failure. This handoff does not reuse or interrupt another working session and does not approve permissions for you.
+If search fails, including when the service does not support native search, a configured coding agent takes over the same read-only query. Without one, the app reports the failure. The handoff uses a separate task, does not interrupt other work, and does not approve permissions for you.
 
 Use **Subagents → Web Search** to inspect the query, status, and result, or stop a search. A successful fallback also creates a separate background task entry. Ending the call cancels the searches and their automatic fallback tasks, but not unrelated background jobs. If a backend has not confirmed cancellation, use the task panel's actual status.
 
@@ -314,7 +314,7 @@ Use **Subagents** to inspect tasks, stop them, or respond to permissions. Closin
 
 - **Video Source / Capture Mode** take effect immediately but are not written to the configuration. Edit `visualInput.source` / `mode` to change the next startup's defaults.
 - Confirmed **Display, Language, and Memory** settings are saved.
-- The local Host saves microphone selection, theme, and window positions.
+- The desktop app saves microphone selection, appearance, and window positions locally. The color palette is saved in `config.json`.
 - Manual configuration-file edits require a full quit and restart.
 
 ## Troubleshooting
@@ -325,11 +325,11 @@ Use **Subagents** to inspect tasks, stop them, or respond to permissions. Closin
 
 **Realtime reports a quota limit.** Check the selected region's account quota and concurrent sessions in the provider console. Ending unused sessions may free concurrency, but an exhausted account quota needs provider-side action; repeated restarts do not resolve it.
 
-**There is no sound, or startup is stuck.** Check microphone permission, select a working device under Settings → Sound → Microphone, then click Start to retry. Avoid repeatedly clicking while an operation is timing out.
+**There is no sound, or startup is stuck.** Check microphone permission, select an available device under **Settings → Sound → Microphone**, then click **Start call**. Wait for the current attempt to finish or show an error before retrying.
 
-**Music sounds worse after enabling a Bluetooth headset microphone.** Choose the built-in or a separate microphone under Sound → Microphone while keeping the headset for playback. Model output uses 24 kHz PCM; the 16 kHz setting is for microphone input. Host resamples playback to the output device's actual rate. Changing the software sample rate cannot prevent the headset from switching to its lower-quality call profile.
+**Music sounds worse after enabling a Bluetooth headset microphone.** Choose the built-in or a separate microphone under **Sound → Microphone** while keeping the headset for playback. Model output uses 24 kHz PCM; microphone audio is sent to the model at 16 kHz. Playback is resampled to the output device's actual rate. Changing the software sample rate cannot prevent the headset from switching to its lower-quality call profile.
 
-**I only want to end the interaction.** Use End call or `Command+E`. This also stops the call's visual analyses, Proactive monitors, searches, and their automatic fallback tasks. Use Quit to exit the entire application, or `Ctrl+C` when launched from a terminal.
+**I only want to end the call.** Use **End call** or `Command+E`. This also cancels the call's visual analyses, Proactive monitors, searches, and their fallback tasks. Use **Quit Qwen Live Harness** to exit the entire application, or `Ctrl+C` when launched from a terminal.
 
 ### Get more diagnostic information
 

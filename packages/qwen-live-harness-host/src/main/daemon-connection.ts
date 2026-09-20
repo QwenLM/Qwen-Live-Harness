@@ -2,9 +2,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   isLiveLanguage,
   liveMessage,
-  liveText,
   displayLiveMessage,
+  displayLiveError,
   type LiveLanguage,
+  type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 import WebSocket, { type RawData } from 'ws';
 import {
@@ -1056,7 +1057,7 @@ export class LiveDaemonConnection {
         case 'host.set_shortcut': {
           const result = this.callbacks.setShortcut?.(message.shortcut) ?? {
             success: false,
-            error: liveText('en', 'host.error.shortcutUnavailable'),
+            error: liveMessage('host.error.shortcutUnavailable'),
           };
           this.sendControl({
             type: 'host.shortcut_result',
@@ -1064,7 +1065,12 @@ export class LiveDaemonConnection {
             shortcut: message.shortcut,
             ...result,
             ...(result.error
-              ? { error: displayLiveMessage('en', result.error) }
+              ? {
+                  error: this.controlError(
+                    result.error,
+                    'host.error.shortcutUnavailable',
+                  ),
+                }
               : {}),
           });
           break;
@@ -1075,7 +1081,7 @@ export class LiveDaemonConnection {
               type: 'host.visual_capture_result',
               requestId: message.requestId,
               success: false,
-              error: liveText('en', 'host.error.visualStale'),
+              error: liveMessage('host.error.visualStale'),
             });
             break;
           }
@@ -1185,6 +1191,31 @@ export class LiveDaemonConnection {
     });
   }
 
+  private controlError(error: unknown, fallback: LiveMessageKey): string {
+    const language = this.uiLanguageV1?.language ?? 'en';
+    const rendered = displayLiveError(language, error, fallback);
+    try {
+      const message =
+        typeof error === 'string'
+          ? error
+          : error && typeof error === 'object' && 'message' in error
+            ? error.message
+            : undefined;
+      // Keep owned markers translatable across the internal protocol. Unknown
+      // native exceptions are replaced at this UI boundary, never sent raw.
+      if (
+        typeof message === 'string' &&
+        message.startsWith('qwen-live-harness-ui:') &&
+        displayLiveMessage(language, message) === rendered &&
+        rendered !== message
+      )
+        return message;
+    } catch {
+      // A hostile/foreign error getter must not break the request handler.
+    }
+    return rendered;
+  }
+
   private async captureVisual(
     request: Extract<DaemonControlMessage, { type: 'host.capture_visual' }>,
   ): Promise<void> {
@@ -1195,7 +1226,7 @@ export class LiveDaemonConnection {
         type: 'host.visual_capture_result',
         requestId: request.requestId,
         success: false,
-        error: liveText('en', 'host.error.visualUnavailable'),
+        error: liveMessage('host.error.visualUnavailable'),
       });
       return;
     }
@@ -1221,7 +1252,7 @@ export class LiveDaemonConnection {
           : {}),
       });
       if (result.source !== request.source) {
-        throw new Error(liveText('en', 'host.error.visualWrongSource'));
+        throw new Error(liveMessage('host.error.visualWrongSource'));
       }
       if (
         request.screenScope === 'display' &&
@@ -1249,13 +1280,10 @@ export class LiveDaemonConnection {
         socket !== this.socket
       )
         return;
-      const message =
-        error instanceof Error && error.message
-          ? displayLiveMessage('en', error.message).slice(
-              0,
-              MAX_VISUAL_CAPTURE_ERROR_CHARS,
-            )
-          : liveText('en', 'host.error.visualFailed');
+      const message = this.controlError(error, 'host.error.visualFailed').slice(
+        0,
+        MAX_VISUAL_CAPTURE_ERROR_CHARS,
+      );
       this.sendControl({
         type: 'host.visual_capture_result',
         requestId: request.requestId,

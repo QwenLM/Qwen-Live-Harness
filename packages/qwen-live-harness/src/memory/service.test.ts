@@ -26,7 +26,7 @@ import {
   type MemoryServiceOptions,
 } from './service.js';
 import { MemoryStore } from './store.js';
-import { displayLiveMessage, liveMessage } from '../i18n/messages.js';
+import { displayLiveMessage, liveMessage, liveText } from '../i18n/messages.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs')>();
@@ -246,8 +246,8 @@ describe('MemoryService UI preferences', () => {
       libraryId: 'default',
       libraries: [{ id: 'default', name: 'Default Memory' }],
     });
-    expect(displayLiveMessage('en', service.state().error ?? '')).toContain(
-      'Selected memory is unavailable',
+    expect(displayLiveMessage('en', service.state().error ?? '')).toBe(
+      liveText('en', 'memoryUI.fallback'),
     );
     expect(attach(service)?.libraryId).toBe('default');
     expect(

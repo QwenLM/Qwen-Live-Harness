@@ -18,6 +18,10 @@ import { resolveMemoryConfig, type MemoryConfig } from './memory/config.js';
 import type { LiveLanguage } from './i18n/messages.js';
 import { resolveLiveLanguage } from './language-preferences.js';
 import {
+  ConfigurationError,
+  readConfigurationValue,
+} from './configuration-error.js';
+import {
   PROACTIVE_MONITOR_CHUNK_DURATION_SEC,
   PROACTIVE_MONITOR_FPS,
 } from './proactive/media-cadence.js';
@@ -183,10 +187,12 @@ function readConfigFile(path: string): Record<string, unknown> {
     // (EACCES, EISDIR, EIO) must surface, or the later missing-key error
     // would point the user at a file that already contains the key.
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(
+    throw new ConfigurationError(
       `Could not read config file ${path}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      'config.readFailed',
+      { path },
     );
   }
   // Editors commonly save JSON with a UTF-8 BOM; JSON.parse rejects it.
@@ -197,10 +203,12 @@ function readConfigFile(path: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     throw new Error('not an object');
   } catch (error) {
-    throw new Error(
+    throw new ConfigurationError(
       `Invalid config file ${path}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      'config.invalidJson',
+      { path },
     );
   }
 }
@@ -1053,17 +1061,36 @@ export function loadConfig(
     str(env['QWEN_LIVE_HARNESS_REALTIME_API_KEY']) ??
     str(file['realtimeApiKey']);
   if (!apiKey) {
-    throw new Error(
+    throw new ConfigurationError(
       'A DashScope realtime API key is required: set DASHSCOPE_API_KEY ' +
         `or put "realtimeApiKey" in ${configPath}.`,
+      'config.apiKeyRequired',
     );
   }
 
-  const port = resolvePort(env, file, configPath);
-  const visualInput = resolveVisualInput(env, file, configPath);
-  const proactive = resolveProactive(env, file, configPath);
-  const memory = resolveMemoryConfig(file['memory'], dataDir, configPath);
-  const backends = parseBackends(env, file, configPath);
+  const port = readConfigurationValue('config.portInvalid', () =>
+    resolvePort(env, file, configPath),
+  );
+  const visualInput = readConfigurationValue(
+    'config.sectionInvalid',
+    () => resolveVisualInput(env, file, configPath),
+    { section: 'visualInput' },
+  );
+  const proactive = readConfigurationValue(
+    'config.sectionInvalid',
+    () => resolveProactive(env, file, configPath),
+    { section: 'proactive' },
+  );
+  const memory = readConfigurationValue(
+    'config.sectionInvalid',
+    () => resolveMemoryConfig(file['memory'], dataDir, configPath),
+    { section: 'memory' },
+  );
+  const backends = readConfigurationValue(
+    'config.sectionInvalid',
+    () => parseBackends(env, file, configPath),
+    { section: 'backends' },
+  );
 
   const voice =
     str(env['QWEN_LIVE_HARNESS_VOICE']) ?? str(file['voice']) ?? 'Tina';

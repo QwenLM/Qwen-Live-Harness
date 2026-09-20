@@ -367,7 +367,7 @@ describe('LiveDaemonConnection', () => {
         type: 'host.visual_capture_result',
         requestId: 'visual-wrong-source',
         success: false,
-        error: liveText('en', 'host.error.visualWrongSource'),
+        error: liveMessage('host.error.visualWrongSource'),
       },
     );
     assert.equal(visualCaptureCalls, 2);
@@ -388,7 +388,10 @@ describe('LiveDaemonConnection', () => {
       failedVisualCaptureFrame.data.toString('utf8'),
     ) as { success: boolean; error: string };
     assert.equal(failedVisualCapture.success, false);
-    assert.equal(failedVisualCapture.error.length, 1_024);
+    assert.equal(
+      failedVisualCapture.error,
+      liveText('en', 'host.error.visualFailed'),
+    );
     assert.equal(
       Buffer.byteLength(
         failedVisualCaptureFrame.data.toString('utf8'),
@@ -410,10 +413,13 @@ describe('LiveDaemonConnection', () => {
     const localizedVisualResult = JSON.parse(
       localizedVisualFrame.data.toString('utf8'),
     );
-    assert.equal(localizedVisualResult.error, 'Visual capture is unavailable.');
+    assert.equal(
+      localizedVisualResult.error,
+      liveMessage('host.error.visualUnavailable'),
+    );
     assert.equal(
       localizedVisualResult.error.includes('qwen-live-harness-ui:'),
-      false,
+      true,
     );
 
     peer.send(

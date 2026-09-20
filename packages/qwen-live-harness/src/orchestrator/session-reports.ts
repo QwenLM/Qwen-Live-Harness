@@ -6,6 +6,7 @@
 
 import type { PeerSessionReport } from '../adaptor/types.js';
 import type { SessionReport } from '../subagents/types.js';
+import { reportNoteForDisplay } from '../subagents/display-text.js';
 
 const PENDING = new Set<SessionReport['announcement']>([
   'queued',
@@ -17,6 +18,7 @@ const PENDING = new Set<SessionReport['announcement']>([
 export class SessionReports {
   private readonly records = new Map<string, SessionReport>();
   private readonly seen = new Map<string, string>();
+  private readonly fallbackSources = new Set<string>();
   private seq = 0;
   revision = 0;
   omitted = 0;
@@ -26,6 +28,7 @@ export class SessionReports {
   clear(): void {
     this.records.clear();
     this.seen.clear();
+    this.fallbackSources.clear();
     this.omitted = 0;
     this.publish();
   }
@@ -57,6 +60,7 @@ export class SessionReports {
       announcement: 'queued',
     };
     this.records.set(view.id, view);
+    if (report.sourceIsFallback) this.fallbackSources.add(view.id);
     this.seen.set(key, view.id);
     while (this.seen.size > 256)
       this.seen.delete(this.seen.keys().next().value!);
@@ -70,6 +74,7 @@ export class SessionReports {
 
   reject(id: string): void {
     this.records.delete(id);
+    this.fallbackSources.delete(id);
   }
 
   update(
@@ -88,6 +93,7 @@ export class SessionReports {
       );
       if (!old) break;
       this.records.delete(old.id);
+      this.fallbackSources.delete(old.id);
       this.omitted += 1;
     }
     this.publish(report);
@@ -109,6 +115,15 @@ export class SessionReports {
     return [...this.records.values()]
       .reverse()
       .map((report) => ({ ...report }));
+  }
+
+  /** Host-only projection; tools retain the original source and note structure. */
+  displayPage(): SessionReport[] {
+    return this.page().map((report) => ({
+      ...report,
+      source: this.fallbackSources.has(report.id) ? '' : report.source,
+      ...(report.note ? { note: reportNoteForDisplay(report.note) } : {}),
+    }));
   }
 
   private publish(report?: SessionReport): void {

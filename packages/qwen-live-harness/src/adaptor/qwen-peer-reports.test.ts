@@ -142,6 +142,30 @@ function envelope(
 }
 
 describe('Qwen peer reports', () => {
+  it('marks only the application-supplied missing-source label and preserves an external name with the same text', async () => {
+    const h = await setup();
+    h.readRecords.mockResolvedValue([]);
+    const missing = h.frame();
+    delete missing.fromName;
+    h.receive(missing);
+    await h.waitReplies(1);
+    expect(h.onReport.mock.calls[0]![0]).toMatchObject({
+      source: 'Unknown peer',
+      sourceIsFallback: true,
+    });
+    h.receive({ ...h.frame(), fromName: 'Unknown peer' });
+    await h.waitReplies(2);
+    expect(h.onReport.mock.calls[1]![0].source).toBe('Unknown peer');
+    expect(h.onReport.mock.calls[1]![0]).not.toHaveProperty('sourceIsFallback');
+    h.readRecords.mockResolvedValue([{ ...record, name: 'Unknown peer' }]);
+    h.receive(h.frame());
+    await h.waitReplies(3);
+    expect(h.onReport.mock.calls[2]![0]).toMatchObject({
+      source: 'Unknown peer',
+      sourceStatus: 'matched',
+    });
+    expect(h.onReport.mock.calls[2]![0]).not.toHaveProperty('sourceIsFallback');
+  });
   it('acknowledges only after synchronous admission and attributes a fresh terminal without exposing routes', async () => {
     const h = await setup();
     const context = h.reports.createReportContext(target)!;

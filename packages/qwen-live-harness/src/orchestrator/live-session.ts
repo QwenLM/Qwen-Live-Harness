@@ -156,6 +156,10 @@ import { HandleRegistry, type JobRecord } from '../tools/handles.js';
 import { Injector } from './injector.js';
 import type { MonitorDebugStore } from '../proactive/monitor-debug-store.js';
 import { SubagentsLedger } from '../subagents/ledger.js';
+import {
+  deliveryNoteForDisplay,
+  subagentForDisplay,
+} from '../subagents/display-text.js';
 import type {
   SubagentPermission,
   SubagentStatus,
@@ -422,6 +426,7 @@ interface CallSearchTask {
   controller: AbortController;
   outcome: 'completed' | 'failed';
   answer?: string;
+  outputMessage?: string;
   searchStatus?: 'performed' | 'not_performed' | 'unknown';
   fallbackBackend?: BackendHandle;
   fallbackJob?: JobRecord;
@@ -1575,6 +1580,7 @@ export class LiveSession {
   ): SubagentsSnapshot {
     return {
       ...snapshot,
+      tasks: snapshot.tasks.map(subagentForDisplay),
       ...(this.deliverySubscriptions.length
         ? { deliveryRevision: this.deliveryRevision }
         : {}),
@@ -1679,7 +1685,14 @@ export class LiveSession {
           .all()
           .some(({ adaptor }) => adaptor.listInstructionDeliveries)
       ) {
-        page.instructionDeliveries = deliveries.slice(0, 100);
+        page.instructionDeliveries = deliveries
+          .slice(0, 100)
+          .map((delivery) => ({
+            ...delivery,
+            ...(delivery.note
+              ? { note: deliveryNoteForDisplay(delivery.note) }
+              : {}),
+          }));
         page.instructionDeliveriesOmitted = Math.max(
           0,
           this.registry
@@ -1692,7 +1705,7 @@ export class LiveSession {
         );
       }
       if (this.reportSubscriptions.length) {
-        page.sessionReports = this.reports.page();
+        page.sessionReports = this.reports.displayPage();
         page.sessionReportsOmitted = this.reports.omitted;
         // Leave room for tasks, permissions and terminal deliveries in the
         // bounded Host transport. Truncate rows, never cut JSON or report text.
@@ -1747,6 +1760,7 @@ export class LiveSession {
   }
 
   private decorateSubagent(task: SubagentTask): SubagentTask {
+    task = subagentForDisplay(task);
     if (task.kind === 'search' || task.kind === 'visual') {
       const tracked = Boolean(this.active?.searches.has(task.id));
       return {
@@ -6267,6 +6281,11 @@ export class LiveSession {
         );
         task.outcome = 'failed';
         task.answer = liveText('en', key);
+        task.outputMessage = liveMessage(
+          key === 'runtime.webSearchInvalidQuery'
+            ? 'display.search.invalidQuery'
+            : 'search.cancelled',
+        );
         task.searchStatus = 'not_performed';
         this.finishSearchTask(context, task.id, 'search.failed');
       }
@@ -6297,6 +6316,7 @@ export class LiveSession {
             searchStatus: 'not_performed',
           },
           'failed',
+          liveMessage('search.failed'),
         );
     });
     return { status: 'accepted', taskId: task.id };
@@ -6399,6 +6419,7 @@ export class LiveSession {
           searchStatus: 'not_performed',
         },
         'failed',
+        liveMessage(timedOut ? 'visual.timeout' : 'visual.failed'),
       );
     }
   }
@@ -6508,6 +6529,7 @@ export class LiveSession {
             searchStatus: 'not_performed',
           },
           'failed',
+          liveMessage(timedOut ? 'display.search.timeout' : 'search.failed'),
         );
       }
     }
@@ -6518,10 +6540,12 @@ export class LiveSession {
     task: CallSearchTask,
     result: Awaited<ReturnType<typeof searchQwenRealtime>>,
     outcome: CallSearchTask['outcome'] = 'completed',
+    outputMessage?: string,
   ): void {
     if (!this.searchIsCurrent(context, task)) return;
     task.outcome = outcome;
     task.answer = result.answer;
+    task.outputMessage = outputMessage;
     task.searchStatus = result.searchStatus;
     const row = this.subagents.get(task.id);
     if (!row) return;
@@ -6529,6 +6553,7 @@ export class LiveSession {
       ...row,
       status: 'delivering',
       output: result.answer,
+      ...(outputMessage ? { outputMessage } : {}),
       activity: liveMessage(
         this.lookupMessageKey(task, 'search.awaitingAnswer'),
       ),
@@ -6684,7 +6709,12 @@ export class LiveSession {
       delivered: reason === 'search.answered',
     });
     context.searches.delete(taskId);
-    this.subagents.result(taskId, task.outcome, task.answer ?? '');
+    this.subagents.result(
+      taskId,
+      task.outcome,
+      task.answer ?? '',
+      task.outputMessage,
+    );
     this.subagents.update(taskId, {
       activity: liveMessage(this.lookupMessageKey(task, reason)),
       notification: reason === 'search.answered' ? 'delivered' : undefined,
@@ -6855,6 +6885,7 @@ export class LiveSession {
           searchStatus: 'not_performed',
         },
         'failed',
+        liveMessage('search.fallbackFailed'),
       );
     }
   }

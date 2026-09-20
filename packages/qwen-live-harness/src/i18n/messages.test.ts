@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LIVE_MESSAGES,
+  displayLiveError,
   displayLiveMessage,
   liveMessage,
   liveText,
@@ -79,18 +80,16 @@ describe('Qwen Live Harness display text catalogue', () => {
   });
 
   it('warns about sensitive debug recordings in both languages', () => {
-    expect(liveText('en', 'cli.usage')).toContain(
-      'save sensitive audio/visual Monitor archives',
+    expect(liveText('en', 'cli.usage')).toMatch(/recordings.*conversation/iu);
+    expect(liveText('zh-CN', 'cli.usage')).toMatch(/录音.*对话/u);
+    expect(liveText('en', 'cli.debugNotice')).toMatch(
+      /microphone.*screen.*camera.*requests.*replies/iu,
     );
-    expect(liveText('zh-CN', 'cli.usage')).toContain(
-      '保存含敏感内容的音频／视觉 Monitor 归档',
+    expect(liveText('zh-CN', 'cli.debugNotice')).toMatch(
+      /麦克风.*屏幕.*摄像头.*请求.*回复/u,
     );
-    expect(liveText('en', 'cli.debugNotice')).toContain(
-      'archives contain real microphone audio, screen/camera frames, and prompt/response text',
-    );
-    expect(liveText('zh-CN', 'cli.debugNotice')).toContain(
-      '归档包含真实麦克风音频、屏幕／摄像头画面和提示词／回复文本',
-    );
+    expect(liveText('en', 'cli.debugNotice')).toMatch(/private.*sharing/iu);
+    expect(liveText('zh-CN', 'cli.debugNotice')).toMatch(/分享.*私人信息/u);
   });
 
   it('bounds encoded details without emitting truncated JSON', () => {
@@ -103,12 +102,15 @@ describe('Qwen Live Harness display text catalogue', () => {
         messageType: detail,
       });
       expect(message.length).toBeLessThanOrEqual(512);
-      expect(displayLiveMessage('en', message)).toContain(
-        'Required Qwen Live Harness message',
-      );
-      expect(displayLiveMessage('zh-CN', message)).not.toContain(
-        'qwen-live-harness-ui:',
-      );
+      const parsed = JSON.parse(message.slice('qwen-live-harness-ui:'.length));
+      for (const language of ['en', 'zh-CN'] as const) {
+        expect(displayLiveMessage(language, message)).toBe(
+          liveText(language, 'host.error.requiredMessage', parsed.params),
+        );
+        expect(displayLiveMessage(language, message)).not.toContain(
+          'qwen-live-harness-ui:',
+        );
+      }
     }
   });
 
@@ -117,5 +119,69 @@ describe('Qwen Live Harness display text catalogue', () => {
       messageType: liveMessage('ui.settings'),
     });
     expect(displayLiveMessage('zh-CN', message)).toContain('“设置”');
+  });
+
+  it('renders known errors and never exposes raw exceptions or malformed markers', () => {
+    for (const language of ['en', 'zh-CN'] as const) {
+      const fallback = liveText(language, 'host.theme.saveFailed');
+      for (const error of [
+        new Error('private-token /private/config.json EACCES'),
+        'private-token /private/config.json',
+        { message: 'Error invoking remote method: private-token' },
+        'qwen-live-harness-ui:{"key":"missing","params":{}}',
+        'qwen-live-harness-ui:{"key":"ui.settings","params":null}',
+        'quoted qwen-live-harness-ui:{"key":"ui.settings","params":{}}',
+        null,
+        undefined,
+        0,
+        {
+          get message() {
+            throw new Error('unreadable error');
+          },
+        },
+      ]) {
+        expect(displayLiveError(language, error, 'host.theme.saveFailed')).toBe(
+          fallback,
+        );
+      }
+      const owned = liveMessage('host.device.fallback', { index: 2 });
+      expect(
+        displayLiveError(language, new Error(owned), 'host.theme.saveFailed'),
+      ).toBe(liveText(language, 'host.device.fallback', { index: 2 }));
+      expect(
+        displayLiveError(
+          language,
+          {
+            message: `Error invoking remote method 'live:example': Error: ${owned}`,
+          },
+          'host.theme.saveFailed',
+        ),
+      ).toBe(liveText(language, 'host.device.fallback', { index: 2 }));
+      expect(
+        displayLiveError(
+          language,
+          'camera_snapshot_resolution_unavailable',
+          'host.theme.saveFailed',
+        ),
+      ).toBe(liveText(language, 'code.camera_snapshot_resolution_unavailable'));
+    }
+  });
+
+  it('truncates translated parameters without splitting Unicode code points', () => {
+    const value = '设备📷🎧'.repeat(500);
+    const message = liveMessage('host.error.requiredMessage', {
+      messageType: value,
+    });
+    expect(message.length).toBeLessThanOrEqual(512);
+    for (const language of ['en', 'zh-CN'] as const) {
+      const rendered = displayLiveMessage(language, message);
+      expect(rendered).toContain('…');
+      expect(
+        Array.from(rendered).some((character) => {
+          const point = character.codePointAt(0)!;
+          return point >= 0xd800 && point <= 0xdfff;
+        }),
+      ).toBe(false);
+    }
   });
 });

@@ -559,23 +559,34 @@ async function awaitLaunchStep<T>(
   }
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof InstallerError)
-    return liveMessage(error.messageKey, error.messageParams);
-  if (error instanceof AggregateError && error.errors.length === 2) {
-    const detail = (entry: unknown) => {
-      const cause = entry instanceof Error ? (entry.cause ?? entry) : entry;
-      return cause instanceof Error
-        ? cause.message
-        : liveText('en', 'installer.setupFailed');
-    };
-    return liveMessage('installer.sourcesFailed', {
-      oss: detail(error.errors[0]),
-      github: detail(error.errors[1]),
-    });
+/** Keep diagnostic exceptions intact; only owned messages cross the UI boundary. */
+function errorMessage(
+  error: unknown,
+  ancestors: ReadonlySet<Error> = new Set(),
+): string {
+  const fallback = liveMessage('installer.setupFailed');
+  try {
+    if (
+      !(error instanceof Error) ||
+      ancestors.has(error) ||
+      ancestors.size >= 8
+    )
+      return fallback;
+    if (error instanceof InstallerError)
+      return liveMessage(error.messageKey, error.messageParams);
+    const next = new Set(ancestors).add(error);
+    if (error instanceof AggregateError && error.errors.length === 2) {
+      return liveMessage('installer.sourcesFailed', {
+        oss: errorMessage(error.errors[0], next),
+        github: errorMessage(error.errors[1], next),
+      });
+    }
+    return error.cause === undefined
+      ? fallback
+      : errorMessage(error.cause, next);
+  } catch {
+    return fallback;
   }
-  if (error instanceof Error && error.message) return error.message;
-  return liveMessage('installer.setupFailed');
 }
 
 export class LiveHostInstaller {

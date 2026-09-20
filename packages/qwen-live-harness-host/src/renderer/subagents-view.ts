@@ -1,6 +1,7 @@
 import { uiIcon } from './ui-icons.ts';
 import {
   displayLiveMessage,
+  displayLiveError,
   liveMessage,
   liveText,
   type LiveLanguage,
@@ -19,7 +20,7 @@ import type {
   SubagentsWindowApi,
   SubagentsWindowState,
 } from '../shared/subagents-api.ts';
-import { localizeUi, uiLabel, uiText } from './ui-text.ts';
+import { localizeUi, uiLabel, uiText, initialUiLanguage } from './ui-text.ts';
 import { applyTheme } from './theme.ts';
 
 const STATUS_KEYS = {
@@ -89,6 +90,22 @@ const NOTIFICATION_KEYS = {
   NonNullable<SubagentTask['notification']>,
   LiveMessageKey
 >;
+
+const SOURCE_KEYS: Record<string, LiveMessageKey> = {
+  screen: 'ui.screen',
+  camera: 'ui.camera',
+  audio: 'ui.microphone',
+  timer: 'subagents.sourceTimer',
+};
+
+function sourceLabel(language: LiveLanguage, source: string): string {
+  const parts = source.split('+');
+  // Only runtime-owned source identifiers are translated; custom labels and
+  // any text originating from a backend remain the user's original content.
+  return parts.every((part) => Object.hasOwn(SOURCE_KEYS, part))
+    ? parts.map((part) => liveText(language, SOURCE_KEYS[part]!)).join(' + ')
+    : source;
+}
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -259,7 +276,7 @@ export class SubagentsView {
   private keyboardMode = false;
   private pending = false;
   private actionGeneration = 0;
-  private errorMessage = '';
+  private errorMessage: unknown = '';
   private feedbackKey?: LiveMessageKey;
   private feedbackTaskId?: string;
   private readonly previousOffsets = new Map<number, number>();
@@ -549,7 +566,10 @@ export class SubagentsView {
       const compact = this.summaryCounts.contains(node);
       text(node, compact && value >= 1_000 ? '999+' : String(value));
       node.title = compact
-        ? `${liveText(language, `subagents.${key}`)}: ${value}`
+        ? liveText(language, 'ui.labelValue', {
+            label: liveText(language, `subagents.${key}`),
+            value,
+          })
         : String(value);
       if (compact && node.parentElement) {
         node.parentElement.title = node.title;
@@ -660,8 +680,10 @@ export class SubagentsView {
 
   showLoadFailure(): void {
     if (this.disposed) return;
-    this.update({ language: 'en', connected: false, mode: 'list' });
-    this.errorMessage = liveText('en', 'subagents.loadFailed');
+    const language =
+      this.state?.language ?? initialUiLanguage(this.app.ownerDocument);
+    this.update({ language, connected: false, mode: 'list' });
+    this.errorMessage = liveMessage('subagents.loadFailed');
     this.renderError();
   }
 
@@ -1008,7 +1030,13 @@ export class SubagentsView {
       }
       text(
         row.source,
-        [report.source, report.backend].filter(Boolean).join(' · '),
+        [
+          report.source ||
+            liveText(state.language, 'subagents.unknownReportSource'),
+          report.backend,
+        ]
+          .filter(Boolean)
+          .join(' · '),
       );
       text(
         row.sourceStatus,
@@ -1104,9 +1132,15 @@ export class SubagentsView {
       [
         liveText(language, TASK_KIND_KEYS[task.kind]),
         task.backend &&
-          `${liveText(language, 'subagents.backend')}: ${task.backend}`,
+          liveText(language, 'ui.labelValue', {
+            label: liveText(language, 'subagents.backend'),
+            value: task.backend,
+          }),
         task.source &&
-          `${liveText(language, 'subagents.source')}: ${task.source}`,
+          liveText(language, 'ui.labelValue', {
+            label: liveText(language, 'subagents.source'),
+            value: sourceLabel(language, task.source),
+          }),
       ]
         .filter(Boolean)
         .join(' · '),
@@ -1121,7 +1155,16 @@ export class SubagentsView {
         task.status === 'completed' ? 'subagents.result' : 'subagents.output',
       ),
     );
-    text(this.output, task.output || liveText(language, 'subagents.noOutput'));
+    text(
+      this.output,
+      task.outputMessage
+        ? displayLiveError(
+            language,
+            task.outputMessage,
+            'subagents.outputUnavailable',
+          )
+        : task.output || liveText(language, 'subagents.noOutput'),
+    );
     this.truncated.hidden = !task.outputTruncated;
     text(this.truncated, liveText(language, 'subagents.truncated'));
     this.renderNotifications(task, language);
@@ -1403,10 +1446,7 @@ export class SubagentsView {
       await action();
     } catch (error) {
       if (!this.disposed && generation === this.actionGeneration)
-        this.errorMessage =
-          error instanceof Error
-            ? error.message
-            : liveText(this.state.language, 'subagents.openFailed');
+        this.errorMessage = error;
     } finally {
       if (
         !this.disposed &&
@@ -1426,7 +1466,13 @@ export class SubagentsView {
         ? liveMessage(`subagents.error.${this.state.pageError}`)
         : '');
     this.error.hidden = !error;
-    const message = displayLiveMessage(this.state?.language ?? 'en', error);
+    const message = error
+      ? displayLiveError(
+          this.state?.language ?? 'en',
+          error,
+          'subagents.error.action_failed',
+        )
+      : '';
     text(this.error, message);
     this.summaryError.hidden = !message;
     this.summaryCounts.hidden = Boolean(message);

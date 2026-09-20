@@ -25,6 +25,7 @@ import { parseLiveCliArgs, type LiveCliArgs } from './cli-args.js';
 import { readPreferredLiveLanguage as preferredLanguage } from './language-preferences.js';
 import {
   displayLiveMessage,
+  displayLiveError,
   liveText,
   startupErrorMessage,
 } from './i18n/messages.js';
@@ -36,6 +37,7 @@ import {
   sanitizeFailureMessage,
 } from './log/runtime-failure.js';
 import { resolveLiveDataDirectory } from './paths.js';
+import { configurationErrorMessage } from './configuration-error.js';
 
 export { loadConfig, type BackendConfig, type LiveConfig } from './config.js';
 export { LiveDaemon } from './daemon.js';
@@ -72,7 +74,8 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
       errorName: reason instanceof Error ? reason.name : undefined,
       executionUncertain: true,
     });
-    logger.error(
+    logger.error(liveText(preferredLanguage(), 'cli.backgroundFailed'));
+    logger.debug(
       `unhandled rejection: ${sanitizeFailureMessage(reason instanceof Error ? reason.message : String(reason), runtimeFailureSecrets(config))}`,
     );
   });
@@ -94,10 +97,7 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
       errorName: error instanceof Error ? error.name : undefined,
     });
     logger.error(
-      displayLiveMessage(
-        preferredLanguage(),
-        error instanceof Error ? error.message : String(error),
-      ),
+      displayLiveMessage(preferredLanguage(), configurationErrorMessage(error)),
     );
     process.exitCode = 1;
     return;
@@ -124,11 +124,7 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
           message: error instanceof Error ? error.message : 'Shutdown failed.',
           errorName: error instanceof Error ? error.name : undefined,
         });
-        logger.error(
-          `shutdown failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        logger.error(liveText(preferredLanguage(), 'cli.shutdownFailed'));
       })
       .finally(() => {
         process.exit(exitCode);
@@ -166,13 +162,10 @@ async function main(debug: boolean, daemonOnly: boolean): Promise<void> {
       errorName: error instanceof Error ? error.name : undefined,
     });
     logger.error(
-      displayLiveMessage(
+      displayLiveError(
         preferredLanguage(),
-        error instanceof StartupError
-          ? startupErrorMessage(error)
-          : error instanceof Error
-            ? error.message
-            : String(error),
+        error instanceof StartupError ? startupErrorMessage(error) : error,
+        'cli.startFailed',
       ),
     );
     await daemon?.stopForProcessExit().catch(() => undefined);

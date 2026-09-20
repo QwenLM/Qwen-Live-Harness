@@ -20,6 +20,33 @@ function report(id: string): PeerSessionReport {
 }
 
 describe('SessionReports', () => {
+  it('retains explicit fallback-source metadata without rewriting the source text or guessing from its name', () => {
+    const ledger = new SessionReports(vi.fn());
+    const fallback = ledger.add('qwen', {
+      ...report('missing'),
+      source: 'Unknown peer',
+      sourceIsFallback: true,
+    })!;
+    const actual = ledger.add('qwen', {
+      ...report('named'),
+      source: 'Unknown peer',
+    })!;
+    expect(ledger.get(fallback.id)).toMatchObject({ source: 'Unknown peer' });
+    expect(ledger.get(fallback.id)).not.toHaveProperty('sourceIsFallback');
+    expect(ledger.get(actual.id)).not.toHaveProperty('sourceIsFallback');
+    expect(ledger.page().find((item) => item.id === fallback.id)?.source).toBe(
+      'Unknown peer',
+    );
+    expect(
+      ledger.displayPage().find((item) => item.id === fallback.id)?.source,
+    ).toBe('');
+    expect(
+      ledger.displayPage().find((item) => item.id === actual.id)?.source,
+    ).toBe('Unknown peer');
+    expect(JSON.stringify(ledger.displayPage())).not.toContain(
+      'sourceIsFallback',
+    );
+  });
   it('bounds retained history without evicting reports waiting for audio, and keeps internal identities private', () => {
     const ledger = new SessionReports(vi.fn());
     const pending = ledger.add('qwen', report('private-pending'))!;

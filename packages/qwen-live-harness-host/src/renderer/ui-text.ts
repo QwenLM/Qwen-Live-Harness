@@ -4,6 +4,19 @@ import {
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
 
+/** Used only before the Host has supplied its saved application language. */
+export function initialUiLanguage(document: Document): LiveLanguage {
+  const navigator = document.defaultView?.navigator;
+  const preferences = navigator?.languages?.length
+    ? navigator.languages
+    : [navigator?.language ?? 'en'];
+  for (const language of preferences) {
+    if (/^zh(?:-|$)/iu.test(language)) return 'zh-CN';
+    if (/^en(?:-|$)/iu.test(language)) return 'en';
+  }
+  return 'en';
+}
+
 export function uiText<T extends HTMLElement>(
   element: T,
   key: LiveMessageKey,
@@ -24,15 +37,15 @@ export function uiLabel<T extends HTMLElement>(
 }
 
 export function localizeUi(element: HTMLElement, language: LiveLanguage): void {
-  for (const child of element.querySelectorAll<HTMLElement>(
-    '[data-live-text]',
-  )) {
+  const withAttribute = (selector: string): HTMLElement[] => [
+    ...(element.matches(selector) ? [element] : []),
+    ...element.querySelectorAll<HTMLElement>(selector),
+  ];
+  for (const child of withAttribute('[data-live-text]')) {
     const value = liveText(language, child.dataset.liveText as LiveMessageKey);
     if (child.textContent !== value) child.textContent = value;
   }
-  for (const child of element.querySelectorAll<HTMLElement>(
-    '[data-live-label]',
-  )) {
+  for (const child of withAttribute('[data-live-label]')) {
     const value = liveText(language, child.dataset.liveLabel as LiveMessageKey);
     if (child.getAttribute('aria-label') !== value)
       child.setAttribute('aria-label', value);

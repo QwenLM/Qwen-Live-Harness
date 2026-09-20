@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseLiveCliArgs } from './cli-args.js';
-import { displayLiveMessage } from './i18n/messages.js';
+import { displayLiveMessage, liveText } from './i18n/messages.js';
 
 describe('parseLiveCliArgs', () => {
   it('routes incremental peer setup and read-only diagnostics without starting a daemon', () => {
@@ -71,7 +71,7 @@ describe('parseLiveCliArgs', () => {
       throw new Error('Expected rejection');
     } catch (error) {
       expect(displayLiveMessage('en', (error as Error).message)).toBe(
-        'Unknown qwen-live-harness argument: --verbose',
+        liveText('en', 'cli.unknownArgument', { argument: '--verbose' }),
       );
     }
   });
@@ -84,4 +84,32 @@ describe('parseLiveCliArgs', () => {
     });
     expect(() => parseLiveCliArgs(['init', '--daemon-only'])).toThrow();
   });
+
+  it.each([
+    [['doctor'], 'cli.peersRequired', {}],
+    [['--peers'], 'cli.peersRequired', {}],
+    [['--source'], 'cli.sourceRequiresInit', {}],
+    [
+      ['init', '--daemon-only'],
+      'cli.incompatibleArguments',
+      { arguments: '--daemon-only init' },
+    ],
+  ] as const)(
+    'localizes parameter guidance without English prose in placeholders',
+    (args, key, params) => {
+      let message = '';
+      try {
+        parseLiveCliArgs(args);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      for (const language of ['en', 'zh-CN'] as const)
+        expect(displayLiveMessage(language, message)).toBe(
+          liveText(language, key, params),
+        );
+      expect(displayLiveMessage('zh-CN', message)).not.toMatch(
+        /\buse\b|\bwithout\b/u,
+      );
+    },
+  );
 });

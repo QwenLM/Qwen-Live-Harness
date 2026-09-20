@@ -12,6 +12,7 @@ import {
 } from './cli-startup.js';
 import { LiveLogger } from './logger.js';
 import { StartupError } from './startup.js';
+import { liveText } from './i18n/messages.js';
 
 const config = {
   dataDir: '/synthetic/config',
@@ -267,11 +268,9 @@ describe('one-command application startup', () => {
       return { state: 'installed', version: '0.4.0' };
     };
     await startCliApplication(config, f.options, f.dependencies);
-    expect(info).toHaveBeenCalledWith('Checking for a running daemon…');
-    expect(info).toHaveBeenCalledWith(
-      'Checking Host version, signature and macOS approval…',
-    );
-    expect(info).toHaveBeenCalledWith('Opening desktop Host…');
+    expect(info).toHaveBeenCalledWith(liveText('en', 'cli.checkingInstance'));
+    expect(info).toHaveBeenCalledWith(liveText('en', 'cli.checkingHost'));
+    expect(info).toHaveBeenCalledWith(liveText('en', 'cli.openingHost'));
     expect(debug).toHaveBeenCalledWith(
       expect.stringContaining('startup.host_checked'),
     );

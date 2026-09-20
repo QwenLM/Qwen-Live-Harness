@@ -1,0 +1,3 @@
+/* macOS permission text follows the system's preferred app language. */
+"NSMicrophoneUsageDescription" = "Qwen Live Harness Host uses your microphone for voice conversations with Qwen Omni.";
+"NSCameraUsageDescription" = "Qwen Live Harness Host uses your camera to provide visual context to Qwen Omni.";

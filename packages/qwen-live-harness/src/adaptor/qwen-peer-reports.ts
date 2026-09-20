@@ -433,11 +433,12 @@ export class QwenPeerReports {
       context.id.startsWith('qwen-peer:') &&
       source !== undefined &&
       context.id !== sourceSession?.id;
+    const sourceLabel = peerReportLabel(source?.name ?? frame.fromName ?? '');
     const report: PeerSessionReport = {
       id: key,
       callId: this.options.callId,
-      source:
-        peerReportLabel(source?.name ?? frame.fromName ?? '') || 'Unknown peer',
+      source: sourceLabel || 'Unknown peer',
+      ...(!sourceLabel ? { sourceIsFallback: true as const } : {}),
       sourceStatus: source ? 'matched' : 'unconfirmed',
       ...(sourceSession ? { sourceSession } : {}),
       ...(source ? { sourceSessionId: source.sessionId } : {}),

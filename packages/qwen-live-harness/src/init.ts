@@ -38,7 +38,7 @@ import { registerCurrentRuntime } from './startup-registration.js';
 import { isIP } from 'node:net';
 import { resolveQwenHome } from './vendor/qwen-code-peer/registry.js';
 import {
-  displayLiveMessage,
+  displayLiveError,
   isLiveLanguage,
   liveText,
   type LiveLanguage,
@@ -534,7 +534,7 @@ export async function runInit(
           hostStatus = t('init.hostReady');
         } else {
           console.log(
-            `  ✗ ${t('init.hostInstallFailed', { detail: result.message ? displayLiveMessage(language, result.message) : t('init.unknownError') })}`,
+            `  ✗ ${t('init.hostInstallFailed', { detail: displayLiveError(language, result.message, 'init.unknownError') })}`,
           );
           hostStatus = t('init.hostFailed');
         }
@@ -543,7 +543,7 @@ export async function runInit(
       }
     } else {
       console.log(
-        `  ! ${t('init.hostCheckFailed', { detail: status.message ? displayLiveMessage(language, status.message) : t('init.unknownError') })}`,
+        `  ! ${t('init.hostCheckFailed', { detail: displayLiveError(language, status.message, 'init.unknownError') })}`,
       );
       hostStatus = t('init.hostError');
     }

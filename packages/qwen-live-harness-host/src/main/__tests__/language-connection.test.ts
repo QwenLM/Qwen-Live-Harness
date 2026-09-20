@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { displayLiveMessage } from 'qwen-live-harness/i18n';
+import { displayLiveMessage, liveText } from 'qwen-live-harness/i18n';
 import { LiveDaemonConnection } from '../daemon-connection.ts';
 import {
   LIVE_PROTOCOL_VERSION,
@@ -210,7 +210,12 @@ describe('Host language protocol', () => {
     );
     const { connection, peer } = await fixture();
     const result = connection.requestLanguage('zh-CN');
-    const rejected = assert.rejects(result, localized(/disconnected/));
+    const rejected = assert.rejects(
+      result,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'host.language.disconnected'),
+    );
     peer.close();
     await rejected;
   });

@@ -13,6 +13,7 @@ import { OVERLAY_GEOMETRY } from '../../shared/overlay-geometry.ts';
 import { StartupInteraction } from '../startup-interaction.ts';
 import {
   displayLiveMessage,
+  liveText,
   isLiveLanguage,
   liveMessage,
 } from 'qwen-live-harness/i18n';
@@ -972,10 +973,11 @@ describe('native overlay interaction', () => {
     );
     const failed = host.controls.quitHost();
     host.failQuit();
-    await assert.rejects(failed, (error: Error) =>
-      /Could not shut down Qwen Live Harness/.test(
-        displayLiveMessage('en', error.message),
-      ),
+    await assert.rejects(
+      failed,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'ui.quitFailed'),
     );
     assert.equal(host.quitCalls(), 0);
     const retry = quit({ sender: window.webContents });
@@ -994,8 +996,11 @@ describe('native overlay interaction', () => {
     host.disconnect();
     assert.equal(host.controls.publicState().quitState, 'pending');
     host.failQuit();
-    await assert.rejects(first, (error: Error) =>
-      /Could not shut down/.test(displayLiveMessage('en', error.message)),
+    await assert.rejects(
+      first,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'ui.quitFailed'),
     );
     assert.equal(host.states.at(-1)?.quitState, 'failed');
     assert.equal(host.quitCalls(), 0);
@@ -1028,8 +1033,11 @@ describe('native overlay interaction', () => {
     host.controls.activate();
     assert.equal(host.resources.audio, false);
     host.failQuit();
-    await assert.rejects(first, (error: Error) =>
-      /Could not shut down/.test(displayLiveMessage('en', error.message)),
+    await assert.rejects(
+      first,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'ui.quitFailed'),
     );
     host.controls.activate();
     assert.equal(host.resources.audio, false);
@@ -1055,8 +1063,11 @@ describe('native overlay interaction', () => {
     host.grants.get('microphone')?.(true);
     await microphone;
     host.failQuit();
-    await assert.rejects(quit, (error: Error) =>
-      /Could not shut down/.test(displayLiveMessage('en', error.message)),
+    await assert.rejects(
+      quit,
+      (error: Error) =>
+        displayLiveMessage('en', error.message) ===
+        liveText('en', 'ui.quitFailed'),
     );
     host.grants.get('camera')?.(true);
     await camera;

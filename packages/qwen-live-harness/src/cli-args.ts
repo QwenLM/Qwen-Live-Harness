@@ -53,23 +53,14 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
   }
   if (daemonOnly && (command === 'init' || command === 'doctor'))
     throw new Error(
-      liveMessage('cli.unknownArgument', {
-        argument: `--daemon-only ${command}`,
+      liveMessage('cli.incompatibleArguments', {
+        arguments: `--daemon-only ${command}`,
       }),
     );
   if ((peers && command === 'start') || (command === 'doctor' && !peers))
-    throw new Error(
-      liveMessage('cli.unknownArgument', {
-        argument:
-          command === 'doctor'
-            ? 'doctor (use doctor --peers)'
-            : '--peers (use init --peers or doctor --peers)',
-      }),
-    );
+    throw new Error(liveMessage('cli.peersRequired'));
   if (source && command !== 'init')
-    throw new Error(
-      liveMessage('cli.unknownArgument', { argument: '--source without init' }),
-    );
+    throw new Error(liveMessage('cli.sourceRequiresInit'));
   return {
     command,
     debug,

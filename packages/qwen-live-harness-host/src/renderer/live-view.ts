@@ -11,11 +11,13 @@ import {
 import { SettingsPanel } from './settings-panel.ts';
 import {
   liveText,
+  liveMessage,
   displayLiveMessage,
+  displayLiveError,
   type LiveLanguage,
   type LiveMessageKey,
 } from 'qwen-live-harness/i18n';
-import { uiText, uiLabel, localizeUi } from './ui-text.ts';
+import { uiText, uiLabel, localizeUi, initialUiLanguage } from './ui-text.ts';
 import { makeOverlayDraggable } from './overlay-drag.ts';
 import { applyTheme } from './theme.ts';
 import {
@@ -125,7 +127,7 @@ export class LiveView {
   private quitting = false;
   private quitFailed = false;
   private hasShownOrb = false;
-  private error = '';
+  private error: unknown = '';
   private previewExpanded = true;
   private previewAttached = false;
   private overlayLayout?: OverlayLayout;
@@ -238,6 +240,7 @@ export class LiveView {
     this.summaryCompleted.className = 'task-summary-completed';
     this.summaryAttention.className = 'task-summary-attention';
     this.summaryAttention.textContent = '!';
+    this.summaryAttention.setAttribute('aria-hidden', 'true');
     this.summary.append(
       uiIcon('task'),
       summaryTitle,
@@ -325,7 +328,10 @@ export class LiveView {
     );
     this.setup.hidden = false;
     this.surface.hidden = true;
-    this.setupMessage.textContent = liveText('en', 'ui.connecting');
+    const initialLanguage = initialUiLanguage(this.app.ownerDocument);
+    localizeUi(this.app, initialLanguage);
+    this.app.ownerDocument.documentElement.lang = initialLanguage;
+    this.setupMessage.textContent = liveText(initialLanguage, 'ui.connecting');
   }
 
   update(state: HostPublicState): void {
@@ -347,6 +353,7 @@ export class LiveView {
     )
       this.previewExpanded = true;
     this.state = state;
+    this.setupMessage.removeAttribute('role');
     if (!this.receivedOverlayOffset)
       this.applyOverlayOffset(state.overlayOffset ?? { x: 0, y: 0 });
     this.settings.update(state);
@@ -426,20 +433,33 @@ export class LiveView {
     this.settingsButton.disabled = pending || state.connection !== 'ready';
     this.quitButton.disabled = this.setupQuit.disabled = quitting;
     const quitError = quitFailed ? liveText(language, 'ui.quitFailed') : '';
+    const actionError = this.error
+      ? displayLiveError(language, this.error, 'ui.actionFailed')
+      : '';
+    const audioError = state.audioError
+      ? displayLiveError(language, state.audioError, 'host.audio.failed')
+      : '';
+    const visualError = state.visualError
+      ? displayLiveError(language, state.visualError, 'host.error.visualFailed')
+      : '';
+    const renderStateText = (value: string | undefined) =>
+      value
+        ? state.live.state === 'error'
+          ? displayLiveError(language, value, 'ui.callEnded')
+          : displayLiveMessage(language, value)
+        : '';
+    const statusText = renderStateText(state.live.statusText);
+    const callMessage = renderStateText(state.live.message);
     const status = quitting
       ? liveText(language, 'ui.quitting')
       : quitError ||
-        displayLiveMessage(
-          language,
-          this.error ||
-            (state.audioRetrying
-              ? liveText(language, 'host.audio.retrying')
-              : state.audioError) ||
-            state.live.statusText ||
-            state.visualError ||
-            state.live.message ||
-            '',
-        ) ||
+        actionError ||
+        (state.audioRetrying
+          ? liveText(language, 'host.audio.retrying')
+          : audioError) ||
+        statusText ||
+        visualError ||
+        callMessage ||
         liveText(
           language,
           (
@@ -570,10 +590,11 @@ export class LiveView {
       quitting
         ? liveText(language, 'ui.quitting')
         : quitError ||
-            displayLiveMessage(
-              language,
-              this.error || state.live.message || state.connectionError || '',
-            ) ||
+            actionError ||
+            callMessage ||
+            (state.connectionError
+              ? displayLiveError(language, state.connectionError, 'ui.waiting')
+              : '') ||
             (state.connection === 'ready'
               ? liveText(language, 'ui.allowRequired')
               : liveText(language, 'ui.waiting')),
@@ -670,6 +691,16 @@ export class LiveView {
     }
   }
 
+  showLoadFailure(): void {
+    if (this.disposed || this.state) return;
+    this.setupMessage.textContent = displayLiveError(
+      this.renderedLanguage ?? initialUiLanguage(this.app.ownerDocument),
+      liveMessage('ui.loadFailed'),
+      'ui.loadFailed',
+    );
+    this.setupMessage.setAttribute('role', 'alert');
+  }
+
   private resetInputScale(): void {
     if (this.inputReleaseTimer !== undefined)
       clearTimeout(this.inputReleaseTimer);
@@ -710,7 +741,7 @@ export class LiveView {
       await this.api.quit();
     } catch (error) {
       this.quitFailed = true;
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = error;
     } finally {
       this.quitting = false;
       if (this.state) this.update(this.state);
@@ -726,7 +757,7 @@ export class LiveView {
     try {
       await run();
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = error;
     } finally {
       this.busy = false;
       if (this.state) this.update(this.state);

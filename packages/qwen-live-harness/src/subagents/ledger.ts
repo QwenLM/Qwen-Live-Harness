@@ -84,6 +84,12 @@ export class SubagentsLedger {
     task.activity = clean(task.activity, 1024);
     if (task.output.length > OUTPUT_CHARS) task.outputTruncated = true;
     task.output = clean(task.output, OUTPUT_CHARS);
+    if (
+      task.outputMessage !== undefined &&
+      (typeof task.outputMessage !== 'string' ||
+        task.outputMessage.length > 512)
+    )
+      delete task.outputMessage;
     task.events = task.events.slice(-24).map((event) => ({
       ...event,
       text: clean(event.text, 1024),
@@ -152,7 +158,12 @@ export class SubagentsLedger {
     this.changed();
   }
 
-  result(id: string, status: SubagentStatus, text: string): void {
+  result(
+    id: string,
+    status: SubagentStatus,
+    text: string,
+    outputMessage?: string,
+  ): void {
     const previous = this.states.get(id);
     if (
       this.closed ||
@@ -160,6 +171,12 @@ export class SubagentsLedger {
     )
       return;
     const task = this.details.get(id);
+    if (
+      task &&
+      typeof outputMessage === 'string' &&
+      outputMessage.length <= 512
+    )
+      task.outputMessage = outputMessage;
     if (task && text) {
       const safe = stripControlSequences(text);
       task.output = clean(safe, OUTPUT_CHARS);

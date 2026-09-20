@@ -119,6 +119,115 @@ function setup(
 }
 
 describe('Subagents read-only surfaces', () => {
+  it('localizes only an explicit owned outputMessage and never interprets markers in external output', () => {
+    const original = liveMessage('visual.failed');
+    const value = task({
+      kind: 'visual',
+      status: 'failed',
+      output: original,
+      outputMessage: liveMessage('subagents.error.action_failed'),
+    });
+    const h = setup(
+      {},
+      { mode: 'detail', selectedId: value.id, snapshot: snapshot([value]) },
+    );
+    const output = h.get('.subagent-output');
+    for (const language of ['en', 'zh-CN', 'en'] as const) {
+      h.update({ language });
+      assert.equal(
+        output.textContent,
+        liveText(language, 'subagents.error.action_failed'),
+      );
+      assert.equal(h.get('.subagent-output'), output);
+      assert.equal(h.get('.subagent-request').textContent, value.request);
+    }
+    h.update({
+      language: 'zh-CN',
+      snapshot: snapshot([{ ...value, outputMessage: undefined }]),
+    });
+    assert.equal(output.textContent, original);
+    h.update({
+      snapshot: snapshot([
+        { ...value, outputMessage: 'PRIVATE malformed marker' },
+      ]),
+    });
+    assert.equal(
+      output.textContent,
+      liveText('zh-CN', 'subagents.outputUnavailable'),
+    );
+  });
+
+  it('localizes every runtime-owned source without rewriting user labels or task contents', () => {
+    for (const [source, expectedEn, expectedZh] of [
+      ['screen+audio', 'Screen + Microphone', '屏幕 + 麦克风'],
+      ['camera', 'Camera', '摄像头'],
+      [
+        'timer',
+        liveText('en', 'subagents.sourceTimer'),
+        liveText('zh-CN', 'subagents.sourceTimer'),
+      ],
+      ['Custom source', 'Custom source', 'Custom source'],
+    ]) {
+      const value = task({
+        source,
+        title: 'User title',
+        request: 'User request',
+        output: 'Backend response',
+      });
+      const h = setup(
+        {},
+        { mode: 'detail', selectedId: value.id, snapshot: snapshot([value]) },
+      );
+      for (const [language, expected] of [
+        ['en', expectedEn],
+        ['zh-CN', expectedZh],
+      ] as const) {
+        h.update({ language });
+        assert(
+          h.get('.subagent-metadata').textContent?.includes(
+            liveText(language, 'ui.labelValue', {
+              label: liveText(language, 'subagents.source'),
+              value: expected!,
+            }),
+          ),
+        );
+        assert.equal(h.get('.subagent-title').textContent, value.title);
+        assert.equal(h.get('.subagent-request').textContent, value.request);
+        assert.equal(h.get('.subagent-output').textContent, value.output);
+      }
+    }
+  });
+
+  it('keeps load and unknown action failures localized when language changes', async () => {
+    const h = setup({
+      expand: async () => {
+        throw new Error('PRIVATE /Users/example/private');
+      },
+    });
+    h.get<HTMLButtonElement>('.subagents-summary').click();
+    await settled();
+    assert.equal(
+      h.get('.subagents-error').textContent,
+      liveText('en', 'subagents.error.action_failed'),
+    );
+    h.update({ language: 'zh-CN' });
+    assert.equal(
+      h.get('.subagents-error').textContent,
+      liveText('zh-CN', 'subagents.error.action_failed'),
+    );
+    h.view.showLoadFailure();
+    assert.equal(
+      h.get('.subagents-error').textContent,
+      liveText('zh-CN', 'subagents.loadFailed'),
+    );
+    h.update({ language: 'en', mode: 'list', connected: false });
+    assert.equal(
+      h.get('.subagents-error').textContent,
+      liveText('en', 'subagents.loadFailed'),
+    );
+    assert(!h.app.textContent?.includes('PRIVATE'));
+  });
+
   it('identifies search rows and details, preserves query/output as text, and localizes real activity', async () => {
     const query = '<b>What is the current price?</b>';
     const answer = '<script>not executable</script> Search result text.';
@@ -303,6 +412,47 @@ describe('Subagents read-only surfaces', () => {
     }
   });
 
+  it('localizes an absent report source without changing a real terminal named Unknown peer', () => {
+    const value = snapshot([]);
+    const report: SessionReport = {
+      id: 'report_unknown',
+      backend: 'qwen',
+      source: '',
+      sourceStatus: 'unconfirmed',
+      category: 'info',
+      text: 'Original report text',
+      receivedAt: 1_788_790_000_000,
+      updatedAt: 1_788_790_001_000,
+      announcement: 'unspoken',
+    };
+    const page = {
+      snapshot: value,
+      offset: 0,
+      total: 0,
+      sessionReports: [
+        report,
+        { ...report, id: 'report_named', source: 'Unknown peer' },
+      ],
+    };
+    const h = setup(
+      {},
+      { mode: 'list', language: 'zh-CN', snapshot: value, page },
+    );
+    const names = h.app.querySelectorAll('.session-report-source');
+    assert.equal(
+      names[0]?.textContent,
+      `${liveText('zh-CN', 'subagents.unknownReportSource')} · qwen`,
+    );
+    assert.equal(names[1]?.textContent, 'Unknown peer · qwen');
+    h.view.update({ ...h.state, language: 'en' });
+    assert.equal(
+      names[0]?.textContent,
+      `${liveText('en', 'subagents.unknownReportSource')} · qwen`,
+    );
+    assert.equal(names[1]?.textContent, 'Unknown peer · qwen');
+    assert.equal(report.source, '');
+  });
+
   it('keeps self-reported results separate from tasks and updates announcement state without interpreting report text', () => {
     const value = snapshot([]);
     value.omitted = 0;
@@ -350,11 +500,11 @@ describe('Subagents read-only surfaces', () => {
     );
     assert.equal(
       h.get('.session-report-source-status').textContent,
-      'Linked to a registered source',
+      liveText('en', 'subagents.reportSourceMatched'),
     );
-    assert.match(
-      h.get('.session-reports-description').textContent ?? '',
-      /does not verify identity or confirm task completion/,
+    assert.equal(
+      h.get('.session-reports-description').textContent,
+      liveText('en', 'subagents.reportsAttribution'),
     );
     assert.equal(
       h.app.querySelectorAll(
@@ -363,14 +513,14 @@ describe('Subagents read-only surfaces', () => {
       0,
     );
     const row = h.get('.session-report');
-    for (const [announcement, label] of [
-      ['queued', '等待播报'],
-      ['submitted', '已提交播报'],
-      ['speaking', '正在播报'],
-      ['announced', '已播报'],
-      ['interrupted', '播报被打断'],
-      ['unspoken', '未播报'],
-      ['suppressed', '已跳过播报'],
+    for (const [announcement, key] of [
+      ['queued', 'subagents.reportQueued'],
+      ['submitted', 'subagents.reportSubmitted'],
+      ['speaking', 'subagents.reportSpeaking'],
+      ['announced', 'subagents.reportAnnounced'],
+      ['interrupted', 'subagents.reportInterrupted'],
+      ['unspoken', 'subagents.reportUnspoken'],
+      ['suppressed', 'subagents.reportSuppressed'],
     ] as const) {
       h.update({
         language: 'zh-CN',
@@ -387,10 +537,13 @@ describe('Subagents read-only surfaces', () => {
         },
       });
       assert.equal(h.get('.session-report'), row);
-      assert.equal(h.get('.session-report-announcement').textContent, label);
+      assert.equal(
+        h.get('.session-report-announcement').textContent,
+        liveText('zh-CN', key),
+      );
       assert.equal(
         h.get('.session-report-source-status').textContent,
-        '来源未确认',
+        liveText('zh-CN', 'subagents.reportSourceUnconfirmed'),
       );
       assert.equal(
         h.get('.subagents-panel [data-count="running"]').textContent,
@@ -401,9 +554,19 @@ describe('Subagents read-only surfaces', () => {
         '0',
       );
     }
-    assert.match(
-      h.get('.session-report-time').textContent ?? '',
-      /收到于.*更新于/,
+    const formatTime = (at: number) =>
+      new Date(at).toLocaleString('zh-CN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    assert.equal(
+      h.get('.session-report-time').textContent,
+      liveText('zh-CN', 'subagents.reportTime', {
+        received: formatTime(report.receivedAt),
+        updated: formatTime(report.updatedAt + 1000),
+      }),
     );
     h.update({
       page: { ...page, sessionReports: [], sessionReportsOmitted: 2 },
@@ -472,9 +635,9 @@ describe('Subagents read-only surfaces', () => {
       h.get('.discovered-session .subagent-status').textContent,
       '执行状态未知',
     );
-    assert.match(
-      h.get('.discovered-session-instructions').textContent ?? '',
-      /只读/,
+    assert.equal(
+      h.get('.discovered-session-instructions').textContent,
+      liveText('zh-CN', 'subagents.sessionsReadOnly'),
     );
     assert.match(h.get('.discovered-sessions-omitted').textContent ?? '', /2/);
     assert.equal(
@@ -558,13 +721,13 @@ describe('Subagents read-only surfaces', () => {
         instanceId: 'one',
       },
     );
-    assert.match(
-      h.get('.discovered-session-instructions').textContent ?? '',
-      /Text instructions enabled.*voice/,
+    assert.equal(
+      h.get('.discovered-session-instructions').textContent,
+      liveText('en', 'subagents.sessionsCanInstruct'),
     );
-    assert.match(
-      h.get('.discovered-sessions-description').textContent ?? '',
-      /Stopping, approvals and images are unavailable/,
+    assert.equal(
+      h.get('.discovered-sessions-description').textContent,
+      liveText('en', 'subagents.sessionsInstructions'),
     );
     assert.equal(
       h.get('.instruction-delivery-target').textContent,
@@ -572,11 +735,11 @@ describe('Subagents read-only surfaces', () => {
     );
     assert.equal(
       h.get('.instruction-delivery-status').textContent,
-      'Awaiting terminal review',
+      liveText('en', 'subagents.deliveryHeld'),
     );
-    assert.match(
-      h.get('.instruction-delivery-tracking').textContent ?? '',
-      /Watching/,
+    assert.equal(
+      h.get('.instruction-delivery-tracking').textContent,
+      liveText('en', 'subagents.deliveryTracking'),
     );
     assert.equal(
       h.get('.instruction-delivery-note').textContent,
@@ -587,9 +750,9 @@ describe('Subagents read-only surfaces', () => {
       h.get('.instruction-delivery-time').textContent ?? '',
       /Started.*Updated/,
     );
-    assert.match(
-      h.get('.instruction-deliveries-description').textContent ?? '',
-      /completion still needs/,
+    assert.equal(
+      h.get('.instruction-deliveries-description').textContent,
+      liveText('en', 'subagents.deliveryNotCompletion'),
     );
     assert.equal(
       h.app.querySelectorAll(
@@ -603,16 +766,16 @@ describe('Subagents read-only surfaces', () => {
       '.discovered-sessions-header button',
     );
     refresh.focus();
-    for (const [status, label] of [
-      ['pending', '等待回执'],
-      ['delivered', '已送达'],
-      ['denied', '接收方已拒绝'],
-      ['refused', '终端不接受指令'],
-      ['expired', '投递已过期'],
-      ['misaddressed', '目标会话已变化'],
-      ['dropped', '终端未接收'],
-      ['unknown', '投递结果不明'],
-      ['failed', '发送失败'],
+    for (const [status, key] of [
+      ['pending', 'subagents.deliveryPending'],
+      ['delivered', 'subagents.deliveryDelivered'],
+      ['denied', 'subagents.deliveryDenied'],
+      ['refused', 'subagents.deliveryRefused'],
+      ['expired', 'subagents.deliveryExpired'],
+      ['misaddressed', 'subagents.deliveryMisaddressed'],
+      ['dropped', 'subagents.deliveryDropped'],
+      ['unknown', 'subagents.deliveryUnknown'],
+      ['failed', 'subagents.deliveryFailed'],
     ] as const) {
       h.update({
         language: 'zh-CN',
@@ -630,7 +793,10 @@ describe('Subagents read-only surfaces', () => {
       });
       assert.equal(h.get('.instruction-delivery'), row);
       assert.equal(h.dom.window.document.activeElement, refresh);
-      assert.equal(h.get('.instruction-delivery-status').textContent, label);
+      assert.equal(
+        h.get('.instruction-delivery-status').textContent,
+        liveText('zh-CN', key),
+      );
       assert.equal(
         h.get('.instruction-delivery-unknown').hidden,
         status !== 'unknown',
@@ -646,7 +812,7 @@ describe('Subagents read-only surfaces', () => {
     }
     assert.equal(
       h.get('.instruction-delivery-tracking').textContent,
-      '回执跟踪已结束',
+      liveText('zh-CN', 'subagents.deliveryTrackingEnded'),
     );
     h.update({
       page: {
@@ -713,9 +879,9 @@ describe('Subagents read-only surfaces', () => {
       h.get('.subagent-identity .subagent-status').textContent,
       'Running',
     );
-    assert.match(
-      h.get('.subagents-feedback').textContent ?? '',
-      /Waiting for the backend/,
+    assert.equal(
+      h.get('.subagents-feedback').textContent,
+      liveText('en', 'subagents.outcome.stopping'),
     );
     h.update({
       page: {
@@ -829,9 +995,12 @@ describe('Subagents read-only surfaces', () => {
         },
       },
     );
-    assert.match(
-      h.get('.subagent-unassigned').textContent ?? '',
-      /Task identity unconfirmed/,
+    assert(
+      h
+        .get('.subagent-unassigned')
+        .textContent?.includes(
+          liveText('en', 'subagents.unassignedPermissions'),
+        ),
     );
     assert.equal(h.app.querySelector('[data-task-id="task-1"]'), null);
     assert.equal(h.get('.subagents-page-label').textContent, '33–33 of 34');
@@ -948,8 +1117,20 @@ describe('Subagents read-only surfaces', () => {
       summary.getAttribute('aria-label'),
       '查看子智能体：3 项进行中，7 项已完成，2 项等待你处理。',
     );
-    assert.equal(h.get('.subagents-summary .running').title, '进行中: 3');
-    assert.equal(h.get('.subagents-summary .completed').title, '已完成: 7');
+    assert.equal(
+      h.get('.subagents-summary .running').title,
+      liveText('zh-CN', 'ui.labelValue', {
+        label: liveText('zh-CN', 'subagents.running'),
+        value: 3,
+      }),
+    );
+    assert.equal(
+      h.get('.subagents-summary .completed').title,
+      liveText('zh-CN', 'ui.labelValue', {
+        label: liveText('zh-CN', 'subagents.completed'),
+        value: 7,
+      }),
+    );
   });
 
   it('pulses only for connected active summary counts and hides the waiting marker at zero', () => {
@@ -1262,7 +1443,11 @@ describe('Subagents read-only surfaces', () => {
       h.get('.subagent-latest').textContent,
       liveText('zh-CN', 'subagents.reconnecting'),
     );
-    assert.match(h.get('.subagent-events').textContent ?? '', /语音通话已结束/);
+    assert(
+      h
+        .get('.subagent-events')
+        .textContent?.includes(liveText('zh-CN', 'subagents.callEnded')),
+    );
     assert.equal(h.get('.subagent-truncated').hidden, false);
     assert.equal(h.get('.subagent-output'), output);
     assert.equal(
@@ -1296,9 +1481,12 @@ describe('Subagents read-only surfaces', () => {
       h.get('.subagent-notifications').textContent ?? '',
       /Pending announcements: 2/,
     );
-    assert.match(
-      h.get('.subagent-notifications').textContent ?? '',
-      /Announcement delivered/,
+    assert(
+      h
+        .get('.subagent-notifications')
+        .textContent?.includes(
+          liveText('en', 'subagents.notificationDelivered'),
+        ),
     );
     assert.match(
       h.get('.subagent-notifications').textContent ?? '',
@@ -1306,7 +1494,7 @@ describe('Subagents read-only surfaces', () => {
     );
     assert.equal(
       h.get('.subagent-section:last-child h2').textContent,
-      'Public output',
+      liveText('en', 'subagents.output'),
     );
     for (const status of [
       'completed',
@@ -1321,7 +1509,10 @@ describe('Subagents read-only surfaces', () => {
       );
       assert.equal(
         h.get('.subagent-section:last-child h2').textContent,
-        status === 'completed' ? 'Result' : 'Public output',
+        liveText(
+          'en',
+          status === 'completed' ? 'subagents.result' : 'subagents.output',
+        ),
       );
     }
   });
@@ -1390,9 +1581,9 @@ describe('Subagents read-only surfaces', () => {
       h.get('.subagents-empty').textContent ?? '',
       /No task details/,
     );
-    assert.match(
-      h.get('.subagents-retention').textContent ?? '',
-      /4 other tasks/,
+    assert.equal(
+      h.get('.subagents-retention').textContent,
+      liveText('en', 'subagents.omitted', { count: 4 }),
     );
     h.update({
       snapshot: {

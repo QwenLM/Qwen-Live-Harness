@@ -2,7 +2,7 @@
 
 简体中文 | [English](README.md)
 
-本目录是 `qwen-live-harness` npm 包：负责模型连接、对话调度、任务委托、Proactive 和 Memory。桌面界面、系统授权与设备采集由独立的 macOS Host 负责。
+本目录包含 `qwen-live-harness` npm 包。后台服务（daemon）负责模型连接、对话调度、任务委托、Proactive 和 Memory；独立的 macOS Host 负责桌面界面、系统权限和设备采集。
 
 [项目介绍与安装](../../README_ZH.md) · [配置与功能指南](../../docs/configuration_ZH.md) · [Host 开发指南](../qwen-live-harness-host/README_ZH.md)
 
@@ -19,11 +19,11 @@ npm run init
 npm start
 ```
 
-`npm run init` 构建 daemon 后打开源码初始化向导，保存配置；不会下载安装 Host，也不会登记桌面启动运行时。可以选择后台编程代理，也可以先不接入后台 Harness。
+`npm run init` 构建 daemon、打开源码初始化向导并保存配置，不会下载或安装 Host，也不会更改已安装桌面应用的运行时登记。可以选择后台编程助手，也可以暂不接入后台 Harness。
 
-选择 Qwen Code 后，向导默认提供由 Live 自动启动本地 Qwen Serve，也可连接已有本地服务或选择 ACP。初始化只保存这些设置，服务在 daemon 启动时才拉起；终端发现与授权的区别见 [Qwen 终端接入](#qwen-终端接入)。
+选择 Qwen Code 时，默认使用由 Live 管理的本地 Qwen Serve，也可连接已有本地服务或选择 ACP。初始化只保存设置，由 Live 管理的服务会在 daemon 启动时运行。发现终端和获得操作权限是两回事，详见 [Qwen 终端接入](#qwen-终端接入)。
 
-`npm start` 构建两端，启动本仓库的 daemon 和 Electron Host。它不使用全局 CLI 或 `/Applications` 中的 Host。请先退出已有的 Qwen Live Harness；源码启动器拒绝接管正在运行的实例。`Ctrl+C` 会清理本次启动的进程。
+`npm start` 构建两端，并启动当前源码目录的 daemon 和 Electron Host，不使用全局 CLI 或 `/Applications` 中的 Host。请先退出正在运行的 Qwen Live Harness；源码启动器不会接管已有实例。`Ctrl+C` 会停止本次启动的进程。
 
 需要诊断日志时运行：
 
@@ -35,25 +35,25 @@ npm start -- --debug
 
 ## 先看哪些代码
 
-| 位置                                                                                           | 职责                                              |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| [`src/index.ts`](src/index.ts)、[`src/cli-startup.ts`](src/cli-startup.ts)                     | CLI 入口、实例复用、启动和退出                    |
-| [`src/config.ts`](src/config.ts)、[`src/init.ts`](src/init.ts)                                 | 配置校验、环境变量优先级、交互初始化              |
-| [`src/peer-setup.ts`](src/peer-setup.ts)、[`src/peer-diagnostics.ts`](src/peer-diagnostics.ts) | Qwen 终端增量设置和只读诊断                       |
-| [`src/daemon.ts`](src/daemon.ts)                                                               | 装配服务、Host HTTP/WebSocket 入口、资源清理      |
-| [`src/host/`](src/host/)                                                                       | Host 协议、发现文件、通话状态和安装器             |
-| [`src/orchestrator/`](src/orchestrator/)                                                       | 对话生命周期、工具分发、后台事件与播报队列        |
-| [`src/realtime/`](src/realtime/)                                                               | 主 Realtime 协议、system prompt、独立文本搜索连接 |
-| [`src/adaptor/`](src/adaptor/)                                                                 | 后台代理适配器、能力声明和事件归一化              |
-| [`src/tools/`](src/tools/)                                                                     | 模型工具定义、回执、session/job/asset 句柄        |
-| [`src/permissions/`](src/permissions/)                                                         | 后台真实授权请求的转发与答复                      |
-| [`src/proactive/`](src/proactive/)                                                             | 监控、计时、事件触发与 FIFO 播报                  |
-| [`src/memory/`](src/memory/)                                                                   | 本地记忆库、检索、整理和可选视觉观察              |
-| [`src/subagents/`](src/subagents/)                                                             | 子智能体状态、详情和手动停止接口                  |
-| [`src/log/`](src/log/)、[`src/logger.ts`](src/logger.ts)                                       | 会话记录与运行诊断                                |
-| [`src/i18n/messages.ts`](src/i18n/messages.ts)                                                 | CLI 与 Host 共用的中英文固定展示文案              |
+| 位置                                                                                           | 职责                                           |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| [`src/index.ts`](src/index.ts)、[`src/cli-startup.ts`](src/cli-startup.ts)                     | CLI 入口、实例复用、启动和退出                 |
+| [`src/config.ts`](src/config.ts)、[`src/init.ts`](src/init.ts)                                 | 配置校验、环境变量优先级、交互初始化           |
+| [`src/peer-setup.ts`](src/peer-setup.ts)、[`src/peer-diagnostics.ts`](src/peer-diagnostics.ts) | Qwen 终端增量设置和只读诊断                    |
+| [`src/daemon.ts`](src/daemon.ts)                                                               | 组装服务、Host HTTP/WebSocket 入口、资源清理   |
+| [`src/host/`](src/host/)                                                                       | Host 协议、发现文件、通话状态和安装器          |
+| [`src/orchestrator/`](src/orchestrator/)                                                       | 对话生命周期、工具分发、后台事件与播报队列     |
+| [`src/realtime/`](src/realtime/)                                                               | 主 Realtime 协议、系统提示词、独立文本搜索连接 |
+| [`src/adaptor/`](src/adaptor/)                                                                 | 后端适配器、能力声明和事件格式统一             |
+| [`src/tools/`](src/tools/)                                                                     | 模型工具定义、回执、session/job/asset 句柄     |
+| [`src/permissions/`](src/permissions/)                                                         | 后台真实授权请求的转发与答复                   |
+| [`src/proactive/`](src/proactive/)                                                             | 监控、计时、事件触发与 FIFO 播报               |
+| [`src/memory/`](src/memory/)                                                                   | 本地记忆库、检索、整理和可选视觉观察           |
+| [`src/subagents/`](src/subagents/)                                                             | 子智能体状态、详情和手动停止接口               |
+| [`src/log/`](src/log/)、[`src/logger.ts`](src/logger.ts)                                       | 会话记录与运行诊断                             |
+| [`src/i18n/messages.ts`](src/i18n/messages.ts)                                                 | CLI 与 Host 共用的中英文固定展示文案           |
 
-一次通话主要沿着 `LiveDaemon → LiveHostCoordinator → LiveSession → Realtime / BackendAdaptor` 运行。Qwen Serve 是 REST/SSE 后台适配目标，可由 Live 管理启动或连接已有服务；选择 ACP 或无后台模式时不需要它。
+一次通话的主要调用链是 `LiveDaemon → LiveHostCoordinator → LiveSession → Realtime / BackendAdaptor`。Qwen Serve 是 REST/SSE 后端，可由 Live 启动，也可连接已有服务；ACP 和无后台模式都不需要它。
 
 ## 构建与测试
 
@@ -73,11 +73,11 @@ npm test --workspace qwen-live-harness -- src/orchestrator/live-session.test.ts
 
 仓库还提供 `npm run lint`、`npm run format:check`、`npm run check:boundaries` 和 `npm run check:package`。最后一项会检查实际 npm tarball、安装后的命令和包边界。Host 的构建、类型检查与测试见 [Host 开发指南](../qwen-live-harness-host/README_ZH.md)。
 
-默认单元与协议测试使用替身和本地测试服务，不依赖真实模型账号。真实后台账号测试是另外的显式验证入口，不要把付费 API、真实设备授权或个人凭据写进普通测试。
+默认的单元测试和协议测试使用测试替身及本地服务，不依赖真实模型账号。需要真实账号的测试单独运行，须明确启用；默认测试中不应包含付费 API 调用、设备授权弹窗或个人凭据。
 
 ## 隔离配置与单独调试 daemon
 
-默认配置是 `~/.qwen-live-harness/config.json`，该目录也承载 Memory 与会话数据。
+配置默认位于 `~/.qwen-live-harness/config.json`，其所在数据目录也保存 Memory 和会话数据。
 
 开发时可以为配置、Memory、会话日志和发现文件使用独立目录。在运行初始化及启动命令的终端中设置：
 
@@ -88,7 +88,7 @@ npm run init
 npm start -- --debug
 ```
 
-两个变量分别控制数据目录和发现文件的**基础目录**。只修改 `DATA_DIR` 不会移动发现文件；同时运行多套开发配置时要一起隔离。完整覆盖规则见[环境变量参考](#环境变量参考)。
+这两个变量分别控制数据目录和发现文件的**基础目录**。只修改 `DATA_DIR` 不会改变发现文件的位置；使用独立开发配置时，需要同时隔离两者。完整优先级规则见[环境变量参考](#环境变量参考)。
 
 需要独立运行 daemon 时，先构建，再直接调用产物：
 
@@ -99,49 +99,49 @@ node packages/qwen-live-harness/dist/index.js --daemon-only --debug
 
 `npm start` 是两进程开发启动器，不接受 `--daemon-only`。单独启动 Host 时，使用本仓库 Host 的开发入口，并将 `QWEN_LIVE_HARNESS_DISCOVERY_FILE` 设置为对应目录下的完整 `run/daemon.json` 路径；不要把基础目录直接传给它。
 
-进程之间的约定：
+进程协作约定：
 
-- `run/daemon.json` 发布 loopback 地址、协议版本、PID 和实例 nonce；连接使用 Bearer token 与实例 nonce 校验。发现文件是私有状态，不应打印或复制其中的凭据。
-- `run/runtime.json` 用于**已安装版本**的桌面启动，保存 Node/CLI 的绝对路径、版本和必要启动信息，不复制 API key。源码 `npm start/init` 不创建或刷新这个登记。
-- 正常进程退出写入实例专属的 stop marker，让尚未握手或正在重连的 Host 也能退出。标记不能让旧实例关闭新实例；普通断线不等于用户要求退出。
-- End call 结束当前交互及 Proactive 采样，已委托的后台任务可以继续。退出整个应用会清理 daemon 拥有的资源、ACP 子进程和自动启动的 Qwen Serve；不会终止用户独立运行的服务或终端。退出失败的重试仍须绑定原来的认证实例。
+- `run/daemon.json` 记录回环地址、协议版本、PID 和实例随机标识（nonce）；连接使用 Bearer token 和 nonce 校验。发现文件属于私有运行状态，不应打印或分享其中的凭据。
+- `run/runtime.json` 用于**已安装版本**的桌面启动，保存 Node.js/CLI 的绝对路径、版本和必要启动信息，不保存 API key。源码 `npm start/init` 不创建或更新这项登记。
+- 正常退出会写入实例专属的停止标记（stop marker），让尚在握手或重连的 Host 也能退出。标记需要匹配所属实例，旧标记不能关闭新实例；普通断线不等于退出请求。
+- End call 结束当前交互和 Proactive 采样，已委托的后台任务可以继续。退出整个应用会清理 daemon 管理的资源、ACP 子进程和自动启动的 Qwen Serve，不会终止用户独立运行的服务或终端。退出失败后重试时，仍需匹配原来的认证实例。
 
 相关实现位于 [`startup.ts`](src/startup.ts)、[`startup-lock.ts`](src/startup-lock.ts)、[`host/discovery.ts`](src/host/discovery.ts) 和 [`lifecycle.ts`](src/lifecycle.ts)。
 
 ## 接入新的后台 Harness
 
-如果代理已经支持 ACP，通常只需要配置 `kind: "acp"` 的 `command`、`args` 和必要的 `env`。若希望 init 自动发现它，再扩展 [`agent-detector.ts`](src/agent-detector.ts) 及对应测试。
+如果编程助手已支持 ACP，通常只需配置 `kind: "acp"`、`command`、`args` 和必要的 `env`。若希望初始化向导自动发现它，再扩展 [`agent-detector.ts`](src/agent-detector.ts) 及对应测试。
 
 新协议的接入点是 [`BackendAdaptor`](src/adaptor/types.ts)：
 
 1. 在 `src/adaptor/` 实现适配器，提供 `preflight`、会话管理、`prompt`、事件流、取消、授权答复和 `close`。
-2. 如需新的配置类型，更新 `BackendConfig`、配置校验，以及 [`daemon.ts`](src/daemon.ts) 的 `buildAdaptor`。不要把某个代理的分支散布进通话调度器。
-3. 用真实能力填写 `capabilities()`，为协议行为补测试，再验证任务委托、事件关联、权限和清理。
+2. 如需新的配置类型，更新 `BackendConfig`、配置校验，以及 [`daemon.ts`](src/daemon.ts) 的 `buildAdaptor`。后端专用逻辑应留在适配层，避免分散到通话调度器中。
+3. 在 `capabilities()` 中声明实际支持的能力，补充协议测试，再验证任务委托、事件关联、权限和资源清理。
 
-现有 [`AcpAdaptor`](src/adaptor/acp-adaptor.ts) 与 [`QwenCodeAdaptor`](src/adaptor/qwen-code-adaptor.ts) 可作参考。后者通过 REST/SSE 连接 Qwen Serve，自动启动由 [`ManagedQwenServe`](src/adaptor/managed-qwen-serve.ts) 管理；连接已有服务时不拥有该外部进程。
+可参考现有的 [`AcpAdaptor`](src/adaptor/acp-adaptor.ts) 和 [`QwenCodeAdaptor`](src/adaptor/qwen-code-adaptor.ts)。后者通过 REST/SSE 连接 Qwen Serve，由 [`ManagedQwenServe`](src/adaptor/managed-qwen-serve.ts) 负责自动启动；连接已有服务时，不管理该外部进程的生命周期。
 
 适配时需要保持的约定：
 
-- `prompt()` 返回的是接收／排队回执，不是最终结果。完成由 `turn_complete` 等事件确认；使用稳定的 `jobRef` 或明确的 joined-turn 标识关联事件，不能猜测任务已完成。
-- `steering`、`imageInput`、`permissionForwarding` 等能力必须如实声明。不支持图片时不能宣称已把截图交给后台。当前持续后台状态观察要求 `eventDelivery: "stream"`；声明其他投递方式本身不会自动增加消费实现。
-- 授权只来自后台实际发出的请求。普通文件写入失败不能被包装成伪造的授权弹窗，也不能默认替用户同意。未知任务的取消不能退化为停止同一会话里的其他任务。
+- `prompt()` 返回受理或排队回执，不是最终结果。完成状态由 `turn_complete` 等事件确认，使用稳定的 `jobRef` 或明确的 joined-turn 标识关联。
+- `steering`、`imageInput`、`permissionForwarding` 等字段应反映实际支持的能力。后端不支持图片输入时，应明确报告，而不是声称截图已送达。持续接收后台状态目前要求 `eventDelivery: "stream"`；其他投递方式还需要对应的消费端实现。
+- 只转发后台实际提出的授权请求。普通文件写入失败不是授权请求，不应因此生成授权弹窗或自动同意。取消未知任务时，不能停止同一会话中的其他工作。
 - `close()` 清理本适配器拥有的进程、订阅和请求。用户已有的独立服务不属于它。
 
-`backends: []` 是明确的无后台模式，不创建占位代理。语音、视觉、Proactive、Memory 仍可使用；后台工具返回 `no_backend`。如果已配置的默认后台不可用，启动仍然失败，不会静默切换到无后台模式。
+`backends: []` 明确选择无后台模式，不创建占位编程助手。语音、视觉、Proactive 和 Memory 仍可使用，后台工具返回 `no_backend`。如果已配置的默认后台不可用，启动会失败，不会自动改用无后台模式。
 
 ## Qwen 终端接入
 
-这条路径连接已经运行的 **Qwen Code 交互式终端会话**。它使用 Qwen 的公开 peer 协议，不读取任意终端的 stdout，也不把外部终端变成 Live 拥有的进程。发现、发送文本、接收报告是分别配置的三项能力。
+这项集成通过 Qwen 的公开 peer 协议连接已运行的 **Qwen Code 交互式终端会话**，不读取任意终端的 stdout，也不接管外部终端进程。终端发现、文本发送和报告接收分别配置。
 
 ### Qwen Code 的三种连接方式
 
 主初始化向导为 Qwen Code 提供：
 
-| 方式                                | 配置与生命周期                                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 自动启动本地 Qwen Serve（默认选项） | `kind: "qwen-code"` 与 `managedServe.command`；启动已安装的 Qwen，使用 loopback、系统分配端口和新认证 token，退出时清理本次服务 |
-| 连接已有本地 Qwen Serve             | `kind: "qwen-code"` 与 `baseUrl` / 可选 `token`；不启动或停止该外部服务                                                         |
-| ACP                                 | `kind: "acp"`，以 `qwen --acp` 启动；不启用 peer 终端发现                                                                       |
+| 方式                                | 配置与生命周期                                                                                                             |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 自动启动本地 Qwen Serve（默认选项） | `kind: "qwen-code"` 与 `managedServe.command`；在回环地址启动已安装的 Qwen，使用系统分配的端口和新 token，退出时清理该服务 |
+| 连接已有本地 Qwen Serve             | `kind: "qwen-code"` 与 `baseUrl` / 可选 `token`；不启动或停止该外部服务                                                    |
+| ACP                                 | `kind: "acp"`，以 `qwen --acp` 启动；不启用 peer 终端发现                                                                  |
 
 自动启动的配置条目示例：
 
@@ -154,9 +154,9 @@ node packages/qwen-live-harness/dist/index.js --daemon-only --debug
 }
 ```
 
-将此条目放入 `backends`，把 `command` 换成实际可执行文件路径。`managedServe` 不能与 `baseUrl`、`serveUrl` 或 `token` 同时配置；工作目录使用 `defaultCwd`。后台继续沿用 Qwen 自己的模型认证和设置，Live 不替它配置模型或授权终端消息。
+将此条目加入 `backends`，把 `command` 换成实际可执行文件路径。`managedServe` 不能与 `baseUrl`、`serveUrl` 或 `token` 同时配置，工作目录使用 `defaultCwd`。Qwen 继续使用自己的模型认证和设置；Live 不会修改这些设置，也不会代为授予终端消息权限。
 
-向导选择两种 Serve 方式时，还会保存当前 `QWEN_HOME`（缺省为 `~/.qwen`）对应的只读 `peerDiscovery`。它不会自动授予发送文本的权限，也不会开启报告接收。手动配置远程 Serve 时，本地 peer 目录仍然是本地的，不会变成远程终端发现。
+选择任一 Serve 方式时，向导还会保存当前 `QWEN_HOME`（默认为 `~/.qwen`）对应的只读 `peerDiscovery`。这不会授予发送文本的权限，也不会开启报告接收。即使手动配置了远程 Serve，本地 peer 目录仍只用于发现本地终端。
 
 <a id="terminal-setup-and-diagnostics-m3-stage-4"></a>
 
@@ -172,29 +172,29 @@ node packages/qwen-live-harness/dist/index.js doctor --peers
 
 已安装 CLI 的对应命令是 `qwen-live-harness init --peers` 和 `qwen-live-harness doctor --peers`。源码启动脚本当前不转发 `--peers`，因此使用上面的构建产物入口。
 
-`init --peers` 只修改选定 `qwen-code` 后端的 `peerDiscovery`；可选已有后端，或增加一个连接已有 Serve 的条目，不会把 ACP 自动转换成 Serve。其他配置与原默认后端保留，取消不写文件。该命令要求已有常规 `config.json`，遇到会遮蔽结果的后台环境变量覆盖会拒绝编辑。保存使用锁和原子替换；不要同时在编辑器中改同一文件。修改完成后重启 Live。
+`init --peers` 只修改选定 `qwen-code` 后端的 `peerDiscovery`。可以选择已有后端，也可以添加连接已有 Serve 的条目，但不会将 ACP 转换成 Serve。其他设置和默认后端保持不变，取消操作不会写文件。运行前需要已有 `config.json`；如果后台环境变量会覆盖本次修改，命令会拒绝编辑。保存时使用锁和原子替换，请避免同时在其他编辑器中修改该文件。完成后重启 Live。
 
-`doctor --peers` 检查配置、终端目录、连接能力及授权设置，不启动通话、不发送指令、不创建授权。对于尚未启动的 `managedServe`，它显示未验证，不会为了检查而拉起服务或猜测动态端口。检查显示“已配置 controller”不等于该授权仍然有效。
+`doctor --peers` 检查配置、终端目录、连接能力和授权设置，不启动通话、发送指令或创建授权。尚未启动的 `managedServe` 会显示为未验证，诊断不会将它启动或假定其动态端口。controller 已配置，也可能对应一份已失效的授权。
 
 ### 发现现有终端
 
-发现要求 `kind: "qwen-code"` 后端配置 `peerDiscovery.qwenHome`，并与目标 Qwen 终端使用同一个本地 Qwen home。Qwen 侧需要 `agents.crossSessionMessaging: true`；修改后应重启目标终端。省略 `peerDiscovery` 会关闭发现，ACP 条目不支持这个设置。
+要发现终端，需在 `kind: "qwen-code"` 后端配置 `peerDiscovery.qwenHome`，指向目标终端使用的本地 Qwen home 目录。Qwen 侧需要开启 `agents.crossSessionMessaging: true`，修改后重启目标终端。省略 `peerDiscovery` 会关闭发现；ACP 条目不支持该设置。
 
-启动一次语音通话后，`session_list` 会同时列出托管会话和可达的 `tui` 终端。Host 的 Subagents 面板包含 **Terminal sessions**，可用 Refresh 更新列表。外部终端执行状态保持 `unknown`，没有 controller 授权时标为只读；它们不计入普通任务的 Running / Completed 数量。
+开始通话后，`session_list` 会同时列出托管会话和可连接的 `tui` 终端。Host 的 Subagents 面板通过 **Terminal sessions** 展示终端，可点击 Refresh 更新列表。外部终端的执行状态为 `unknown`，没有 controller 授权时标为只读；它们不计入普通任务的 Running / Completed 数量。
 
-目录与 socket 的名称是展示信息，发送目标绑定 Qwen home、会话 ID、PID 和启动时间组成的句柄。同名终端不会仅凭名称被选中；发现失败也不应被解释成该终端任务已完成。
+目录和 socket 名称只用于展示。发送时使用绑定 Qwen home、会话 ID、PID 和启动时间的句柄，不会仅凭同名就选中一个终端。发现失败也不能说明终端中的任务是否完成。
 
 ### 向终端发送文本
 
-使用支持 `sessions controllers` 的 Qwen CLI，在**同一个 Qwen home** 手动创建 controller grant：
+使用支持 `sessions controllers` 的 Qwen CLI，在**同一个 Qwen home** 下手动创建控制器授权（controller grant）：
 
 ```bash
 QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness" --json
 ```
 
-用增量设置向导保存返回的 token，或设置 `peerDiscovery.controllerTokenEnv` 指向已经包含该 token 的环境变量。`controllerToken` 与 `controllerTokenEnv` 只能二选一；该 token 与 Serve 的 REST token 不同，不应通过语音传递。环境变量方案还需确保启动 Live 的进程能读到它，双击 Host 不会自动继承终端里的变量。
+通过增量设置向导保存返回的 token，或将 `peerDiscovery.controllerTokenEnv` 设为存放该 token 的环境变量名。`controllerToken` 与 `controllerTokenEnv` 只能二选一。它是独立于 Serve REST token 的凭据，不应通过语音传递。使用环境变量时，需要确保启动 Live 的进程能读取它；双击 Host 不会自动继承终端里的变量。
 
-开始通话、列出会话，再要求 Live 给选定终端发送具体指令。`handoff` 会发送文本并返回独立的 `delivery_N` 回执；它不是后台 job，不证明指令已经执行、追加到当前轮次或完成。此通道不接受截图附件，也不能停止终端任务或代答其工具授权。
+开始通话并列出会话后，可以要求 Live 向选定终端发送具体指令。`handoff` 发送文本后返回独立的 `delivery_N` 回执，跟踪的是投递，不是后台任务；它不确认指令是否执行、是否已用于调整当前任务，也不表示任务完成。此通道不支持截图附件、停止终端任务或答复其工具授权请求。
 
 目标终端的 `agents.crossSessionInbound` 策略仍然有效：`hold` 要求在终端审阅，`refuse` 拒收。Host 的 **Instruction deliveries** 展示投递状态，`session_monitor` 可用 `delivery` 参数查询：
 
@@ -202,19 +202,19 @@ QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness
 - `delivered`：进入终端收件箱，不代表任务完成；之后仍可能变为 `expired` 或 `misaddressed`。
 - `denied` / `refused` / `dropped` 等按实际回执展示；`unknown` 只表示结果不确定，不能自动重发。
 
-未收到回执时默认 30 秒后显示未知；每个 controller 最多保留 100 条投递记录，满额时先淘汰已结束跟踪的条目，全部仍在跟踪时拒绝新发送。End call 停止跟踪，但不会撤回已经写出的指令。授权管理、撤销和终端审阅仍由 Qwen 自己负责。
+默认等待 30 秒仍未收到回执时，投递状态变为未知。每个 controller 最多保留 100 条记录，满额时先移除已结束跟踪的条目；如果全部仍在跟踪，则拒绝新的发送请求。End call 会停止跟踪，但不能撤回已写入的指令。授权管理、撤销和终端审阅仍由 Qwen 负责。
 
-发送前会复核注册记录并固定目标 socket 与完整 sessionId，但协议没有原子的 PID／启动时间校验。不能把本地目录元数据视为对同一用户下其他程序的身份认证。
+发送前，Live 会复核注册记录，并为本次投递固定目标 socket 和完整 sessionId。协议不提供原子的 PID／启动时间校验，因此不能依靠本地目录元数据，对同一用户下运行的其他程序进行强身份认证。
 
 ### 接收报告并播报
 
-`peerDiscovery.reports: true` 单独开启报告接收，默认是 `false`；接收报告本身不需要 controller grant，也不会因此让终端可控。每次通话发布一个临时 Live peer 地址；handoff 在适用时附上该地址和报告示例。
+`peerDiscovery.reports: true` 单独开启报告接收，默认关闭。接收报告不需要 controller grant，也不会赋予终端控制权限。每次通话会发布一个临时 Live peer 地址；handoff 在适用时附上该地址和报告示例。
 
-目标会话必须提供公开 `send_message` 工具、共享对应 Qwen home，并允许该工具调用。Live 不替用户授予这个权限。托管会话也可以使用该公开工具；没有专属报告 endpoint 的适配器，仅在恰好一个可用报告提供方存在时得到报告指引。
+目标会话需要提供公开的 `send_message` 工具、使用同一个 Qwen home，并获准调用该工具；Live 不会代为授权。托管会话也可以使用此工具。适配器没有自己的报告端点时，只有在恰好存在一个可用报告提供方的情况下，才会收到报告发送指引。
 
-报告可区分 `progress`、`blocked`、`result`、`info`；普通文字按 `info` 接收。Host 的 **Session reports** 独立展示来源、正文及排队／已提交／播报状态，用户也可通过 `session_monitor` 的 `reports: true` 查询。来源无法唯一匹配时显示未确认；来源匹配仅用于归因，不等于对同一用户下任意程序的强身份认证。
+报告类型包括 `progress`、`blocked`、`result` 和 `info`，普通文字按 `info` 接收。Host 的 **Session reports** 展示来源、正文以及排队／已提交／播报状态，也可通过 `session_monitor` 的 `reports: true` 查询。来源无法唯一匹配时标为未确认；匹配结果用于标明来源，不提供对同一用户下任意程序的强身份认证。
 
-播报等待用户讲话、前台回复和设备播放结束后，用无工具权限的独立响应转述。报告不是新的用户指令、授权答复或可验证的任务完成事件；关联的托管任务结果仍由原后台事件负责播报，避免双重宣布。静音时保留文字而不播报；中断或失败的报告不会自动重放。
+报告播报会等待用户讲话、前台回复和设备播放结束，再通过无工具权限的独立响应转述。报告不是新的用户指令、授权答复或经过验证的任务完成事件。关联的托管任务仍通过原后台事件播报结果，避免重复通知。关闭播报时保留文字；中断或失败的播报不会自动重放。
 
 每份报告最多 2,000 字符，每分钟最多接收 20 份、每来源 socket 6 份；归因等待与播报队列各最多 32 份，显示历史最多 100 份。通话结束后地址与关联失效，不重放旧消息；上一通话的报告保留到下一次通话开始。
 
@@ -224,33 +224,33 @@ QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness
 
 ### 模型工具与 MCP
 
-主 Omni 通过 daemon 定义的工具调用 Appshot、Memory、Proactive 和任务委托，并不直接获得后台代理的全部工具。
+主 Omni 通过 daemon 定义的工具使用 Appshot、Memory、Proactive 和任务委托，不直接获得后台编程助手的全部工具。
 
 本包没有独立的 MCP 服务配置或管理层。MCP 应在后台 Harness 中配置，能否在 ACP 会话中使用由后台实现决定；当前 ACP 创建／加载会话传入的是 `mcpServers: []`。新增 MCP 接入不能仅修改 Realtime 工具说明，还需要明确实际执行与授权通道。
 
-主助手在有后台和无后台两种模式下都以 **Qwen Omni** 为身份。普通自足对话直接回答；简单的公开信息查询优先 `web_search`，文件／命令／复杂执行以及用户明确指定代理的工作仍走 Harness。
+无论是否接入后台，主助手都以 **Qwen Omni** 为身份。无需外部信息的日常对话直接回答；简单的公开信息查询优先使用 `web_search`。文件操作、命令执行、复杂任务，以及用户明确交给编程助手的工作，通过 Harness 处理。
 
-`web_search` 有无后台都开放，不设置本地模型名称白名单。独立、纯文本的 Realtime 搜索连接原样复用主会话的 model（包括邀测别名）、endpoint 和 API key，不替换模型或使用另一套搜索配置；服务端是否支持原生搜索，以实际响应为准。实现见 [`src/realtime/web-search.ts`](src/realtime/web-search.ts)。
+无论是否接入后台，都可以使用 `web_search`，客户端不限制可用的模型名称。独立的纯文本 Realtime 搜索连接复用主会话的 model（包括别名）、endpoint 和 API key，不单独配置搜索模型；原生搜索是否可用取决于服务端。实现见 [`src/realtime/web-search.ts`](src/realtime/web-search.ts)。
 
-工具立即返回 `accepted + taskId`，搜索任务独立执行，多个查询可并行；每个搜索仍有独立的 25 秒超时。只发送本次查询，不附带语音、截图、Memory 或其他工作会话的上下文。是否实际联网按服务端 usage 判断，未知状态不能说成已核实。
+工具立即返回 `accepted + taskId`。搜索任务独立执行，可并行处理多个查询，每个查询的超时为 25 秒。请求只包含本次查询，不附带麦克风音频、截图、Memory 或其他工作会话上下文。是否实际进行了搜索由服务端元数据判断；未知状态不代表已确认联网搜索。
 
-完成结果进入 Injector 的 `search_result` 通道，等待用户语音、前台响应和设备播放结束，由主 Omni 根据 query／answer／searchStatus 组织回答，而不是逐字朗读原始结果。每个结果作为带引用数据的 `[NOTIFICATION]` user 上下文消息发送，不代表真实用户的新请求；其响应没有工具权限，网页内容不能授权再次搜索、委托任务或修改 Memory。搜索显示为 `kind: "search"` 的真实子任务，可单独取消，等待播报与已完成分开表示。
+完成结果进入 Injector 的 `search_result` 通道，等待用户讲话、前台响应和设备播放结束，再由主 Omni 根据 query／answer／searchStatus 组织回答，不逐字朗读原始结果。结果作为引用数据放入 `[NOTIFICATION]` user 上下文消息，不是用户的新请求。对应响应没有工具权限，网页内容不能授权再次搜索、委托任务或修改 Memory。搜索以 `kind: "search"` 的子智能体任务显示，可单独取消，并区分等待播报和播报完成。
 
-主会话的系统指令在整场通话中保持固定，每条 transport 仅在 `session.update` 中发送一次；`response.create` 不重复或覆盖系统指令。子 agent 结果通过 `conversation.item.create` 发送带类型标记的引用数据。Memory 更新使用可替换的 `[MEMORY_CONTEXT]` user 快照，关闭时发送不含旧数据的禁用快照，不改写系统 Prompt。重连只恢复最新快照；工具列表变化单独通过仅含 tools 的 `session.update` 更新。这不会物理删除已进入服务端当前会话的旧消息。
+主会话的系统指令在整场通话中保持固定，每条连接只在 `session.update` 中发送一次，`response.create` 不重复或覆盖。子智能体结果通过 `conversation.item.create` 发送，作为带类型标记的引用数据。Memory 更新使用可替换的 `[MEMORY_CONTEXT]` user 快照；关闭时发送不含旧数据的禁用快照，而不是改写系统提示词。重连只恢复最新快照，工具列表变化则通过仅含 tools 的 `session.update` 更新。服务端当前会话中已存在的旧消息不会因此被删除。
 
-工具必须等 `response.done` 确认 completed，并核对最终 ID、名称、参数与完成状态后才执行；结果得到服务端确认后才续答。能关联到待确认回执的 `Unknown function call id` 或 10 秒结果确认超时，会停止该续答链并记录静默诊断，不重复执行动作，也不直接关闭通话。其他无法关联的协议／配置错误仍按各自失败逻辑处理。回执被拒绝不代表任务未执行，也不构成再次执行的授权。
+工具只在 `response.done` 确认 completed，并核对最终 ID、名称、参数和状态后执行；结果得到服务端确认后才继续响应。能关联到待确认回执的 `Unknown function call id`，或 10 秒结果确认超时，会停止该续答链并记录静默诊断，不重复执行动作，也不直接关闭通话。无法关联的协议或配置错误仍按各自的失败逻辑处理。回执被拒绝不能说明任务是否已执行，也不授权重新执行。
 
-异步任务的受理回执必须单独完成一轮 `tool_continuation`：搜索、Appshot 画面分析、受管理的 handoff 或 Proactive 创建回执得到服务端确认后，daemon 先消费这轮响应，再注入最终的视觉、搜索、后台或 Monitor 通知。服务端分别消费受理回执响应与最终结果通知；这轮续答不重复执行任务，也不改写系统指令。
+异步任务的受理回执需要单独完成一轮 `tool_continuation`。搜索、Appshot 画面分析、托管 handoff 或 Proactive 创建回执得到服务端确认后，daemon 会等待这轮响应结束，再注入最终的视觉、搜索、后台或 Monitor 通知。这样将任务受理与结果播报分开处理，不重复执行任务，也不改写系统指令。
 
-只有当前工具链已经产生音频铺垫，且**父响应里的所有工具**都成功受理了符合条件的异步任务时，才抑制重复确认的音频：范围为 `web_search`、已受理的 Appshot 画面分析、不含警告的受管理 `handoff`，以及已实际提交创建的 `create_proactive_monitor`／`create_live_narration`。模型仍完成回执响应，文字保留在服务端历史和带 `audioSuppressed:true` 的诊断转录中，但不作为用户听到的对话写入 Memory、后续委托上下文或重连历史。没有音频铺垫、出现错误或警告、混有查询工具时，确认照常播报；终端指令投递、权限答复、`session_create`、定时器及任务更新／取消不适用这项抑制。已被新用户轮次取代的迟到回执单独静默消费，不继承旧轮次的工具权限，也不会因此静音真实用户的新回答或最终任务结果通知。
+只有工具链已产生音频铺垫，且**父响应里的所有工具**都成功受理了符合条件的异步任务时，才跳过重复确认音频。适用范围是 `web_search`、已受理的 Appshot 画面分析、不含警告的托管 `handoff`，以及已提交创建的 `create_proactive_monitor`／`create_live_narration`。模型仍完成回执响应；文字保留在服务端历史和带 `audioSuppressed:true` 的诊断转写中，但不作为用户听到的对话写入 Memory、后续委托上下文或重连历史。没有音频铺垫、存在错误或警告，或混有查询工具时，确认照常播报。终端指令投递、权限答复、`session_create`、定时器和任务更新／取消不适用。若迟到回执所属的轮次已被新的用户发言取代，则单独静默收完该回执，不沿用旧轮次的工具权限；这不会静音对新发言的回答或最终任务结果通知。
 
-如果确认续答再次调用完全相同的已受理请求，运行时复用原受理回执，不会启动第二个任务。该保护只作用于对应确认续答；不同的链式请求和用户新一轮明确请求仍可执行。复用回执也不会隐藏其中的警告。
+如果回执续答再次发出相同的已受理请求，运行时返回原回执，不启动第二个任务。该保护只作用于这轮续答；同一工具链中的不同请求，以及用户新提出的请求仍可执行。复用时保留原回执中的警告。
 
-原生搜索请求失败（包括服务端拒绝）后，如果已配置后台，运行时只用原查询在默认后台新建隔离会话，添加只读公开信息查询约束，复用现有 handoff、任务记录与权限流程；不把失败输出或网页指令当成授权，也不让主模型重复转交。未配置后台时明确报告查询失败。原搜索记录失败及转交情况，新后台任务按真实事件更新。结束通话或新建对话会取消未完成搜索、撤回待播结果，并停止该通话自动转交的查询；其他后台任务保持原生命周期。停止请求与后台停止确认仍然是两回事。
+原生搜索失败（包括服务端拒绝）后，如果已配置后台，运行时会在默认后台新建隔离会话，只传入原查询和只读公开信息查询约束，沿用现有的 handoff、任务记录和权限流程。失败输出或网页指令不构成授权，主模型也不会重复发起转交。没有后台时，搜索报告失败。原搜索记录转交情况，后台任务按实际事件更新。结束通话或新建对话会取消未完成搜索、撤回待播结果，并停止该通话自动转交的查询；其他后台任务按原生命周期运行。发出停止请求后，仍需等待后台确认。
 
 ### 语音与视觉
 
-主语音会话请求 `semantic_vad`、`create_response: false`、`interrupt_response: true`：服务端识别轮次，daemon 调度 `response.create`。Memory 更新和工具续答不应切换主会话的 VAD 模式。独立 Monitor 按窗口手动提交输入，独立搜索只有文本，两者的 `turn_detection: null` 不代表主语音关闭了 VAD。
+主会话请求 `semantic_vad`、`create_response: false` 和 `interrupt_response: true`：服务端识别轮次，daemon 调度 `response.create`。Memory 更新和工具续答保持主会话的 VAD 模式不变。独立 Monitor 手动提交媒体片段，搜索只使用文本；它们的 `turn_detection: null` 不会关闭主会话的 VAD。
 
 音频传输使用单声道 PCM16，麦克风输入为 16 kHz，**模型输出为 24 kHz**（`session.audio.output.format.sample_rate: 24000`）。Host 将输出重采样到设备的实际采样率；不要为了适配模型而强制切换系统输出设备的时钟。更新后需重启两端，可通过 `session.start.outputSampleRate` 检查本次通话的播放输入采样率。
 
@@ -259,40 +259,40 @@ QWEN_HOME="$HOME/.qwen" qwen sessions controllers add --label "Qwen Live Harness
 | 路径               | 送入内容与范围                                                                   |
 | ------------------ | -------------------------------------------------------------------------------- |
 | Live Feed          | 连续向主 Omni 发送所选摄像头或所选显示器的完整画面                               |
-| On Demand Appshot  | 截图由独立“画面分析”子智能体读取；主模型收到文字证据，以及资产／元数据回执       |
+| On Demand Appshot  | 截图由独立的画面分析子智能体读取；主模型收到文字证据和资产／元数据回执           |
 | Proactive 视觉监控 | 向独立 Monitor 发送所选摄像头或完整显示器画面；On Demand 下也可独立采样          |
-| 可选视觉 Memory    | Live Feed 复用当前帧；On Demand 私下采集选定显示器或摄像头，存储整理后的文字观察 |
+| 可选视觉 Memory    | Live Feed 复用当前帧；On Demand 独立采集选定显示器或摄像头，存储整理后的观察文字 |
 
-Appshot 截图后，通过 `function_call_output` 返回带资产句柄的异步 `accepted + taskId` 回执。`kind: "visual"` 的“画面分析”子智能体复用主模型、endpoint 和 key 读取编码截图，不提供工具或联网搜索；结果通过没有工具权限的 `visual_result` 通知交回主 Omni。无需后台 Harness。主对话收到文字证据而非直接图片，不能仅凭资产句柄声称看见画面。
+Appshot 截图后，通过 `function_call_output` 返回带资产句柄的异步 `accepted + taskId` 回执。`kind: "visual"` 的画面分析子智能体复用主模型、endpoint 和 key 分析编码截图，不使用工具或联网搜索，再通过无工具权限的 `visual_result` 通知将结果交回主 Omni。这条路径不需要后台 Harness；主对话收到的是文字证据，不是图片本身，资产句柄也不能单独提供视觉证据。
 
-视觉子智能体依次发送两组“一秒协议静音＋同一张 JPEG”，commit 一次并等待确认，再用 `response.instructions` 提交视觉问题、请求文字推理。重复静态帧只满足视频格式，不能当成运动证据；固定系统 Prompt 只发一次，不发送私人 Memory 或无关对话。分析超时为 25 秒，手动停止或 End call 会取消，失败不会自动转给编程代理。多个分析可并行，完成结果复用只读结果 FIFO 与播放确认；Subagents 展示排队／运行状态，静音时保留文字结果。Screen 的原始 PNG 资产仍保留，模型输入遵循截图传输限制。
+视觉子智能体依次发送两组“一秒协议静音＋同一张 JPEG”，只 commit 一次。收到确认后，通过 `response.instructions` 提交视觉问题并请求文字推理。重复静态帧用于满足视频输入格式，不表示画面发生了变化。固定系统提示词只发送一次，不附带私人 Memory 或无关对话。分析超时为 25 秒，停止任务或结束通话会取消分析，失败不会自动转给编程助手。多个分析可并行执行，完成结果共用只读结果 FIFO 和播放确认流程。Subagents 展示排队和运行状态，关闭播报时保留文字结果。屏幕截图保留原始 PNG 资产，模型输入则遵循截图传输限制。
 
-Appshot 可选参数 `query` 表示当前视觉问题；省略时优先使用本轮已完成的转录，否则要求概述画面。只有成功受理时才能略过重复确认音频。结果 Prompt 禁止从 `app=Unknown` 推断空白桌面、重复已受理请求、执行截图内文字的指令或猜测看不清的细节。`visual.analysis` 与 `visual.delivery` 诊断关联子模型和前台响应，不记录图片字节。
+Appshot 的可选参数 `query` 指定当前视觉问题；省略时优先使用本轮最终转写，没有转写时请求概述画面。只有成功受理任务后，才可能跳过重复确认音频。结果提示词要求保留不确定性，不能从 `app=Unknown` 推断桌面为空，也不能将截图文字当成指令、重复已受理请求或编造看不清的细节。`visual.analysis` 和 `visual.delivery` 诊断关联子智能体与主会话响应，不记录图片字节。
 
 协议类型与限制以 [`host/types.ts`](src/host/types.ts)、[`realtime-session.ts`](src/realtime/realtime-session.ts) 及 Host 的共享协议实现为准。当前 Host 协议为 v9：
 
-- 输入／输出绑定 call epoch；输出还绑定 `outputId`。播放开始、完成和清空必须保留这些身份，不能让旧音频的回执推进新轮次。
-- 显示器捕获和音频结束标记等扩展通过 capability 协商。支持结束标记的 Host 只有在该输出的标记与已排入的音频全部处理完后，才能确认播放完成。
+- 输入和输出绑定通话代次（call epoch），输出还绑定 `outputId`。播放开始、完成和清空时需要保留这些标识，避免旧音频回执推进新的轮次。
+- 显示器采集、音频结束标记等扩展通过能力协商（capability negotiation）启用。支持结束标记的 Host 只有在处理完该输出的标记和全部排队音频后，才确认播放完成。
 - Proactive 通知等待前台与设备播放结束后按 FIFO 播放；采样可继续、事件可继续入队。任务更新或取消需要撤销其旧事件。
-- 完整显示器覆盖不等于原生像素分辨率。实时帧与单次截图资产采用不同尺寸／传输限制；切源、切显示器和换 epoch 后应丢弃晚到结果。
+- 采集整个显示器不保证保留原生分辨率。实时帧与单次截图资产采用不同的尺寸和传输限制；更换来源、显示器或 epoch 后，应丢弃晚到的结果。
 
 ### 日志与共享文案
 
-用 `--debug` 对照 Host 连接、epoch、采集尺寸、帧 hash、工具回执和播放时序。会话 JSONL、Memory 数据库与诊断文件不是同一种日志；其中可能包含用户对话和任务内容。
+使用 `--debug` 关联 Host 连接、epoch、采集尺寸、帧哈希、工具回执和播放时序。会话 JSONL、Memory 数据库和诊断文件用途不同，都可能包含用户对话或任务内容。
 
 搜索结果投递在会话 JSONL 中记录为 `search.delivery`，debug 终端中为 `web_search.delivery`。按任务、服务端 Session 与 response ID 对照 `queued`、`requested`、`response_started`、`transcript`、`audio_started`、`response_done`、`finished` 各阶段。`audio_started` 只表示已向 Host 转交音频，不代表用户已经听到；投递完成还需播放确认。结果响应完成但没有可播放音频时，Subagents 保留结果并显示 `search.answerUnspoken` 对应的“未生成语音答复”状态，同时记录非致命的 `search_answer_unspoken` 诊断，不误报已经播报。
 
-debug 还会记录跨连接的[运行归档](#运行归档与离线检查)，它与会话 JSONL、逐 Monitor 归档分开。音频、视觉及音视频 Monitor 归档保存实际请求和原始图片／音频，只保留最近十个 Monitor 目录；这项独立的保留规则不是固定磁盘配额。结构与诊断方法见 [Monitor 诊断归档](#monitor-诊断归档)，分享前应检查敏感内容。
+debug 模式还会创建跨连接的[运行归档](#运行归档与离线检查)，与会话 JSONL 和各 Monitor 的归档分别保存。音频、视觉和音视频 Monitor 的归档包含实际请求及原始媒体，只保留最近十个 Monitor 目录；这限制的是目录数量，不是总磁盘用量。结构和诊断方法见 [Monitor 诊断归档](#monitor-诊断归档)，分享前请检查其中的内容。
 
-所有固定 UI／init 文案集中在 [`src/i18n/messages.ts`](src/i18n/messages.ts)，维护成对的 `en` / `zh-CN` 字段及一致的占位符。Host 构建复用该模块；system prompt 和原始后台输出不是 UI 翻译表的一部分。
+所有固定 UI 和初始化文案集中在 [`src/i18n/messages.ts`](src/i18n/messages.ts)，使用成对的 `en` / `zh-CN` 字段和一致的占位符。Host 在构建时复用该模块；系统提示词和后台原始输出不属于 UI 翻译表。
 
 ## 高级配置参考
 
-面向修改适配器、调度策略或记忆实现的开发者。普通用户的编辑步骤和常用示例放在[配置与功能指南](../../docs/configuration_ZH.md)；本节集中说明运行环境覆盖与内部调优参数。参数以 [`config.ts`](src/config.ts) 和 [`memory/config.ts`](src/memory/config.ts) 的校验为准，不需要把所有默认值写入用户配置。
+本节介绍适配器、调度策略和记忆实现的开发配置。普通用户的编辑步骤和常用示例见[配置与功能指南](../../docs/configuration_ZH.md)。完整校验规则位于 [`config.ts`](src/config.ts) 和 [`memory/config.ts`](src/memory/config.ts)；未填写的字段使用默认值，无需在配置文件中逐项列出。
 
 ### 后台启动与兼容配置
 
-init 的后台检测规则位于 [`agent-detector.ts`](src/agent-detector.ts)，当前启动入口如下：
+初始化向导的编程助手检测规则位于 [`agent-detector.ts`](src/agent-detector.ts)，当前启动入口如下：
 
 | 后台        | 入口                                                                              |
 | ----------- | --------------------------------------------------------------------------------- |
@@ -305,7 +305,7 @@ init 的后台检测规则位于 [`agent-detector.ts`](src/agent-detector.ts)，
 
 ACP 后端的 `command`、字符串数组 `args`、字符串值对象 `env` 与可选 `cwd` 分开配置，不使用 shell 拼接执行。桌面启动优先使用 init 生成的绝对路径；采用 `npx` 的适配器首次运行可能安装依赖。
 
-后端 `name` 匹配字母／数字开头的 1–32 位字母、数字、下划线或连字符；唯一性检查忽略大小写，但引用后端时应使用配置中的原始名称。多个后端必须且只能指定一个 `default: true`；默认后端预检失败会阻止启动，次要后端失败则标为不可用。
+后端 `name` 长度为 1–32 个字符，以字母或数字开头，可包含字母、数字、下划线和连字符。名称唯一性检查忽略大小写，但引用时应使用配置中的原始拼写。配置多个后端时，必须恰好有一个 `default: true`。默认后端预检失败会阻止启动，其他后端失败则标为不可用。
 
 兼容已有 REST/SSE 服务的配置段：
 
@@ -328,13 +328,13 @@ ACP 后端的 `command`、字符串数组 `args`、字符串值对象 `env` 与�
 
 ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回的 `availableModes` 中某个 `id` **精确匹配**。它是后端定义的模式名，不是 Live 通用的“免审批”布尔开关，也不适用于 `kind: "qwen-code"` 的 Serve 条目。
 
-未配置或找不到指定 ID 时，Live 尝试选择后端公开的 asking 模式：当前实现优先查找 `default`，其次是名称为 `Ask for approval` 的 `read-only`。指定 ID 不存在时会警告；没有匹配的 asking 模式，或 `setSessionMode` 调用失败时，后端仍保留自身的模式，**不能保证已强制进入逐项手动审批**。
+未配置或找不到指定 ID 时，Live 会尝试选择后端提供的询问授权模式：优先查找 `default`，其次是名称为 `Ask for approval` 的 `read-only`。指定 ID 不存在时会给出警告。如果两者都不可用，或 `setSessionMode` 失败，后端会保留自己的模式，因此**不能保证每项操作都需手动审批**。
 
-模式的实际权限由对应后端决定，应检查其文档及最终状态。当前成功选择任何显式 `sessionMode` 的日志都会写成“不逐项审批”，不能据此推断真实权限；配置 `default` 等模式也不自动意味着免审批。修改这个领域时，应覆盖有效／无效 ID、未提供模式、切换失败和权限请求转发的测试。
+模式的实际权限由后端决定，需要核对其文档和最终选中状态。当前日志会将成功设置的任意显式 `sessionMode` 描述为“不逐项审批”，这不能准确反映实际权限；选择 `default` 也不意味着不受限制。相关测试应覆盖有效和无效 ID、缺少模式、切换失败以及权限转发。
 
 ### 语音授权与持续允许
 
-权限询问由主 Omni 根据当前真实对话语言生成；没有可判断的对话语言时才回退 `config.language`。后台返回的英文标题、命令或路径是待审批数据，不决定播报语言，也不是用户授权。独立权限询问响应不能调用工具或用进度播报替代询问；用户随后明确答复，再由正常对话调用 `respond_permission`。原始动作在子任务详情中保留。
+权限询问由主 Omni 按当前用户对话的语言生成；无法判断时才使用 `config.language`。后台返回的英文标题、命令和路径只是待审批数据，不决定播报语言，也不代表用户授权。独立的权限询问响应不能调用工具，也不能用进度播报代替询问。用户随后明确答复，再由正常对话调用 `respond_permission`；原始操作保留在子智能体详情中。
 
 任务完成／失败通知使用独立 `task_result` 响应。运行时提供真实状态、任务和摘要，模型按当前对话语言简短概括，不朗读内部 ID、原始路径或 Markdown，也不能借通知调用工具。最近的真实用户语言样本可以跨通话保留，但只用于选择语言，不能当作该任务的结果事实。通知消息携带可信语言元数据，不修改系统指令；如果之后有新的真实用户发言，合并回复遵循该发言的语言。
 
@@ -348,7 +348,7 @@ ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回�
 
 ### Proactive 调优参数
 
-调度器将新媒体按**固定 1 FPS、每段 2 秒**的节奏提供给独立 Monitor。观察、模型推理和前台播报是不同阶段；更频繁地检查调度不会让不完整片段提前就绪，也不能消除网络、推理和播放延迟。
+调度器按**每段 2 秒、视觉输入固定 1 FPS**向独立 Monitor 提交新媒体。采集、推理和前台播报是不同阶段；提高调度检查频率，不能让不完整片段提前就绪，也不能消除网络、模型和播放延迟。
 
 `create_proactive_monitor` 创建条件观察任务，`create_proactive_timer` 创建时间提醒，`create_live_narration` 持续描述有意义的变化。创建解说只接受三个字段：`title`、`modalities` 和 `narration_focus`。运行时将任务绑定到原始真实用户请求，并把适用于该任务的语言、语气和详细程度偏好传递到 Monitor 判断与播报；其他任务的偏好不能扩大此任务范围，用户要求描述的内容也不等于已观察到的事实。通过任务更新工具明确设置 `narration_style` 时，它覆盖冲突的风格偏好。取消或更新任务会使先前任务代次的排队事件失效。
 
@@ -361,33 +361,33 @@ ACP 后端可选 `sessionMode`，值必须与该后端在 `session/new` 返回�
 | `scheduler.maxFailuresPerTask`         | `3`        | 连续推理失败达到此次数后停止该任务                                          |
 | `scheduler.repeat.cooldownSec`         | `3`        | 重复触发的冷却时间，秒                                                      |
 | `scheduler.repeat.maxWaitTtsSec`       | `30`       | 每次尝试从准备到播放完成确认的上限，含兜底生成／播放；不限制前面的排队时间  |
-| `scheduler.repeat.clearBufferOnResume` | `true`     | 恢复观察时清理旧感知缓冲                                                    |
+| `scheduler.repeat.clearBufferOnResume` | `true`     | 恢复观察时清理旧采集缓冲区                                                  |
 | `vision.windowSizeSec`                 | `10`       | 本地新画面的暂存时长上限，秒；不是每轮重发的历史窗口                        |
 | `vision.minEvalDurationSec`            | `0`        | 首次推理前的额外视觉观察时长；`0` 仍需完整片段和至少两张有效新帧            |
 | `audio.windowSizeSec`                  | `60`       | 本地新音频的暂存时长上限，秒                                                |
 | `audio.minEvalDurationSec`             | `0`        | 首次推理前的音频观察时长                                                    |
 
-两个缓冲窗口均不能小于 2 秒，最短观察时长不能超过各自窗口。Monitor 帧率和片段时长是固定协议常量，不是可配置字段；前台 Live Feed 使用独立的 `visualInput.fps` 设置。较长采集间断会重新计算连续观察时长，不完整片段会被跳过，已经判断过的画面不能当成新证据。
+两个缓冲窗口都不能短于 2 秒，最短观察时长不能超过对应窗口。Monitor 帧率和片段时长是固定协议常量，不是配置项；前台 Live Feed 使用独立的 `visualInput.fps` 设置。采集中断较久时，会重新计算连续观察时长。不完整片段会被跳过，已分析过的画面不计作新证据。
 
-所有模态的 Monitor 都使用交错的流式缓冲区会话。每条连接只在初始 `session.update` 中设置固定的系统 instructions、`turn_detection: null`、`smooth_output: false` 和空工具列表。每轮 append 新音频，视觉监控同时 append 新图像，然后发送 `input_audio_buffer.commit`，收到 `input_audio_buffer.committed` 后才请求推理。等到 `response.done` 后再提交下一片段。服务端保留先前 user 媒体与 assistant 回复，客户端不重复拼接或发送这些历史。
+各模态的 Monitor 都使用交错的流式缓冲区会话。每条连接只在初始 `session.update` 中设置固定系统指令、`turn_detection: null`、`smooth_output: false` 和空工具列表。每轮追加新音频，视觉监控还会追加新图像，然后发送 `input_audio_buffer.commit`。收到 `input_audio_buffer.committed` 后请求推理，等 `response.done` 后再提交下一片段。服务端保留之前的 user 媒体和 assistant 回复，客户端不重建或重复发送这些历史。
 
-只有 Monitor 连接的首个媒体请求附带任务文字，写法为 `{"type":"response.create","response":{"instructions":"TASK_TEXT"}}`。这里的 `response.instructions` 是首轮 user 媒体对应的任务文字，不是 Monitor 的系统 Prompt。后续片段使用不含该字段的裸 `response.create`，不会单独发送只有任务文字的 `conversation.item.create`。重建连接时，任务文字随首个新媒体片段再次发送，不重放旧媒体。独立的 On Demand 画面分析也用该字段提交一次图片问题。这两条都是手动媒体推理通路；前台对话、工具续答、后台结果通知和 Web Search 仍不携带 response 级 instructions。
+只有 Monitor 连接的首个媒体请求附带任务文字，格式为 `{"type":"response.create","response":{"instructions":"TASK_TEXT"}}`。这里的 `response.instructions` 指定首轮 user 媒体对应的任务，不是 Monitor 的系统提示词。后续片段直接发送不含该字段的 `response.create`，也不单独发送只有任务文字的 `conversation.item.create`。重建连接时，任务文字随首个新媒体片段再次发送，不重放旧媒体。独立的 On Demand 画面分析也用该字段提交一次视觉问题。这两条都是手动提交媒体的推理路径；前台对话、工具续答、结果通知和 Web Search 不携带 response 级 instructions。
 
 每个纯音频片段包含 2 秒 PCM16／16 kHz／单声道音频，不额外补静音。纯视频片段依次 append 1 秒 `protocol_silence` 静音、一张新图、第二秒静音、第二张新图，然后只 commit 一次，不包含麦克风声音。音视频片段按相同顺序提交两段真实的 1 秒麦克风音频及其对应画面；每个视觉轮次因此包含同一两秒时段内的两张新图。图像不足时不复制此前画面，不完整片段会记录丢弃原因。
 
-慢响应时新媒体留在有界本地队列中，不继续写入正在推理的服务端缓冲，也不把积压多秒音频合并成一轮。重建连接会丢失该 transport 的模型历史；只保留尚未消费的新媒体，不重放已经判断过的旧咳嗽／旧画面。调试时用 `transportGeneration` 区分这些历史边界。
+等待推理完成时，新媒体暂存在有容量限制的本地队列中，不再追加到正在推理的服务端缓冲区，也不把积压片段合并成一轮更长的输入。重建连接会丢失该连接的模型历史；只保留尚未提交的新媒体，不重放已分析过的声音或画面。调试时用 `transportGeneration` 区分不同连接的历史。
 
-`monitor.representationCompact` 映射到 `session.video.input.representation_compact`，在 Monitor 初始 `session.update` 中、第一段音频（含协议静音）发送前设置。连接内不动态修改，回收或失败重建连接时保留同一配置。调整配置后重启服务；`none` 适合需要保留细粒度视觉信息的监控。
+`monitor.representationCompact` 映射到 `session.video.input.representation_compact`，在 Monitor 初始 `session.update` 中设置，早于第一段音频（包括协议静音）。该值在连接内不变，定期重建或故障恢复时继续使用相同配置。修改配置后重启服务；需要保留更多画面细节时，可使用 `none`。
 
-Monitor 不设可配置的任务数量上限；实际并发能力仍受设备资源、采样、模型延迟及播报队列影响。
+Monitor 没有任务数量上限的配置项；实际并发能力仍受设备资源、采样、模型延迟和播报队列限制。
 
 #### Proactive 独立播报兜底
 
 前台 Proactive 响应以 `status: completed` 正常结束却未产生音频时，包括返回 `remain_silent` 的情况，同一次通知最多使用 **一次**独立播报兜底。它不创建新 Monitor、不增加触发次数，也不重新判断证据。失败或被取消的前台响应不满足这项兜底条件。
 
-如果有 `remain_silent` 调用，必须先回传结果并等确认，完成静默的回执续答，兜底才可通过 Injector 的 FIFO、前台响应与播放门控。它复用主会话的 endpoint、模型、key 和音色，输出 24 kHz PCM，设置 `smooth_output:false`、无工具／搜索、`turn_detection:null`。只发送简短固定规则、引用的观察摘要与当前对话语言，不复制原始媒体、Memory、要求监测的触发条件或干预指令。这是播报通路，不是再次核实观察事实；其 `response.create` 不携带 instructions。
+如果调用了 `remain_silent`，需先回传结果、等待确认，并完成静默回执续答。随后，兜底播报进入 Injector 的 FIFO 队列，等待前台响应和播放结束。它复用主会话的 endpoint、模型、key 和音色，输出 24 kHz PCM，并设置 `smooth_output:false`、无工具／搜索、`turn_detection:null`。请求只包含简短固定规则、引用的观察摘要和当前对话语言，不包含原始媒体、Memory、待监测条件或干预指令。这一步只负责播报，不重新核实观察事实；其 `response.create` 不携带 instructions。
 
-兜底先缓冲完整且成功的生成结果，再交给 Host 播放。请求最多等待 20 秒，PCM 上限为 20 秒单声道音频（960,000 字节）。`maxWaitTtsSec` 限制该次尝试的准备与播放总时长，不因兜底延长；用户设置更短时间时可能先到期。兜底失败或超时只把这次播报记为 `undelivered`，不把重复监控变成失败。
+兜底会先缓冲完整且生成成功的音频，再交给 Host 播放。请求超时为 20 秒，PCM 上限为 20 秒单声道音频（960,000 字节）。`maxWaitTtsSec` 限制这次尝试从准备到播放完成的总时长，不会因兜底而延长；配置更短时，可能先达到该上限。兜底失败或超时只将本次播报记为 `undelivered`，不会让重复监控任务进入失败状态。
 
 独立兜底的播报状态与任务状态分开：
 
@@ -399,17 +399,17 @@ Monitor 不设可配置的任务数量上限；实际并发能力仍受设备资
 | `delivered`   | 生成成功，并已收到 Host 播放完成确认             |
 | `undelivered` | 本次通知未完整送达，不能表示用户已经听到         |
 
-一次性任务可能显示 `completed`，同时播报为 `undelivered`：表示检测任务结束，不表示通知已播完。重复监控在一次兜底播报失败后仍继续。用户说话、关闭播报、取消任务或结束通话会使排队中的兜底失效。连接恢复时，尚未开始的兜底可继续排在回执流程之后；一旦开始生成或播放，打断、静音、取消、停止或连接恢复都会中止它，不重新播放旧通知。
+一次性任务可能显示 `completed`，但其播报为 `undelivered`：检测已结束，通知却未播完。重复监控在一次兜底播报失败后仍会继续。用户说话、关闭播报、取消任务或结束通话都会撤销排队中的兜底。连接恢复时，尚未开始的兜底可以继续等待回执流程完成；一旦开始生成或播放，打断、静音、取消、停止或连接恢复都会将它中止，不重播旧通知。
 
-主通路用 Preparing／Speaking 区分生成和真实播放。关闭播报时，主通路事件可能直接被消费，重新打开后不会补播。此时的已消费／已完成状态**不代表用户听到了声音**；上表严格的 `delivered` 保证针对独立兜底。debug 事件 `proactive.fallback_queued`、`proactive.fallback_started`、`proactive.fallback_audio_ready`、`proactive.fallback_delivered`、`proactive.fallback_undelivered` 与 `proactive.delivery_undelivered` 通过同一 task／delivery ID 关联，不增加触发次数。
+主通路用 `preparing` 和 `speaking` 区分生成和实际播放。关闭播报时，事件可能直接标为已处理，重新开启后不会补播。此时的已处理／已完成状态**不代表用户听到了声音**；上表中 `delivered` 的严格条件只适用于独立兜底。debug 事件 `proactive.fallback_queued`、`proactive.fallback_started`、`proactive.fallback_audio_ready`、`proactive.fallback_delivered`、`proactive.fallback_undelivered` 和 `proactive.delivery_undelivered` 使用同一 task／delivery ID 关联，不增加触发次数。
 
 ### Memory 模型服务连接
 
-Updater 只整理对话中的长期和近期记忆，不生成环境观察记录。环境记忆由单独的可选 Observer 从视觉输入生成；关闭 Updater 不等于删除环境记忆，移除 Updater 的环境输出也不影响 Observer 或环境检索。
+整理器（Updater）负责从对话中整理长期和近期记忆；可选的观察器（Observer）独立从视觉输入生成环境记忆。两条路径相互独立：Updater 不生成环境观察记录，关闭它也不会删除环境记忆或禁用观察采集、环境检索。
 
-整理和视觉观察默认使用由 Realtime endpoint 派生的同地域 `/compatible-mode/v1/chat/completions`；向量检索使用 `/compatible-mode/v1/embeddings`。整理模型默认为 `qwen3.7-plus`，`observer.model` 未配置时跟随整理模型。开启视觉观察需要相应模型支持图片。
+记忆整理和视觉观察默认使用由 Realtime endpoint 派生的同地域 `/compatible-mode/v1/chat/completions`，向量检索使用 `/compatible-mode/v1/embeddings`。整理模型默认为 `qwen3.7-plus`；未配置 `observer.model` 时沿用整理模型。视觉观察要求模型支持图片输入。
 
-`updater.baseUrl` / `observer.baseUrl` 可以覆盖各自的 HTTP(S) 兼容接口基础地址，不能附带 `/chat/completions` 后缀。`apiKeyEnv` 是凭据环境变量的名字，并且必须与对应的 `baseUrl` 一起配置。基础地址已覆盖、但 `apiKeyEnv` 为空时，仍会复用主 API key，应明确核对目标服务和凭据的信任范围。Embedding 始终使用主 DashScope 连接。
+`updater.baseUrl` / `observer.baseUrl` 可分别指定 HTTP(S) 兼容接口的基础地址，不包含 `/chat/completions` 后缀。`apiKeyEnv` 填写存放凭据的环境变量名，需与对应的 `baseUrl` 一起配置。即使使用自定义地址，`apiKeyEnv` 为空时仍会发送主 API key，因此应确认该服务可以接收这份凭据。Embedding 始终使用主 DashScope 连接。
 
 ### Memory 调优参数
 
@@ -422,7 +422,7 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | `defaultId`                               | `"default"`          | 选中的记忆库 ID                |
 | `updater.enabled`                         | `true`               | 通话结束后的长期／近期记忆整理 |
 | `updater.model`                           | `"qwen3.7-plus"`     | 整理模型                       |
-| `updater.baseUrl` / `updater.apiKeyEnv`   | `""` / `""`          | 可选连接覆盖                   |
+| `updater.baseUrl` / `updater.apiKeyEnv`   | `""` / `""`          | 可选的自定义连接设置           |
 | `updater.timeoutMs`                       | `120000`             | 单次整理请求超时，毫秒         |
 | `updater.temperature`                     | `0`                  | 整理生成温度                   |
 | `updater.maxTokens`                       | `2048`               | 整理输出 token 上限            |
@@ -430,7 +430,7 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | `updater.shutdownWaitSec`                 | `2`                  | 退出时等待整理完成的时长，秒   |
 | `observer.enabled`                        | `false`              | 视觉记忆开关                   |
 | `observer.model`                          | 跟随 `updater.model` | 支持图片输入的观察模型         |
-| `observer.baseUrl` / `observer.apiKeyEnv` | `""` / `""`          | 可选观察连接覆盖               |
+| `observer.baseUrl` / `observer.apiKeyEnv` | `""` / `""`          | 可选的观察模型连接设置         |
 | `observer.intervalSec`                    | `60`                 | 视觉观察间隔，秒               |
 | `observer.timeoutMs`                      | `60000`              | 单次观察请求超时，毫秒         |
 | `observer.temperature`                    | `0`                  | 观察生成温度                   |
@@ -448,8 +448,8 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | 字段                                      | 默认值                | 用途                                                         |
 | ----------------------------------------- | --------------------- | ------------------------------------------------------------ |
 | `retrieve.topK`                           | `3`                   | 检索结果数量上限                                             |
-| `retrieve.maxChars`                       | `5000`                | 原始结果正文预算                                             |
-| `retrieve.retrievedMaxChars`              | `6000`                | 渲染到模型上下文后的检索区预算                               |
+| `retrieve.maxChars`                       | `5000`                | 原始结果正文的字符上限                                       |
+| `retrieve.retrievedMaxChars`              | `6000`                | 加入模型上下文后的检索区字符上限                             |
 | `retrieve.useVector`                      | `true`                | 启用向量与关键词混合检索                                     |
 | `retrieve.model`                          | `"text-embedding-v4"` | Embedding 模型                                               |
 | `retrieve.timeoutMs`                      | `400`                 | 实时查询向量请求超时，毫秒                                   |
@@ -461,7 +461,7 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | `retrieve.andBoost`                       | `1.2`                 | AND 命中加权                                                 |
 | `retrieve.timeRangeBoost`                 | `2`                   | 时间范围内的候选加权                                         |
 | `retrieve.timeEdgeDays`                   | `2`                   | 时间范围边缘的宽限天数                                       |
-| `retrieve.rrfK`                           | `60`                  | 多路排序融合参数                                             |
+| `retrieve.rrfK`                           | `60`                  | 倒数排名融合（RRF）参数                                      |
 | `retrieve.envMinGapSec`                   | `600`                 | 检索视觉观察时的最小时间间隔，用于避免重复结果；不是采样间隔 |
 
 预载参数：
@@ -478,11 +478,11 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 | `preload.stmMaxItems`                              | `20`        | 预载近期事项数量上限                                 |
 | `preload.stmMaxChars`                              | `1200`      | 预载近期事项字符预算                                 |
 
-`retrieve.maxChars` 不能大于 `retrievedMaxChars`；`backfillTimeoutMs` 不能小于 `timeoutMs`；`segment.minTurnsBeforeGapCut` 不能大于 `maxTurns`。高级参数的完整取值范围以 [Memory 配置校验](src/memory/config.ts)为准。
+`retrieve.maxChars` 不能大于 `retrieve.retrievedMaxChars`；`retrieve.backfillTimeoutMs` 不能小于 `retrieve.timeoutMs`；`segment.minTurnsBeforeGapCut` 不能大于 `segment.maxTurns`。完整取值范围见 [Memory 配置校验](src/memory/config.ts)。
 
 ### 环境变量参考
 
-总体优先级为：**环境变量 → `config.json` → 内置默认值**。API key 的优先级更具体为 `DASHSCOPE_API_KEY` → `QWEN_LIVE_HARNESS_REALTIME_API_KEY` → `realtimeApiKey`。更改文件却未生效时，请先检查 shell 中是否已有覆盖。
+总体优先级为：**环境变量 → `config.json` → 内置默认值**。API key 按 `DASHSCOPE_API_KEY` → `QWEN_LIVE_HARNESS_REALTIME_API_KEY` → `realtimeApiKey` 的顺序读取。如果修改配置文件后没有生效，先检查 shell 中是否设置了覆盖它的环境变量。
 
 | 环境变量                                                  | 对应配置／用途                                         |
 | --------------------------------------------------------- | ------------------------------------------------------ |
@@ -509,7 +509,7 @@ Updater 只整理对话中的长期和近期记忆，不生成环境观察记录
 
 省略 `backends` 的配置支持 `serveUrl` / `serveToken`，以及环境变量 `QWEN_LIVE_HARNESS_SERVE_URL` / `QWEN_SERVER_TOKEN`；多后端或无后端模式使用明确的 `backends` 数组。
 
-安装版的桌面启动登记保存 Node／CLI 的绝对路径、PATH、配置／发现目录和工作目录，不复制任意 shell 环境变量。需通过双击 Host 使用的参数，建议写入配置文件；仅存在于某个终端的环境变量，不保证从启动器打开应用时仍存在。
+安装版的桌面启动登记保存 Node.js／CLI 的绝对路径、PATH、配置和发现目录，以及工作目录，不会保存整个 shell 环境。双击 Host 时也需要使用的参数，建议写入配置文件；某个终端中的环境变量未必能被桌面启动的应用读取。
 
 `DATA_DIR` 改变配置与默认数据位置，**不会**自动改变 discovery 基础目录；默认仍为 `~/.qwen-live-harness`。例如，已安装 CLI 可使用独立配置：
 
@@ -524,15 +524,15 @@ qwen-live-harness
 
 ### 运行归档与离线检查
 
-debug 运行会写入 `<dataDir>/debug/run-*`，与下文系统临时目录里的逐 Monitor 归档独立。运行归档记录实际观察到的主模型、Monitor、搜索、画面分析、通知播报连接，以及运行／控制事件。已知凭据字段、配置中的密钥和可识别的凭据文本模式会脱敏，但不会通过 OCR 或语音识别查找媒体中的秘密；Prompt、Memory 上下文、工具参数／结果、转录及媒体仍是私密内容，不能当作可直接分享的匿名遥测。
+debug 模式将运行归档写入 `<dataDir>/debug/run-*`，与下文系统临时目录中各 Monitor 的归档分别保存。运行归档记录主模型、Monitor、搜索、画面分析、通知播报连接，以及运行和控制事件。已知凭据字段、配置中的密钥和可识别的凭据文本会脱敏，但不会检查图片或音频中的敏感信息。提示词、Memory 上下文、工具参数和结果、转写及媒体仍可能包含隐私，分享前需要检查。
 
-每次归档包含 `manifest.json`、追加写入的 `events.jsonl` 和 `media/`。事件保留全局 `globalSeq`、连接内 `connectionSeq`、连接类型／ID、墙上时间、单调时间、方向与记录的内容。`archive.connection_registered` 是连接元数据，不是又发送了一次模型请求；真正的出站请求看 `wire.send`。对应的 `wire.send_result` 为 `sent` 或 `failed_or_uncertain`，其中 `sent` 仅表示本地 socket 接受了写入，不等于服务端确认收到；缺少结果时为 `unconfirmed`。服务端确认是另外的入站事件。
+每次归档包含 `manifest.json`、追加写入的 `events.jsonl` 和 `media/`。事件保留全局 `globalSeq`、连接内 `connectionSeq`、连接类型／ID、墙钟时间、单调时间、方向和内容。`archive.connection_registered` 记录连接元数据，不是额外发送的模型请求；实际出站请求记录在 `wire.send` 中。对应 `wire.send_result` 的 `sent` 或 `failed_or_uncertain` 表示本地发送结果；`sent` 只说明 socket 接受了写入，不等于服务端已确认。缺少结果时记为 `unconfirmed`，服务端确认另以入站事件记录。
 
-媒体引用记录相对路径、字节偏移、长度、SHA-256、类型与编码，指向准确的归档字节范围，不是事后近似重建的录音。会话／配置快照仅提供上下文，不应误认为每轮都重发了 instructions；判断客户端尝试发送了什么，应查看实际 wire 序列，并结合归档是否完整。
+媒体引用记录相对路径、字节偏移、长度、SHA-256、类型和编码，指向准确的归档字节范围，不是事后重建的录音。会话和配置快照只提供上下文，并不表示每轮都重发了系统指令。判断客户端尝试发送了什么，需要查看实际 wire 序列，并确认归档是否完整。
 
-默认**每次归档预算为 512 MiB**，保留**最近 10 次已结束的运行归档**，包括已结束但不完整的归档；活跃归档受保护，总数可能暂时超过十个。`manifest.json` 记录 `recording`、`closed` 或 `incomplete`、警告及计数。达到上限、记录丢失或存储故障只令证据不完整，不应终止通话。写入失败也可能导致 manifest 无法更新，因此还要检查运行警告与缺失文件，不能只看状态字段；未开启 debug 的输入无法追补。
+默认**每次运行的归档上限为 512 MiB**，保留**最近 10 次已结束的运行归档**，包括不完整的归档。运行中的归档不会被清理，总数可能暂时超过十个。`manifest.json` 记录状态（`recording`、`closed` 或 `incomplete`）、警告和计数。达到上限、丢失记录或存储失败会使归档不完整，但不会因此终止通话。写入失败也可能阻止 manifest 更新，因此需要同时检查运行警告和缺失文件；未保存的输入无法事后恢复。
 
-在仓库根目录离线检查一次归档，默认输出不包含 Prompt 或转录正文：
+在仓库根目录离线检查一次归档，默认输出不包含提示词或转写正文：
 
 ```sh
 node scripts/replay-live-debug.mjs /path/to/debug/run-example
@@ -547,7 +547,7 @@ node scripts/replay-live-debug.mjs /path/to/debug/run-example \
 
 工具校验事件序号、发送结果、媒体范围及哈希，并拒绝不安全路径或符号链接。摘要列出观察到的连接状态、可用且通过格式校验的服务端 `sess_*` ID，以及去重后的响应数量，不输出消息正文。导出包含 `requests.json`、`responses.json`、选中连接的 `events.jsonl`、复制的媒体片段及检查／manifest 摘要；请求／响应 JSON 中恢复 base64 媒体，原始字节数组使用明确的 `$binary` 包装，脱敏标记也会保留。失败或未确认的发送会保留标记，不完整的归档不会标成完整，也不会覆盖已有输出目录。导出内容仍含隐私，分享前必须检查。
 
-虽然文件名含 replay，这个工具**只做离线检查与导出**：不会读取 API key、联网调用、启动设备、执行记录中的函数调用或后台命令。主会话的工具历史仅作为数据导出，供分析使用，不自动重放。任何归档都不能保证未来的模型输出、服务端状态或采样随机性完全相同。
+虽然文件名含 replay，这个工具**只做离线检查与导出**，不会读取 API key、联网、启动设备，或执行记录中的函数调用和后台命令。工具历史仅作为数据供分析，不会被执行。归档也不能保证后续请求产生相同的模型输出或服务端状态。
 
 ### Monitor 诊断归档
 
@@ -572,15 +572,15 @@ qwen-live-harness-monitor-debug/
 
 - `proactive.monitor_debug_started` 和 `proactive.monitor_request_saved` 记录绝对目录。一次 Monitor 的 WebSocket 回收重建仍使用同一目录。
 - JPEG 是成功写入模型连接的帧。`input.wav` 保存 commit 前成功 append、且未被 `input_audio_buffer.clear` 丢弃的单声道 16 kHz PCM16，按发送顺序拼接，包含协议静音。它不是原始麦克风全程录音；归档中的音频偏移不包含 WAV 文件头。
-- 所有模态的 `request.json.events` 都统一保存逐条音频／图像 append、`input_audio_buffer.commit` 和 `response.create` 事件。每条音频 append 指向 `input.wav`，记录字节偏移、长度和 `origin`。`origin` 中，`microphone` 为麦克风来源、`protocol_silence` 为纯视频片段的静音音轨承载、`unknown` 为未标注来源。`audioSummary` 提供 `totalBytes`、`microphoneBytes`、`protocolSilenceBytes`、`unknownBytes`。这些只是归档诊断字段，不会发送给模型；来源不是能量或事件判断，握手／慢推理时本地缓存的新媒体也可能较晚送出，不能把发送时间当作采集时间。
-- `request.json` 保存初始化配置、事件顺序、帧哈希、音频偏移和 `previousRequest`。任务文字位于首轮 `response.create` 事件的 `response.instructions` 中，后续请求不包含该字段，也没有单独的任务 user 消息。`transportGeneration` 区分同一 Monitor 的不同连接，`previousRequest` 仅串联同一 transport 的先前请求；重建连接会重置该引用。服务端驻留会话仍可能保有此前已提交媒体和回复历史，不能把模型看到的全部上下文等同于当前这一个 WAV；排查时需要结合前序请求和 transport。
-- 每个 `request.json.session` 是为了单独查看文件而附带的初始化快照，不表示本轮重发了系统 Prompt 或任务文本。同一 transport 的快照中事件 ID 保持相同；本轮实际增量发送看 `events`：媒体 append、commit，收到 commit 确认后再发送 `response.create`。只有建立新 transport 才重新发送初始化，任务文字只随该连接的首次媒体推理请求提交一次；系统 Prompt 保持在初始 `session.update` 中。
-- 合法的 `providerSessionId` 在可用时写入对应 transport 的 request／response JSON；`response.json` 保存原始动作文本、解析结果，并在服务端提供时保留 `responseId`、`eventId`、`usage`。请求事件也保留可用的发送事件 ID。字段缺失不应由分析者猜补，服务端 usage 也不等于有效麦克风时长。
+- 所有模态的 `request.json.events` 都按顺序保存音频／图像 append、`input_audio_buffer.commit` 和 `response.create` 事件。每条音频 append 指向 `input.wav`，记录字节偏移、长度和 `origin`。`microphone` 表示麦克风音频，`protocol_silence` 表示纯视频协议需要的静音音轨，`unknown` 表示来源未标注。`audioSummary` 提供 `totalBytes`、`microphoneBytes`、`protocolSilenceBytes` 和 `unknownBytes`。这些诊断字段不发送给模型，也不表示音频能量或检测到的事件。握手或等待推理期间缓存的媒体可能延后发送，因此发送时间不一定是采集时间。
+- `request.json` 保存初始化配置、事件顺序、帧哈希、音频偏移和 `previousRequest`。任务文字位于首轮 `response.create` 的 `response.instructions` 中，后续请求不包含该字段，也没有单独的任务 user 消息。`transportGeneration` 区分同一 Monitor 的不同连接，`previousRequest` 只关联当前连接内的上一请求，重建连接后会重置。服务端会话还可能保留之前提交的媒体和回复，因此当前 WAV 不是模型的全部上下文；排查时需要结合连接和前序请求。
+- `request.json.session` 附带初始化快照，便于单独检查文件，不表示本轮重发了系统提示词或任务文字。同一连接的快照使用相同事件 ID；实际增量发送顺序记录在 `events` 中：媒体 append、commit，收到确认后再发送 `response.create`。只有新建连接时才重新发送初始化。任务文字随该连接的首次媒体推理请求提交一次，系统提示词只在初始 `session.update` 中设置。
+- 可用且格式有效的 `providerSessionId` 会写入对应连接的 request／response JSON。`response.json` 保存原始动作文本和解析结果，并保留服务端提供的 `responseId`、`eventId` 和 `usage`；请求事件也会保留可用的发送事件 ID。缺失标识应保持缺失，不应猜补；服务端 usage 也不等于有效麦克风时长。
 - 对照 Host、daemon 和 `proactive.monitor_image_sent` 的 `frameHash`；`proactive.monitor_commit` 的计数只包含成功 socket 写入，`proactive.monitor_committed` 对应服务端确认。队列中或已丢弃的帧不能当作已发送证据。
 - `proactive.monitor_chunk_prepared` 记录片段采集时间范围和真实发送帧数；`proactive.monitor_chunk_dropped` 记录缺图、采集间断、未提交片段失效或媒体／commit 发送不确定等原因。`proactive.monitor_input_dropped` 聚合本地缓存淘汰的数量、字节和时间范围。上述事件在 debug 模式下进入会话 JSONL，帮助区分“没有完整输入”和“模型判断为 wait”。
-- `proactive.monitor_ready` 标注输入通路为 `streaming_buffers`；`proactive.monitor_response_requested` 的 `taskTextIncluded` 只在每条连接的首次媒体推理时为 true，用于区分一次性的任务文字与固定的系统 Prompt。
-- 所有模态共同保留最近创建的 **10 个 Monitor 目录**，不是每种模态各 10 个，也不是只保存 10 次请求或限制总磁盘用量。被移出归档的任务继续运行但不再归档。目录／文件使用私有权限，待处理和排队写入有 32 MiB 预算；磁盘错误或超预算可能令归档不完整，但不应因此中断通话。
-- JSON 会清理连接凭据字段与已知 API key，但真实声音、画面和用户文字中的其他秘密不会自动脱敏。共享前必须检查 WAV、JPEG 和 JSON，不要只检查终端日志或直接发送整个数据目录。
+- `proactive.monitor_ready` 标注输入通路为 `streaming_buffers`；`proactive.monitor_response_requested` 的 `taskTextIncluded` 只在每条连接的首次媒体推理时为 true，用于区分一次性的任务文字与固定的系统提示词。
+- 所有模态合计保留最近创建的 **10 个 Monitor 目录**。这限制的是目录数量，不是每种模态的数量、请求次数或总磁盘用量。归档被清理后，Monitor 继续运行，但不再写入归档。目录和文件使用私有权限，待处理与排队写入的内存上限为 32 MiB；磁盘错误或超过上限可能使归档不完整，但不会因此中断通话。
+- JSON 会清理连接凭据字段和已知 API key，但声音、画面及用户文字中的其他敏感信息不会自动脱敏。分享前请检查 WAV、JPEG 和 JSON，而不只是终端日志；不要直接发送整个数据目录。
 
 #### 调度决策与会话 JSONL
 
@@ -590,13 +590,13 @@ qwen-live-harness-monitor-debug/
 - `proactive.evaluation_decision`：例如 `notification_accepted`、`suppressed_awaiting_false`、`rearmed_false`、`ignored_cooldown`，用于区分“模型触发了”与“调度器允许通知”。
 - `proactive.cooldown_started`／`proactive.cooldown_resumed`／`proactive.cooldown_audio_dropped` 和 `proactive.buffer_reset`：说明冷却、期间丢弃的音频统计及待提交缓存清理，不是另外保存了被丢弃的原始声音。
 
-关联时先匹配 `taskId` 和任务代际（Monitor 事件为 `taskGeneration`，部分调度事件为 `generation`），再对照相邻 Monitor 结果的 `evaluation`、`transportGeneration` 及可用的 `providerSessionId`／`responseId`。并非每一条调度事件都带全套标识；不能仅靠接近的时间戳混合不同任务或不同连接。该 JSONL 通道保存有界诊断元数据，不保存逐帧音频／图像，也不会追补 debug 开启前的原始内容。
+关联事件时，先匹配 `taskId` 和任务代次（Monitor 事件为 `taskGeneration`，部分调度事件为 `generation`），再对照相邻结果的 `evaluation`、`transportGeneration` 和可用的 `providerSessionId`／`responseId`。并非每个事件都带齐这些标识，仅凭时间接近可能会混淆任务或连接。该 JSONL 通道只保存有大小限制的诊断元数据，不保存逐帧音频或图像，也不会补录 debug 开启前的内容。
 
 详细实现见 [`monitor-debug-store.ts`](src/proactive/monitor-debug-store.ts)。Host 自身的私有故障日志与设备诊断见 [Host 开发指南](../qwen-live-harness-host/README_ZH.md#日志与文案)。
 
 ## 打包与发布
 
-根 workspace 是私有包，实际 npm 包是本目录的 `qwen-live-harness`。发布产物包含构建后的 `dist` 和许可证，不包含 Electron Host；`npm run check:package` 验证这一边界。
+仓库根 workspace 标记为 `private`，不发布到 npm；实际发布的是本目录的 `qwen-live-harness` 包。安装包包含构建后的 `dist` 和许可证，不包含 Electron Host，`npm run check:package` 会验证这项包边界。
 
 公开 npm 包与签名 Host 需要匹配版本和协议。构建、签名、公证、GitHub Release、OSS 同步及 npm 发布的维护入口见 [Host 开发指南](../qwen-live-harness-host/README_ZH.md)；日常源码调试不需要发布或修改安装器信任规则。
 

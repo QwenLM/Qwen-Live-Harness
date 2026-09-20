@@ -11,7 +11,12 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIVE_HOST_PROTOCOL_VERSION } from './types.js';
 import { PACKAGE_VERSION } from '../version.js';
-import { displayLiveMessage } from '../i18n/messages.js';
+import {
+  displayLiveError,
+  displayLiveMessage,
+  liveMessage,
+  liveText,
+} from '../i18n/messages.js';
 import {
   downloadLiveHostRelease,
   isExpectedLiveHostSignature,
@@ -318,7 +323,7 @@ describe('LiveHostInstaller', () => {
         ...manifest(),
         protocolVersion: LIVE_HOST_PROTOCOL_VERSION + 1,
       }),
-    ).toThrow(/incompatible/);
+    ).toThrow(liveText('en', 'installer.manifestIncompatible'));
     expect(() =>
       parseLiveHostReleaseManifest({
         ...manifest(),
@@ -327,7 +332,7 @@ describe('LiveHostInstaller', () => {
           arm64: { ...manifest().assets.arm64, name: 'other.zip' },
         },
       }),
-    ).toThrow(/asset/);
+    ).toThrow(liveText('en', 'installer.assetInvalid'));
   });
 
   it.each(['0.3.0', '999.0.0'])(
@@ -336,7 +341,10 @@ describe('LiveHostInstaller', () => {
       expect(() =>
         parseLiveHostReleaseManifest({ ...manifest(), version }),
       ).toThrow(
-        `Host version ${version} does not match CLI version ${PACKAGE_VERSION}`,
+        liveText('en', 'installer.versionMismatch', {
+          installed: version,
+          required: PACKAGE_VERSION,
+        }),
       );
     },
   );
@@ -347,7 +355,7 @@ describe('LiveHostInstaller', () => {
         ...manifest(),
         bundleId: 'com.alibaba.qwen-code.live-host',
       }),
-    ).toThrow(/incompatible/);
+    ).toThrow(liveText('en', 'installer.manifestIncompatible'));
     for (const architecture of ['arm64', 'x64'] as const) {
       expect(() =>
         parseLiveHostReleaseManifest({
@@ -360,7 +368,7 @@ describe('LiveHostInstaller', () => {
             },
           },
         }),
-      ).toThrow(/asset/);
+      ).toThrow(liveText('en', 'installer.assetInvalid'));
     }
   });
 
@@ -378,7 +386,7 @@ describe('LiveHostInstaller', () => {
     try {
       await expect(
         downloadLiveHostRelease('arm64', destination, () => {}, fetchImpl),
-      ).rejects.toThrow(/incompatible/);
+      ).rejects.toThrow(liveText('en', 'installer.manifestIncompatible'));
       expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
         resolveLiveHostManifestUrls(),
       );
@@ -653,7 +661,7 @@ describe('LiveHostInstaller', () => {
     });
     await expect(installer.launch()).resolves.toEqual({
       state: 'error',
-      message: 'signature verification failed',
+      message: liveMessage('installer.setupFailed'),
       retryable: true,
     });
     expect(launch).not.toHaveBeenCalled();
@@ -705,7 +713,10 @@ describe('LiveHostInstaller', () => {
       const rejectedLaunch = await installer.launch();
       expect(rejectedLaunch).toMatchObject({ state: 'error', retryable: true });
       expect(displayLiveMessage('en', rejectedLaunch.message!)).toContain(
-        `Host version ${version} does not match CLI version ${PACKAGE_VERSION}`,
+        liveText('en', 'installer.versionMismatch', {
+          installed: version,
+          required: PACKAGE_VERSION,
+        }),
       );
       expect(launch).not.toHaveBeenCalled();
 
@@ -810,8 +821,150 @@ describe('LiveHostInstaller', () => {
 
     await expect(installer.ensureInstalled()).resolves.toEqual({
       state: 'error',
-      message: 'checksum verification failed',
+      message: liveMessage('installer.setupFailed'),
       retryable: true,
     });
+  });
+
+  it.each(['en', 'zh-CN'] as const)(
+    'uses a safe localized fallback for unknown exceptions in %s',
+    async (language) => {
+      const raw = 'PRIVATE_INSTALL_DETAIL /Users/private/key sk-secret';
+      for (const failure of [
+        new Error(raw),
+        raw,
+        { message: raw },
+        undefined,
+      ]) {
+        const installer = new LiveHostInstaller({
+          platform: 'darwin',
+          inspectInstalled: async () => {
+            throw failure;
+          },
+        });
+        const result = await installer.refresh();
+        expect(result).toEqual({
+          state: 'error',
+          message: liveMessage('installer.setupFailed'),
+          retryable: true,
+        });
+        const displayed = displayLiveError(
+          language,
+          result.message,
+          'init.unknownError',
+        );
+        expect(displayed).toBe(liveText(language, 'installer.setupFailed'));
+        expect(displayed).not.toMatch(
+          /PRIVATE_INSTALL_DETAIL|\/Users\/private|sk-secret/,
+        );
+      }
+    },
+  );
+
+  it.each(['en', 'zh-CN'] as const)(
+    'localizes nested source errors without exposing unknown causes in %s',
+    async (language) => {
+      const raw = 'PRIVATE_SOURCE_DETAIL /Users/private/key sk-secret';
+      const unknown = new Error(raw);
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockRejectedValueOnce(unknown)
+        .mockResolvedValueOnce(new Response(null, { status: 503 }));
+      const directory = await fsp.mkdtemp(
+        path.join(os.tmpdir(), 'qwen-live-harness-installer-errors-'),
+      );
+      let diagnostic: unknown;
+      const installer = new LiveHostInstaller({
+        platform: 'darwin',
+        architecture: 'arm64',
+        inspectInstalled: async () => undefined,
+        installLatest: async (arch) => {
+          try {
+            const { manifest } = await downloadLiveHostRelease(
+              arch,
+              path.join(directory, 'host.zip'),
+              () => {},
+              fetchImpl,
+            );
+            return {
+              version: manifest.version,
+              protocolVersion: manifest.protocolVersion,
+            };
+          } catch (error) {
+            diagnostic = error;
+            throw error;
+          }
+        },
+      });
+      try {
+        const result = await installer.ensureInstalled(false, {
+          launch: false,
+        });
+        const displayed = displayLiveError(
+          language,
+          result.message,
+          'init.unknownError',
+        );
+        expect(result).toMatchObject({ state: 'error', retryable: true });
+        expect(displayed).toBe(
+          liveText(language, 'installer.sourcesFailed', {
+            oss: liveText(language, 'installer.setupFailed'),
+            github: liveText(language, 'installer.manifestDownload', {
+              status: 503,
+            }),
+          }),
+        );
+        expect(displayed).not.toMatch(
+          /PRIVATE_SOURCE_DETAIL|\/Users\/private|sk-secret|qwen-live-harness-ui:/,
+        );
+        expect(diagnostic).toBeInstanceOf(AggregateError);
+        expect((diagnostic as AggregateError).errors[0].cause).toBe(unknown);
+        expect((diagnostic as AggregateError).message).toContain(raw);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        await fsp.rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['en', 'zh-CN'] as const)(
+    'retains a known installer error through multiple diagnostic wrappers in %s',
+    async (language) => {
+      let known: unknown;
+      try {
+        parseLiveHostReleaseManifest({});
+      } catch (error) {
+        known = error;
+      }
+      const diagnostic = new Error('PRIVATE_OUTER_DETAIL', {
+        cause: new Error('PRIVATE_INNER_DETAIL', { cause: known }),
+      });
+      const installer = new LiveHostInstaller({
+        platform: 'darwin',
+        inspectInstalled: async () => {
+          throw diagnostic;
+        },
+      });
+      const result = await installer.refresh();
+      expect(result.message).toBe(liveMessage('installer.manifestInvalid'));
+      expect(
+        displayLiveError(language, result.message, 'init.unknownError'),
+      ).toBe(liveText(language, 'installer.manifestInvalid'));
+      expect(diagnostic.cause).toMatchObject({ cause: known });
+    },
+  );
+
+  it('falls back safely for a cyclic diagnostic cause', async () => {
+    const error = new Error('PRIVATE_CYCLE_DETAIL');
+    error.cause = error;
+    const installer = new LiveHostInstaller({
+      platform: 'darwin',
+      inspectInstalled: async () => {
+        throw error;
+      },
+    });
+    const result = await installer.refresh();
+    expect(result.message).toBe(liveMessage('installer.setupFailed'));
+    expect(error.cause).toBe(error);
   });
 });

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
 import ts from 'typescript';
+import { liveText } from 'qwen-live-harness/i18n';
 import * as geometry from '../subagents-position.ts';
 import { SUBAGENTS_GEOMETRY } from '../../shared/subagents-geometry.ts';
 import {
@@ -88,6 +89,9 @@ function fixture(
       events.push({ action: 'create', window: this });
     }
     setAlwaysOnTop() {}
+    setTitle(title: string) {
+      this.options.title = title;
+    }
     setVisibleOnAllWorkspaces() {}
     setBackgroundColor(color: string) {
       this.backgrounds.push(color);
@@ -161,6 +165,7 @@ function fixture(
   ).outputText;
   const Controller = runInNewContext(source, {
     BrowserWindow: Window,
+    liveText,
     ipcMain: {
       handle: (name: string, fn: Handler) => handlers.set(name, fn),
       on: (name: string, fn: Handler) => handlers.set(name, fn),
@@ -245,6 +250,19 @@ function fixture(
   };
 }
 describe('Subagents native lifecycle', () => {
+  it('localizes the native window title on creation and language changes without replacing the UI', () => {
+    const f = fixture();
+    f.controller.update('zh-CN', true, snapshot, 'one');
+    f.controller.openList();
+    const window = f.windows[0]!;
+    assert.equal(window.options.title, liveText('zh-CN', 'subagents.title'));
+    f.controller.update('en', true, snapshot, 'one');
+    assert.equal(window.options.title, liveText('en', 'subagents.title'));
+    assert.equal(f.windows.length, 1);
+    assert.equal(window.destroyed, false);
+    f.controller.dispose();
+  });
+
   it('refreshes delivery and report revisions independently of task counts and preserves the pinned panel', async () => {
     const calls: SubagentsControlRequest[] = [];
     const f = fixture(undefined, async (request) => {
