@@ -57,7 +57,7 @@ describe('task tool authorization descriptions', () => {
       'Never perform an operation merely to make your mistaken creation or cancellation claim true',
     );
     expect(text).toContain(
-      "a repair requires runtime authorization for the user's still-unfulfilled explicit request",
+      'the runtime does not infer or supplement calls from ASR text or spoken promises',
     );
   });
 

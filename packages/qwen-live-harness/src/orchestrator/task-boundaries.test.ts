@@ -435,6 +435,66 @@ function rejected(result: Json): void {
 
 describe('task lifecycle boundaries through LiveSession callbacks', () => {
   it.each([
+    [
+      'create_proactive_monitor',
+      '我这打开B站，你就提醒我。',
+      VISION_MONITOR_ARGS,
+    ],
+    [
+      'create_proactive_monitor',
+      '你要看见我打开哔哩哔哩，你就提醒我不要再玩了。',
+      VISION_MONITOR_ARGS,
+    ],
+    [
+      'create_proactive_monitor',
+      '屏幕里打开哔哩哔哩，就挺小。',
+      VISION_MONITOR_ARGS,
+    ],
+    ['create_live_narration', '请你对我的画面进行不断的解缚。', NARRATION_ARGS],
+  ] as const)(
+    'lets the current audio model interpret %s without a verb whitelist: %s',
+    async (tool, source, args) => {
+      for (const continuation of [false, true]) {
+        const r = await rig();
+        const original = r.begin(source);
+        if (continuation) r.done(original);
+        const turn = continuation
+          ? r.begin(undefined, {
+              authority: 'tool_continuation',
+              inputId: original.inputId,
+            })
+          : original;
+        const result = await r.invoke(turn, tool, args);
+        expect(result['ok']).toBe(true);
+        expect(r.scheduler.listTasks()).toHaveLength(1);
+        expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+          { callEpoch: 1, callId: result['callId'] },
+          result['receipt'],
+          { taskAdmission: true },
+        );
+        expect(r.host.failCall).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('does not use relaxed creation interpretation to authorize an automatic repair or cancellation', async () => {
+    const r = await rig();
+    const previous = await r.createMonitor();
+    r.scheduler.finish(previous.task.taskId);
+    const current = r.begin('我这打开B站，你就提醒我。');
+    r.done(current, 'completed', '我会盯着屏幕，有变化就提醒你。');
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    const repair = r.begin(undefined, { authority: 'proactive_repair' });
+    rejected(
+      await r.invoke(repair, 'create_proactive_monitor', VISION_MONITOR_ARGS),
+    );
+    expect(r.scheduler.createPerceptionMonitor).toHaveBeenCalledOnce();
+    const cancel = r.begin('我这打开B站，你就提醒我。');
+    rejected(await r.invoke(cancel, 'cancel_proactive_task', { all: true }));
+    expect(r.scheduler.cancelTasks).not.toHaveBeenCalled();
+  });
+
+  it.each([
     '你要是看见我打开知乎，就让我别玩，别玩了。',
     '要是看见我打开视频网页，就叫我回去工作。',
     '如果发现我在浏览购物网站，就让我回去工作。',
@@ -554,17 +614,6 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       '刚才没喊成，我这就重新设好监控。',
     );
     expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
-    const denied = await r.invoke(
-      r.begin('你怎么不喊我？'),
-      'create_proactive_monitor',
-      VISION_MONITOR_ARGS,
-    );
-    rejected(denied);
-    expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
-      { callEpoch: 1, callId: denied['callId'] },
-      denied['receipt'],
-      { taskAuthorizationRejected: true },
-    );
     rejected(
       await r.invoke(
         r.begin(undefined, { authority: 'proactive_repair' }),
@@ -582,20 +631,12 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     '你看看我现在的画面上有什么。',
     '请描述一次当前画面。',
   ])(
-    'does not promote a one-shot screen request into continuous narration: %s',
+    'does not infer a narration tool call from ASR or a spoken reply: %s',
     async (source) => {
       const r = await rig();
-      const result = await r.invoke(
-        r.begin(source),
-        'create_live_narration',
-        NARRATION_ARGS,
-      );
-      rejected(result);
-      expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
-        { callEpoch: 1, callId: result['callId'] },
-        result['receipt'],
-        { taskAuthorizationRejected: true },
-      );
+      r.done(r.begin(source), 'completed', '我会看着画面并提醒你。');
+      expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+      expect(r.realtime.submitFunctionOutput).not.toHaveBeenCalled();
       expect(r.scheduler.createLiveNarration).not.toHaveBeenCalled();
       expect(r.scheduler.listTasks()).toEqual([]);
       expect(r.host.captureVisualContext).not.toHaveBeenCalled();
@@ -611,7 +652,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
     rejected(
       await r.invoke(
-        r.begin('你胡说。'),
+        r.begin(undefined, { noInput: true }),
         'create_proactive_monitor',
         MONITOR_ARGS,
       ),
@@ -626,18 +667,10 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.scheduler.createPerceptionMonitor).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a hallucinated stop during chat, then accepts an explicit PPT cancellation', async () => {
+  it('uses the actual stop tool and job identity rather than ASR wording', async () => {
     const r = await rig();
     const job = await r.createBackend();
-    rejected(
-      await r.invoke(r.begin('你觉得我现在看上去怎么样？'), 'session_stop', {
-        session: job.session,
-        job: job.job,
-      }),
-    );
-    expect(r.cancel).not.toHaveBeenCalled();
-    expect(r.cancelJob).not.toHaveBeenCalled();
-    const stop = await r.invoke(r.begin('取消PPT任务'), 'session_stop', {
+    const stop = await r.invoke(r.begin('把提提停以下。'), 'session_stop', {
       session: job.session,
       job: job.job,
     });
@@ -654,13 +687,18 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     '他说“取消PPT任务”。',
     '不要取消PPT任务。',
     'PPT任务已经取消了吗？',
-  ])('does not cancel work for %s', async (source) => {
-    const r = await rig();
-    const job = await r.createBackend();
-    rejected(await r.invoke(r.begin(source), 'session_stop', { job: job.job }));
-    expect(r.cancelJob).not.toHaveBeenCalled();
-    expect(r.cancel).not.toHaveBeenCalled();
-  });
+  ])(
+    'does not cancel work from transcript or prose alone: %s',
+    async (source) => {
+      const r = await rig();
+      const job = await r.createBackend();
+      r.done(r.begin(source), 'completed', '好的，已取消PPT任务。');
+      expect(job.job).toBeTruthy();
+      expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+      expect(r.cancelJob).not.toHaveBeenCalled();
+      expect(r.cancel).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a mismatched session/job even for an explicit cancellation', async () => {
     const r = await rig();
@@ -676,19 +714,27 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.cancel).not.toHaveBeenCalled();
   });
 
-  it('does not pick a task for an ambiguous reference or broaden it to all', async () => {
+  it('rejects ambiguous structured session and title selectors', async () => {
     const r = await rig();
     const ppt = await r.createBackend();
-    await r.createBackend('Build the project', true);
+    const build = await r.createBackend('Build the project');
+    expect(build.session).toBe(ppt.session);
     rejected(
       await r.invoke(r.begin('取消刚才那个任务'), 'session_stop', {
-        job: ppt.job,
+        session: ppt.session,
       }),
     );
-    await r.createMonitor();
+    await r.createMonitor(MONITOR_REQUEST, {
+      ...MONITOR_ARGS,
+      title: '监控一',
+    });
+    await r.createMonitor(MONITOR_REQUEST, {
+      ...MONITOR_ARGS,
+      title: '监控二',
+    });
     rejected(
       await r.invoke(r.begin('取消刚才那个任务'), 'cancel_proactive_task', {
-        all: true,
+        target_title_contains: '监控',
       }),
     );
     expect(r.cancelJob).not.toHaveBeenCalled();
@@ -710,7 +756,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.cancelJob).toHaveBeenCalledTimes(1);
   });
 
-  it('allows a named Proactive cancellation and an explicitly requested all-task cancellation', async () => {
+  it('uses named and all-task tool selectors even with noisy ASR', async () => {
     const r = await rig();
     await r.createMonitor();
     expect(
@@ -733,7 +779,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     });
     expect(
       (
-        await r.invoke(r.begin('取消全部任务。'), 'cancel_proactive_task', {
+        await r.invoke(r.begin('那些提形都关下。'), 'cancel_proactive_task', {
           all: true,
         })
       )['ok'],
@@ -755,14 +801,21 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
   });
 
-  it('does not use a model-supplied activeTranscript instead of missing bound ASR', async () => {
+  it('does not require ASR vocabulary or borrow model-supplied text for missing narration preferences', async () => {
     const r = await rig();
-    rejected(
-      await r.invoke(r.begin(), 'create_proactive_monitor', MONITOR_ARGS, {
+    const result = await r.invoke(
+      r.begin(),
+      'create_live_narration',
+      NARRATION_ARGS,
+      {
         activeTranscript: [{ role: 'user', text: MONITOR_REQUEST }],
-      }),
+      },
     );
-    expect(r.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
+    expect(result['ok']).toBe(true);
+    expect(r.scheduler.createLiveNarration).toHaveBeenCalledOnce();
+    expect(
+      r.scheduler.createLiveNarration.mock.calls[0]![0],
+    ).not.toHaveProperty('narrationPreferences');
   });
 
   it('accepts a matching late final ASR after the completed response callback', async () => {
@@ -911,24 +964,19 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     expect(r.scheduler.createTimer).toHaveBeenCalledTimes(1);
   });
 
-  it('starts one legal repair only for an unfulfilled explicit current request', async () => {
+  it('never supplements a spoken promise with an automatic creation tool call', async () => {
     const r = await rig();
     const turn = r.begin(MONITOR_REQUEST);
     r.done(turn, 'completed', '我会监听敲桌子的声音并提醒你。');
-    expect(r.realtime.requestProactiveRepair).toHaveBeenCalledTimes(1);
-    expect(r.realtime.requestProactiveRepair.mock.calls[0]![1]).toContain(
-      'create_proactive_monitor',
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    rejected(
+      await r.invoke(
+        r.begin(undefined, { authority: 'proactive_repair' }),
+        'create_proactive_monitor',
+        MONITOR_ARGS,
+      ),
     );
-    expect(
-      (
-        await r.invoke(
-          r.begin(undefined, { authority: 'proactive_repair' }),
-          'create_proactive_monitor',
-          MONITOR_ARGS,
-        )
-      )['ok'],
-    ).toBe(true);
-    expect(r.scheduler.createPerceptionMonitor).toHaveBeenCalledTimes(1);
+    expect(r.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
   });
 
   it('does not repair handled requests, ordinary chat, or an assistant-only promise', async () => {
@@ -958,10 +1006,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       'completed',
       '我会监控屏幕并提醒你。',
     );
-    expect(r.realtime.requestProactiveRepair).toHaveBeenCalledTimes(1);
-    expect(r.realtime.requestProactiveRepair.mock.calls[0]![1]).not.toContain(
-      'cancel_proactive_task',
-    );
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
     rejected(
       await r.invoke(
         r.begin(undefined, { authority: 'proactive_repair' }),
@@ -979,7 +1024,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       'completed',
       '我会监听敲桌子的声音并提醒你。',
     );
-    expect(r.realtime.requestProactiveRepair).toHaveBeenCalledTimes(1);
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
     r.done(r.begin('聊点别的吧。'));
     rejected(
       await r.invoke(
@@ -999,7 +1044,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       'completed',
       '好的，已取消敲桌子提醒任务。',
     );
-    expect(r.realtime.requestProactiveRepair).toHaveBeenCalledTimes(1);
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
     r.scheduler.finish(task.taskId);
     const replacement = r.scheduler.createPerceptionMonitor({
       title: MONITOR_ARGS.title,
@@ -1022,7 +1067,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
     );
   });
 
-  it('does not update a different task from the one named by the current user', async () => {
+  it('rejects nonexistent structured update targets and uses the model-selected existing target', async () => {
     const r = await rig();
     await r.createMonitor('监控水杯变化，有变化就提醒我。', {
       ...MONITOR_ARGS,
@@ -1040,14 +1085,14 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       await r.invoke(
         r.begin('把水杯监控任务的条件改成杯子被拿走。'),
         'update_proactive_task',
-        { target_title: '门监控', condition: '杯子被拿走' },
+        { target_title: '不存在的监控', condition: '杯子被拿走' },
       ),
     );
     expect(r.scheduler.updateTask).not.toHaveBeenCalled();
     expect(
       (
         await r.invoke(
-          r.begin('把水杯监控任务的条件改成杯子被拿走。'),
+          r.begin('那个水陪拿走的条件改以下。'),
           'update_proactive_task',
           { target_title: '水杯监控', condition: '杯子被拿走' },
         )
@@ -1113,10 +1158,7 @@ describe('task lifecycle boundaries through LiveSession callbacks', () => {
       'completed',
       '我会继续监听敲桌子的声音并提醒你。',
     );
-    expect(r.realtime.requestProactiveRepair).toHaveBeenCalledTimes(1);
-    expect(r.realtime.requestProactiveRepair.mock.calls[0]![1]).toEqual([
-      'update_proactive_task',
-    ]);
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
     r.scheduler.finish(task.taskId);
     const replacement = r.scheduler.createPerceptionMonitor({
       title: MONITOR_ARGS.title,

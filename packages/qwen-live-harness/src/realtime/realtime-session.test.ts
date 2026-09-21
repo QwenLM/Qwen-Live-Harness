@@ -1026,6 +1026,55 @@ describe('notification acknowledgement and response ancestry', () => {
   );
 });
 
+describe('bounded model-serving recovery admission', () => {
+  const error = {
+    code: 'COMMON_ERROR',
+    message:
+      '<50002> InternalError.Algo.ModelServingError: Internal Error calling model processing.',
+  };
+
+  it('keeps the known model error fatal before the session is ready', async () => {
+    const socket = new FakeSocket();
+    const onRecoveryNeeded = vi.fn();
+    const opening = openQwenRealtimeSession(
+      {
+        endpoint: 'wss://fixture.example/realtime',
+        model: 'fixture',
+        callEpoch: 1,
+        instructions: 'Fixture',
+        tools: [],
+      },
+      { onRecoveryNeeded },
+      { createWebSocket: () => socket },
+    );
+    const rejected = expect(opening).rejects.toMatchObject({
+      fatal: true,
+      code: error.code,
+      message: error.message,
+    });
+    socket.message({ type: 'error', error });
+    await rejected;
+    expect(onRecoveryNeeded).not.toHaveBeenCalled();
+    expect(socket.readyState).not.toBe(socket.OPEN);
+  });
+
+  it('preserves the original failure when no bounded recovery owner is installed', async () => {
+    const socket = new FakeSocket();
+    const onError = vi.fn();
+    const session = await connect(socket, { onError });
+    socket.message({ type: 'error', error });
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        fatal: true,
+        code: error.code,
+        message: error.message,
+      }),
+    );
+    await expect(session.closed).resolves.toMatchObject({ reason: 'error' });
+    expect(socket.readyState).not.toBe(socket.OPEN);
+  });
+});
+
 describe('recoverable image append diagnostics', () => {
   const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
   const message = 'Error append image before append audio.';

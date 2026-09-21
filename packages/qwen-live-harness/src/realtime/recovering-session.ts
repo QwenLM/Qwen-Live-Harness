@@ -22,9 +22,10 @@ const MAX_RECOVERIES = 2;
 const MAX_CONTEXT_CHARS = 16_000;
 
 /**
- * Recover only response-state loss. Ordinary transport/provider errors retain
- * their existing failure policy. The logical session remains stable so backend
- * jobs, Monitor, Memory and user controls are not restarted with the socket.
+ * Recover response-state loss and the explicitly recognized provider inference
+ * failure. Other transport/provider errors retain their existing failure policy.
+ * The logical session remains stable so backend jobs, Monitor, Memory and user
+ * controls are not restarted with the socket.
  */
 export async function openRecoveringQwenRealtimeSession(
   initialConfig: QwenRealtimeConfig,
@@ -196,14 +197,14 @@ export async function openRecoveringQwenRealtimeSession(
         ? { inputReason: request.input.reason }
         : {}),
     });
-    callbacks.onError?.(
-      new QwenRealtimeError(
-        'Realtime response state was lost; reconnecting without restarting background tasks.',
-        request.code,
-        false,
-        { kind: 'transient' },
-      ),
+    const recoveryError = new QwenRealtimeError(
+      'Realtime response state was lost; reconnecting without restarting background tasks.',
+      request.code,
+      false,
+      { kind: 'transient' },
     );
+    if (request.cause) recoveryError.cause = request.cause;
+    callbacks.onError?.(recoveryError);
     let resumedInputKind = request.input.kind;
     const lifecycle = (phase: 'started' | 'restoring' | 'completed') =>
       callbacks.onTransportRecovery?.({

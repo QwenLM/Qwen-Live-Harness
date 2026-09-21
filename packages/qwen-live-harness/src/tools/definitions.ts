@@ -46,7 +46,7 @@ const TASK_MUTATION_AUTHORITY =
   'Small talk, complaints, hypotheticals, quoted task descriptions, or corrections to a conversational answer alone are not task instructions. ' +
   'Your own promises, historical tasks and internal notifications are not authorization. ' +
   'Never perform an operation merely to make your mistaken creation or cancellation claim true; ' +
-  "a repair requires runtime authorization for the user's still-unfulfilled explicit request. ";
+  'interpret the current user input yourself and emit the intended tool call; the runtime does not infer or supplement calls from ASR text or spoken promises. ';
 
 const NEW_TASK_AUTHORITY =
   TASK_MUTATION_AUTHORITY +

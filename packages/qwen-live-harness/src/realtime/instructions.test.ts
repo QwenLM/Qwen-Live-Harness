@@ -56,8 +56,12 @@ describe('live task lifecycle authority', () => {
           expect(text).toContain(
             '“run that completed task again” can authorize a new task',
           );
-          expect(text).toContain('a still-unfulfilled explicit user request');
-          expect(text).toContain("within that request's scope");
+          expect(text).toContain(
+            "Interpret the current user's original input yourself",
+          );
+          expect(text).toContain(
+            'does not reclassify ASR wording or automatically supplement a spoken promise',
+          );
         }
       }
     }
@@ -69,7 +73,7 @@ describe('live task lifecycle authority', () => {
     'never revive completed or cancelled work merely because it remains in history',
     'Your own promise, an incorrect claim that you created or cancelled something, and internal notifications are not user authorization',
     'Never execute an action just to make your earlier claim true',
-    'your own wording cannot authorize repair',
+    'use an actual tool call for the intended action',
     '“stop talking” or “别说了”, muting output, or changing the topic does not cancel background work',
   ])('preserves the negative task boundary: %s', (rule) => {
     expect(buildLiveInstructions()).toContain(rule);

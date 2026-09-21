@@ -29,7 +29,7 @@ type Json = Record<string, unknown>;
 const FALSE_SUCCESS_AUDIO = Buffer.alloc(4800, 11);
 const CORRECTION_AUDIO = Buffer.alloc(4800, 22);
 const FOLLOW_UP_AUDIO = Buffer.alloc(4800, 33);
-const FIXED_CORRECTION = '刚才没有新建持续解说。请再说一下要解说什么画面。';
+const FIXED_CORRECTION = '刚才有个任务操作没有执行。请再说一下具体要做什么。';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
@@ -70,7 +70,7 @@ it('mutes a false task-success continuation, reads the runtime rejection, and ke
   await host.connect();
   const { conn, epoch } = await startLiveCall({ host, fakeDash });
   const stateStart = host.states.length;
-  const callId = 'unrequested-screen-narration';
+  const callId = 'missing-task-cancellation';
   let queuedUserCall = true;
   let receiptPending = false;
   let followUpPending = false;
@@ -86,7 +86,7 @@ it('mutes a false task-success continuation, reads the runtime rejection, and ke
     | undefined;
 
   // Only fake PCM crosses the real daemon/Host socket. No screen or backend
-  // task is needed: the bad tool call must be rejected before either starts.
+  // task is needed: the nonexistent cancellation target must not change work.
   fakeDash.speechResponder = (connection, input, request) => {
     const responseId = connection.beginResponse();
     speech = { connection, input, request, responseId };
@@ -121,7 +121,7 @@ it('mutes a false task-success continuation, reads the runtime rejection, and ke
         request: conn.inbox.at(-1)!,
         responseId: conn.respondWithAudio(
           FALSE_SUCCESS_AUDIO,
-          '屏幕解说已经开启，我会一直给你讲解。',
+          '任务已经取消了。',
         ),
       };
     } else if (followUpPending) {
@@ -137,27 +137,26 @@ it('mutes a false task-success continuation, reads the runtime rejection, and ke
   });
 
   conn.queueFunctionCall({
-    name: 'create_live_narration',
+    name: 'cancel_proactive_task',
     callId,
     argumentsJson: JSON.stringify({
-      title: 'Unrequested synthetic narration',
-      modalities: ['vision'],
-      narration_focus: 'Describe changes on the screen.',
+      target_title: '不存在的测试提醒',
     }),
   });
-  conn.speakTranscript('你刚才的回答不准确。');
+  conn.speakTranscript('取消不存在的测试提醒任务。');
   const receipt = await fakeDash.waitForMessage(
     (message) => functionCallOutputOf(message)?.callId === callId,
   );
   expect(JSON.parse(functionCallOutputOf(receipt)!.output)).toMatchObject({
     status: 'clarification_required',
     code: 'task_authorization_required',
+    reason: 'task_target_ambiguous_or_mismatched',
   });
   await waitForLiveLogEvents(
     dataDir,
     (event) =>
       event.type === 'task.authorization_rejected' &&
-      event.payload['tool'] === 'create_live_narration',
+      event.payload['tool'] === 'cancel_proactive_task',
   );
   await waitForLiveLogEvents(
     dataDir,

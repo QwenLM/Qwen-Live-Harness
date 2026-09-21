@@ -70,7 +70,7 @@ Windows use `contextIsolation` and renderer sandboxing; `nodeIntegration`, navig
 
 ### Layout and interaction
 
-Geometry lives in [`overlay-geometry.ts`](src/shared/overlay-geometry.ts), [`subagents-geometry.ts`](src/shared/subagents-geometry.ts), and [`overlay-position.ts`](src/main/overlay-position.ts). Constrain visible content rather than the larger transparent canvas. [`subagents-windows.ts`](src/main/subagents-windows.ts) positions detail panels clear of the main UI and status bar.
+Geometry lives in [`overlay-geometry.ts`](src/shared/overlay-geometry.ts), [`subagents-geometry.ts`](src/shared/subagents-geometry.ts), and [`overlay-position.ts`](src/main/overlay-position.ts). Clamp the visible UI to the selected display's work area, then keep the full native canvas on that same display and translate the UI within its viewport. This preserves the visible position without letting transparent padding give the window a different display/Space owner. Display-layout changes end the old drag and save the recovered position. [`subagents-windows.ts`](src/main/subagents-windows.ts) positions detail panels clear of the main UI and status bar.
 
 Test dragging, screen edges, multiple displays, negative coordinates, scaling, display removal, and expanded settings/previews. Preserve saved positions during temporary layout adjustments; screenshots and state updates must not move the UI. Keep media and editing controls mounted so updates preserve focus, previews, and drafts. Theme changes use validated IPC and must not recreate streams or discard edits; user-facing options are in the [configuration guide](../../docs/configuration.md#theme-palette).
 

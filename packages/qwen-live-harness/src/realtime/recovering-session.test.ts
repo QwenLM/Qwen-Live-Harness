@@ -99,12 +99,12 @@ class Socket extends EventEmitter {
       response: { id, status, output: this.tools.get(id) ?? [] },
     });
   }
-  tool(responseId: string, callId: string): void {
+  tool(responseId: string, callId: string, name = 'handoff'): void {
     const item = {
       id: 'item-' + callId,
       type: 'function_call',
       status: 'completed',
-      name: 'handoff',
+      name,
       call_id: callId,
       arguments: '{"task":"synthetic only"}',
     };
@@ -118,6 +118,21 @@ class Socket extends EventEmitter {
   count(type: string): number {
     return this.sent.filter((item) => item['type'] === type).length;
   }
+  acknowledgeToolOutput(callId: string): void {
+    const event = this.sent.findLast((event) => {
+      const item = event['item'] as Record<string, unknown> | undefined;
+      return item?.['call_id'] === callId;
+    });
+    if (!event) throw new Error(`No tool output was sent for ${callId}`);
+    this.message({
+      type: 'conversation.item.created',
+      item: {
+        ...(event['item'] as object),
+        id: 'output-' + callId,
+        status: 'completed',
+      },
+    });
+  }
 }
 
 const sessions: QwenRealtimeSession[] = [];
@@ -127,7 +142,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function rig(callbacks: QwenRealtimeCallbacks = {}) {
+async function rig(callbacks: QwenRealtimeCallbacks = {}, apiKey?: string) {
   vi.useFakeTimers();
   const sockets: Socket[] = [];
   const onError = vi.fn();
@@ -137,9 +152,19 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}) {
     {
       endpoint: 'wss://fixture.example.test',
       model: 'test',
+      apiKey,
       callEpoch: 1,
       instructions: 'Synthetic test only',
       tools: [
+        {
+          type: 'function',
+          continuesResponse: true,
+          function: {
+            name: 'create_proactive_monitor',
+            description: 'Synthetic monitor',
+            parameters: { type: 'object' },
+          },
+        },
         {
           type: 'function',
           function: {
@@ -169,6 +194,240 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}) {
 }
 
 describe('response state recovery', () => {
+  const modelServingError = {
+    code: 'COMMON_ERROR',
+    message:
+      '<50002> InternalError.Algo.ModelServingError: Internal Error calling model processing.',
+  };
+
+  it('recovers the logged monitor receipt failure without replaying accepted work, receipts or images', async () => {
+    const onTransportRecovery = vi.fn();
+    const r = await rig({ onTransportRecovery });
+    const first = r.sockets[0]!;
+    r.session.pushAudio(Buffer.alloc(3200, 7));
+    expect(
+      r.session.pushImage(
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      ),
+    ).toBe(true);
+    expect(first.count('input_image_buffer.append')).toBe(1);
+    first.user('monitor-input', '提醒我别一直浏览测试网站。');
+    first.response('monitor-response');
+    first.tool('monitor-response', 'monitor-call', 'create_proactive_monitor');
+    first.done('monitor-response');
+    expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
+    expect(
+      r.session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'monitor-call' },
+        '{"status":"accepted","task_id":"monitor-test"}',
+      ),
+    ).toBe(true);
+    first.acknowledgeToolOutput('monitor-call');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.count('response.create')).toBe(2);
+    first.response('monitor-confirmation');
+    first.message({ type: 'error', error: modelServingError });
+    first.message({ type: 'error', error: modelServingError });
+    expect(r.sockets).toHaveLength(2);
+    expect(first.readyState).toBe(3);
+    expect(
+      r.session.pushImage(
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      ),
+    ).toBe(true);
+    const second = r.sockets[1]!;
+    second.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTransportRecovery).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        phase: 'completed',
+        code: 'provider_model_serving_error',
+        authority: 'tool_continuation',
+        responseId: 'monitor-confirmation',
+        inputKind: 'none',
+      }),
+    );
+    expect(second.count('response.create')).toBe(0);
+    expect(second.count('input_audio_buffer.append')).toBe(0);
+    expect(second.count('input_image_buffer.append')).toBe(0);
+    expect(
+      second.sent.some(
+        (event) =>
+          (event['item'] as Record<string, unknown> | undefined)?.['type'] ===
+          'function_call_output',
+      ),
+    ).toBe(false);
+    first.tool('monitor-confirmation', 'stale-call');
+    first.done('monitor-confirmation');
+    second.user('new-input', '接着聊聊。');
+    second.response('new-response');
+    second.done('new-response');
+    expect(second.count('response.create')).toBe(1);
+    expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
+    expect(r.onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        fatal: false,
+        code: 'provider_model_serving_error',
+        cause: expect.objectContaining({
+          code: 'COMMON_ERROR',
+          message: modelServingError.message,
+          kind: 'transient',
+        }),
+      }),
+    );
+  });
+
+  it.each([false, true])(
+    'resumes an unexecuted direct request once after model serving failure (created=%s)',
+    async (created) => {
+      const r = await rig();
+      const first = r.sockets[0]!;
+      first.user('direct-input', '请解释一下什么是月食。');
+      if (created) {
+        first.response('direct-response');
+        first.tool('direct-response', 'unexecuted-call');
+        expect(r.onFunctionCall).not.toHaveBeenCalled();
+      }
+      first.message({ type: 'error', error: modelServingError });
+      expect(r.sockets).toHaveLength(2);
+      const second = r.sockets[1]!;
+      second.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      if (created) first.done('direct-response');
+      expect(second.count('response.create')).toBe(1);
+      expect(
+        second.sent.filter((event) => {
+          const item = event['item'] as
+            { content?: Array<{ text?: string }> } | undefined;
+          return item?.content?.[0]?.text === '请解释一下什么是月食。';
+        }),
+      ).toHaveLength(1);
+      expect(second.count('input_audio_buffer.append')).toBe(0);
+      second.response('recovered-answer');
+      second.done('recovered-answer');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.onFunctionCall).not.toHaveBeenCalled();
+      expect(r.onError.mock.calls.some(([error]) => error.fatal)).toBe(false);
+    },
+  );
+
+  it('does not replay an unresolved dispatched tool after model failure and safely ignores its late receipts', async () => {
+    const r = await rig();
+    const first = r.sockets[0]!;
+    first.user('tool-input', '请在后台检查测试项目。');
+    first.response('tool-response');
+    first.tool('tool-response', 'pending-call');
+    first.done('tool-response');
+    expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
+    first.message({ type: 'error', error: modelServingError });
+    const second = r.sockets[1]!;
+    second.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let index = 0; index < 2; index += 1) {
+      expect(
+        r.session.submitFunctionOutput(
+          { callEpoch: 1, callId: 'pending-call' },
+          '{"status":"accepted"}',
+        ),
+      ).toBe(true);
+    }
+    expect(second.count('response.create')).toBe(0);
+    expect(second.count('conversation.item.create')).toBe(1);
+    expect(r.onFunctionCall).toHaveBeenCalledTimes(1);
+    expect(r.onProtocolDebug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'tool.output_ignored',
+        callId: 'pending-call',
+        reason: 'transport_recovered',
+      }),
+    );
+  });
+
+  it('preserves sanitized model-serving evidence without leaking the configured API key', async () => {
+    const apiKey = 'synthetic-private-provider-key';
+    const r = await rig({}, apiKey);
+    r.sockets[0]!.user('direct-input', '你好。');
+    r.sockets[0]!.message({
+      type: 'error',
+      error: {
+        ...modelServingError,
+        message: `${modelServingError.message} request key=${apiKey}`,
+      },
+    });
+    expect(r.sockets).toHaveLength(2);
+    expect(r.onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fatal: false,
+        cause: expect.objectContaining({ code: 'COMMON_ERROR' }),
+      }),
+    );
+    const error = r.onError.mock.calls[0]![0] as Error;
+    expect((error.cause as Error).message).not.toContain(apiKey);
+    expect((error.cause as Error).message).toContain('[REDACTED]');
+  });
+
+  it('bounds repeated model serving errors by the existing two-recovery budget', async () => {
+    const r = await rig();
+    r.sockets[0]!.user('direct-input', '请解释一下什么是月食。');
+    for (let index = 0; index < 3; index += 1) {
+      r.sockets[index]!.message({ type: 'error', error: modelServingError });
+      if (index < 2) {
+        expect(r.sockets).toHaveLength(index + 2);
+        r.sockets[index + 1]!.ready();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    }
+    expect(r.sockets).toHaveLength(3);
+    expect(r.onError).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        code: 'realtime_recovery_exhausted',
+        fatal: true,
+      }),
+    );
+    await expect(r.session.closed).resolves.toMatchObject({ reason: 'error' });
+    expect(r.onFunctionCall).not.toHaveBeenCalled();
+  });
+
+  it('discards queued input and late model events when the user closes model-error recovery', async () => {
+    const r = await rig();
+    r.sockets[0]!.user('direct-input', '你好。');
+    r.sockets[0]!.message({ type: 'error', error: modelServingError });
+    expect(r.sockets).toHaveLength(2);
+    expect(r.session.pushAudio(Buffer.alloc(3200, 9))).toBe(true);
+    r.session.close({ discardPendingInput: true });
+    const second = r.sockets[1]!;
+    second.ready();
+    second.response('late-answer');
+    second.tool('late-answer', 'late-call');
+    second.done('late-answer');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(second.count('input_audio_buffer.append')).toBe(0);
+    expect(second.count('response.create')).toBe(0);
+    expect(r.onFunctionCall).not.toHaveBeenCalled();
+    await expect(r.session.closed).resolves.toMatchObject({ reason: 'client' });
+  });
+
+  it.each([
+    { ...modelServingError, code: 'invalid_api_key' },
+    { ...modelServingError, code: 'insufficient_quota' },
+    { ...modelServingError, status: 401 },
+    { ...modelServingError, type: 'invalid_request_error' },
+    { ...modelServingError, message: '<50002> An unrelated failure.' },
+    {
+      ...modelServingError,
+      message: modelServingError.message.replace('50002', '50003'),
+    },
+  ])('does not expand recovery to other provider errors: %j', async (error) => {
+    const r = await rig();
+    r.sockets[0]!.message({ type: 'error', error });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.sockets).toHaveLength(1);
+    expect(r.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ fatal: true }),
+    );
+    await expect(r.session.closed).resolves.toMatchObject({ reason: 'error' });
+  });
+
   it('keeps independent speech blocked while a notification or replacement transport is unsettled', async () => {
     const r = await rig();
     expect(r.session.canStartExternalSpeech?.()).toBe(true);

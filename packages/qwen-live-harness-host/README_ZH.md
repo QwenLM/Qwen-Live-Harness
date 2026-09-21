@@ -70,7 +70,7 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 
 ### 布局与交互
 
-几何参数位于 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)、[`subagents-geometry.ts`](src/shared/subagents-geometry.ts) 和 [`overlay-position.ts`](src/main/overlay-position.ts)。按实际可见内容限位，不要按更大的透明画布限位。[`subagents-windows.ts`](src/main/subagents-windows.ts) 负责让详情面板避开主 UI 和状态条。
+几何参数位于 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)、[`subagents-geometry.ts`](src/shared/subagents-geometry.ts) 和 [`overlay-position.ts`](src/main/overlay-position.ts)。先将可见 UI 限制在目标显示器工作区，再把完整原生画布留在同一块屏幕内，通过视口内偏移保持 UI 的实际位置，避免透明留白导致窗口归属到另一屏幕／桌面空间。显示器布局变化时终止旧拖拽，并保存恢复后的有效位置。[`subagents-windows.ts`](src/main/subagents-windows.ts) 负责让详情面板避开主 UI 和状态条。
 
 测试拖动、屏幕边缘、多显示器、负坐标、缩放、显示器移除，以及设置／预览展开。临时布局调整须保留已保存的位置；截图和状态刷新不能移动 UI。媒体与编辑控件保持挂载，保留焦点、预览和草稿。主题通过经校验的 IPC 更新，不重建媒体流或丢弃编辑内容；使用选项见[配置指南](../../docs/configuration_ZH.md#主题配色)。
 

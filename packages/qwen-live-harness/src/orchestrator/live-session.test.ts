@@ -4774,7 +4774,7 @@ describe('runtime review reproductions', () => {
     'proactive',
     'proactive_repair',
   ] as const)(
-    'R1-15 retries a deferred cancel repair after %s becomes idle',
+    'R1-15 never synthesizes a cancel call when %s becomes idle',
     async (authority) => {
       const harness = createProactiveHarness();
       const { session, callbacks, realtime } = await startSession(undefined, {
@@ -4782,7 +4782,6 @@ describe('runtime review reproductions', () => {
         createProactiveScheduler: harness.createScheduler,
       });
       try {
-        realtime.requestProactiveRepair.mockReturnValueOnce(false);
         beginUserTurn(
           callbacks,
           'cancel-claim',
@@ -4804,7 +4803,7 @@ describe('runtime review reproductions', () => {
           authority: 'direct',
           status: 'completed',
         });
-        expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+        expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
         callbacks.onResponseCreated?.({
           callEpoch: 1,
           responseId: 'blocking-response',
@@ -4816,7 +4815,8 @@ describe('runtime review reproductions', () => {
           authority,
           status: 'completed',
         });
-        expect(realtime.requestProactiveRepair).toHaveBeenCalledTimes(2);
+        expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+        expect(harness.scheduler.cancelTasks).not.toHaveBeenCalled();
       } finally {
         session.dispose();
       }
@@ -4860,7 +4860,7 @@ describe('runtime review reproductions', () => {
     }
   });
 
-  it('R1-15 preserves adjacent cancel authority while waiting for the last foreground response', async () => {
+  it('R1-15 preserves a real delayed cancel call and its adjacent target across foreground responses', async () => {
     const harness = createProactiveHarness();
     const { session, callbacks, realtime } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
@@ -4881,7 +4881,6 @@ describe('runtime review reproductions', () => {
       await vi.waitFor(() =>
         expect(realtime.submitFunctionOutput).toHaveBeenCalledOnce(),
       );
-      realtime.requestProactiveRepair.mockReturnValueOnce(false);
       beginUserTurn(
         callbacks,
         'user-cancel',
@@ -4915,22 +4914,20 @@ describe('runtime review reproductions', () => {
         authority: 'backend_speech',
         status: 'completed',
       });
-      expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+      expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
       callbacks.onResponseDone?.({
         callEpoch: 1,
         responseId: 'proactive',
         authority: 'proactive',
         status: 'completed',
       });
-      expect(realtime.requestProactiveRepair).toHaveBeenCalledTimes(2);
-      callbacks.onResponseCreated?.({
-        callEpoch: 1,
-        responseId: 'cancel-repair',
-        authority: 'proactive_repair',
-      });
+      expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+      expect(harness.scheduler.cancelTasks).not.toHaveBeenCalled();
+      // The actual tool call remains attached to the completed direct response,
+      // not an invented repair response or the intervening foreground output.
       callToolForResponse(
         callbacks,
-        'cancel-repair',
+        'user-cancel',
         CANCEL_PROACTIVE_TASK_TOOL_NAME,
         {},
       );
@@ -6119,11 +6116,12 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('does not create narration after the two-second source deadline or a later transcript arrival', async () => {
+  it('uses default narration preferences after the ASR deadline without replaying when text arrives later', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
       createProactiveScheduler: harness.createScheduler,
+      getLanguage: () => 'zh-CN',
     });
     vi.useFakeTimers();
     try {
@@ -6148,18 +6146,28 @@ describe('LiveSession', () => {
       await vi.advanceTimersByTimeAsync(1999);
       expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(2);
-      expect(receipts(realtime)[0]).toMatchObject({
-        status: 'clarification_required',
-        code: 'task_authorization_required',
-        reason: 'user_transcript_unavailable',
+      expect(realtime.submitFunctionOutput).toHaveBeenCalledOnce();
+      expect(harness.scheduler.createLiveNarration).toHaveBeenCalledOnce();
+      expect(
+        harness.scheduler.createLiveNarration,
+      ).toHaveBeenCalledExactlyOnceWith({
+        title: 'Screen',
+        modalities: ['vision'],
+        narrationFocus: 'Screen changes',
+        narrationStyle: DEFAULT_NARRATION_STYLE,
       });
+      expect(realtime.submitFunctionOutput.mock.calls[0]![1]).toContain(
+        '已启动',
+      );
       callbacks.onInputTranscriptDone?.({
         callEpoch: 1,
         itemId: 'never-transcribed-in-time',
         text: 'Keep narrating the screen in English.',
       });
       await vi.advanceTimersByTimeAsync(2000);
-      expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+      expect(harness.scheduler.createLiveNarration).toHaveBeenCalledOnce();
+      expect(realtime.submitFunctionOutput).toHaveBeenCalledOnce();
+      expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
     } finally {
       session.dispose();
       vi.useRealTimers();
@@ -6282,7 +6290,7 @@ describe('LiveSession', () => {
     },
   );
 
-  it('carries the original real input into a narration repair instead of using assistant promises as preferences', async () => {
+  it('keeps the actual direct narration input as preferences without synthesizing a call from its promise', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
@@ -6313,13 +6321,11 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'direct',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
-    callbacks.onResponseCreated?.({
-      callEpoch: 1,
-      responseId: 'repair',
-      authority: 'proactive_repair',
-    });
-    callToolForResponse(callbacks, 'repair', CREATE_LIVE_NARRATION_TOOL_NAME, {
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.createLiveNarration).not.toHaveBeenCalled();
+    // A late real tool call for this completed response still uses its bound
+    // input, while the earlier assistant promise alone changed nothing.
+    callToolForResponse(callbacks, 'promise', CREATE_LIVE_NARRATION_TOOL_NAME, {
       title: 'Screen',
       modalities: ['vision'],
       narration_focus: 'Screen changes',
@@ -6734,7 +6740,7 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('requests one silent repair when a completed direct reply promises Proactive work without a tool', async () => {
+  it('does not synthesize a tool when a completed direct reply promises Proactive work', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
@@ -6764,10 +6770,9 @@ describe('LiveSession', () => {
       authority: 'direct',
     });
 
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining('最多调用一个匹配的提醒工具'),
-      [CREATE_PROACTIVE_MONITOR_TOOL_NAME],
-    );
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
+    expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
 
     session.dispose();
   });
@@ -6852,7 +6857,7 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('limits cancel repair to cancel and carries adjacent-task authority into it', async () => {
+  it('requires an actual cancel call and preserves its adjacent-task target', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
@@ -6907,19 +6912,11 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'direct',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledWith(
-      expect.stringContaining('只调用cancel_proactive_task'),
-      [CANCEL_PROACTIVE_TASK_TOOL_NAME],
-    );
-
-    callbacks.onResponseCreated?.({
-      callEpoch: 1,
-      responseId: 'cancel-repair',
-      authority: 'proactive_repair',
-    });
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.cancelTasks).not.toHaveBeenCalled();
     callToolForResponse(
       callbacks,
-      'cancel-repair',
+      'direct-cancel-claim',
       CANCEL_PROACTIVE_TASK_TOOL_NAME,
       {},
     );
@@ -6933,13 +6930,12 @@ describe('LiveSession', () => {
     session.dispose();
   });
 
-  it('defers a missing-tool repair through a queued tool continuation and drops it on new speech', async () => {
+  it('does not replay a tool-less promise after a continuation or new speech', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
       createProactiveScheduler: harness.createScheduler,
     });
-    realtime.requestProactiveRepair.mockReturnValueOnce(false);
 
     beginUserTurn(
       callbacks,
@@ -6962,7 +6958,7 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'direct',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
 
     callbacks.onResponseCreated?.({
       callEpoch: 1,
@@ -6975,12 +6971,10 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'tool_continuation',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledTimes(2);
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
 
     callbacks.onSpeechStarted?.({ callEpoch: 1 });
     callbacks.onInputCommitted?.({ callEpoch: 1, responsePending: true });
-    realtime.requestProactiveRepair.mockClear();
-    realtime.requestProactiveRepair.mockReturnValueOnce(false);
     beginUserTurn(
       callbacks,
       'direct-stale-repair',
@@ -7009,18 +7003,19 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'tool_continuation',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
+    expect(realtime.submitFunctionOutput).not.toHaveBeenCalled();
 
     session.dispose();
   });
 
-  it('cancels a deferred repair when the blocking tool continuation performs a Proactive mutation', async () => {
+  it('executes only the real tool continuation without adding a promised monitor twice', async () => {
     const harness = createProactiveHarness();
     const { callbacks, realtime, session } = await startSession(undefined, {
       proactive: DEFAULT_PROACTIVE_CONFIG,
       createProactiveScheduler: harness.createScheduler,
     });
-    realtime.requestProactiveRepair.mockReturnValueOnce(false);
 
     beginUserTurn(
       callbacks,
@@ -7043,7 +7038,8 @@ describe('LiveSession', () => {
       status: 'completed',
       authority: 'direct',
     });
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.createPerceptionMonitor).not.toHaveBeenCalled();
 
     callbacks.onResponseCreated?.({
       callEpoch: 1,
@@ -7073,11 +7069,12 @@ describe('LiveSession', () => {
       authority: 'tool_continuation',
     });
 
-    expect(realtime.requestProactiveRepair).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(harness.scheduler.createPerceptionMonitor).toHaveBeenCalledOnce();
     session.dispose();
   });
 
-  it('holds queued backend events until a Proactive repair receipt continuation finishes', async () => {
+  it('holds queued backend events until the actual Proactive tool receipt continuation finishes', async () => {
     const harness = createProactiveHarness();
     const { adaptor, callbacks, realtime, session, notificationSpeech } =
       await startSession(undefined, {
@@ -7089,36 +7086,26 @@ describe('LiveSession', () => {
     });
     await awaitReceipts(realtime, 1);
     notificationSpeech.mockClear();
+    // The real transport owns the pending function-output continuation barrier.
+    realtime.canStartExternalSpeech.mockReturnValue(false);
 
     beginUserTurn(
       callbacks,
-      'direct-needing-repair-receipt',
-      'input-needing-repair-receipt',
+      'direct-needing-tool-receipt',
+      'input-needing-tool-receipt',
       '五分钟后提醒我喝茶。',
     );
     callbacks.onDirectTranscript?.({
       callEpoch: 1,
-      responseId: 'direct-needing-repair-receipt',
-      inputItemId: 'input-needing-repair-receipt',
+      responseId: 'direct-needing-tool-receipt',
+      inputItemId: 'input-needing-tool-receipt',
       entries: [
         { role: 'assistant', text: '好的，我会在五分钟后提醒你喝茶。' },
       ],
     });
-    callbacks.onResponseDone?.({
-      callEpoch: 1,
-      responseId: 'direct-needing-repair-receipt',
-      inputItemId: 'input-needing-repair-receipt',
-      status: 'completed',
-      authority: 'direct',
-    });
-    callbacks.onResponseCreated?.({
-      callEpoch: 1,
-      responseId: 'repair-with-receipt',
-      authority: 'proactive_repair',
-    });
     callToolForResponse(
       callbacks,
-      'repair-with-receipt',
+      'direct-needing-tool-receipt',
       CREATE_PROACTIVE_TIMER_TOOL_NAME,
       {
         title: 'Tea timer',
@@ -7131,9 +7118,9 @@ describe('LiveSession', () => {
     });
     callbacks.onResponseDone?.({
       callEpoch: 1,
-      responseId: 'repair-with-receipt',
+      responseId: 'direct-needing-tool-receipt',
       status: 'completed',
-      authority: 'proactive_repair',
+      authority: 'direct',
     });
 
     adaptor.queue('s1').push({
@@ -7151,7 +7138,7 @@ describe('LiveSession', () => {
 
     callbacks.onResponseCreated?.({
       callEpoch: 1,
-      responseId: 'repair-receipt-continuation',
+      responseId: 'tool-receipt-continuation',
       authority: 'tool_continuation',
     });
     await delay(30);
@@ -7162,9 +7149,10 @@ describe('LiveSession', () => {
       resultSpeechRequests(notificationSpeech, 'task_result'),
     ).toHaveLength(0);
 
+    realtime.canStartExternalSpeech.mockReturnValue(true);
     callbacks.onResponseDone?.({
       callEpoch: 1,
-      responseId: 'repair-receipt-continuation',
+      responseId: 'tool-receipt-continuation',
       status: 'completed',
       authority: 'tool_continuation',
     });
@@ -7173,11 +7161,13 @@ describe('LiveSession', () => {
         resultSpeechRequests(notificationSpeech, 'task_result'),
       ).toHaveLength(1);
     });
+    expect(harness.scheduler.createTimer).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
 
     session.dispose();
   });
 
-  it('releases a Proactive repair receipt hold when new speech invalidates the continuation', async () => {
+  it('keeps queued results behind new speech that interrupts an actual Proactive tool continuation', async () => {
     const harness = createProactiveHarness();
     const { adaptor, callbacks, realtime, session, notificationSpeech } =
       await startSession(undefined, {
@@ -7189,36 +7179,25 @@ describe('LiveSession', () => {
     });
     await awaitReceipts(realtime, 1);
     notificationSpeech.mockClear();
+    realtime.canStartExternalSpeech.mockReturnValue(false);
 
     beginUserTurn(
       callbacks,
-      'direct-repair-before-speech',
-      'input-repair-before-speech',
+      'direct-tool-before-speech',
+      'input-tool-before-speech',
       '五分钟后提醒我喝茶。',
     );
     callbacks.onDirectTranscript?.({
       callEpoch: 1,
-      responseId: 'direct-repair-before-speech',
-      inputItemId: 'input-repair-before-speech',
+      responseId: 'direct-tool-before-speech',
+      inputItemId: 'input-tool-before-speech',
       entries: [
         { role: 'assistant', text: '好的，我会在五分钟后提醒你喝茶。' },
       ],
     });
-    callbacks.onResponseDone?.({
-      callEpoch: 1,
-      responseId: 'direct-repair-before-speech',
-      inputItemId: 'input-repair-before-speech',
-      status: 'completed',
-      authority: 'direct',
-    });
-    callbacks.onResponseCreated?.({
-      callEpoch: 1,
-      responseId: 'repair-invalidated-by-speech',
-      authority: 'proactive_repair',
-    });
     callToolForResponse(
       callbacks,
-      'repair-invalidated-by-speech',
+      'direct-tool-before-speech',
       CREATE_PROACTIVE_TIMER_TOOL_NAME,
       {
         title: 'Tea timer',
@@ -7231,9 +7210,9 @@ describe('LiveSession', () => {
     });
     callbacks.onResponseDone?.({
       callEpoch: 1,
-      responseId: 'repair-invalidated-by-speech',
+      responseId: 'direct-tool-before-speech',
       status: 'completed',
-      authority: 'proactive_repair',
+      authority: 'direct',
     });
 
     adaptor.queue('s1').push({
@@ -7272,6 +7251,8 @@ describe('LiveSession', () => {
         resultSpeechRequests(notificationSpeech, 'task_result'),
       ).toHaveLength(1);
     });
+    expect(harness.scheduler.createTimer).toHaveBeenCalledOnce();
+    expect(realtime.requestProactiveRepair).not.toHaveBeenCalled();
 
     session.dispose();
   });

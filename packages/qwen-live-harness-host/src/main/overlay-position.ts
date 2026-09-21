@@ -47,6 +47,36 @@ export function clampOverlayPosition(
   };
 }
 
+/** Keep the native canvas on one display without changing the logical UI anchor. */
+export function overlayFramePosition(
+  point: OverlayPosition,
+  workArea: DisplayWorkArea,
+  frameBounds: DisplayWorkArea,
+  contentBounds: DisplayWorkArea,
+): OverlayPosition {
+  return clampOverlayPosition(
+    {
+      x: point.x - (contentBounds.x - frameBounds.x),
+      y: point.y - (contentBounds.y - frameBounds.y),
+    },
+    workArea,
+    { x: 0, y: 0, width: frameBounds.width, height: frameBounds.height },
+  );
+}
+
+/** Native placement can differ from the request; never translate UI out of its viewport. */
+export function visibleOverlayOffset(
+  point: OverlayPosition,
+  contentBounds: DisplayWorkArea,
+  visible: DisplayWorkArea,
+): OverlayPosition {
+  return clampOverlayPosition(
+    { x: point.x - contentBounds.x, y: point.y - contentBounds.y },
+    { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height },
+    visible,
+  );
+}
+
 export function overlayPosition(
   workArea: DisplayWorkArea,
   visible: DisplayWorkArea,

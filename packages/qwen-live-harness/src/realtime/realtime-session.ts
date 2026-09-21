@@ -280,10 +280,13 @@ export interface RealtimeRecoveryRequest extends RealtimeEventContext {
     | 'response_created_timeout'
     | 'response_done_timeout'
     | 'response_cancel_timeout'
-    | 'silent_receipt_tool_loop';
+    | 'silent_receipt_tool_loop'
+    | 'provider_model_serving_error';
   responseId: string;
   authority: RealtimeResponseAuthority;
   input: RecoveryInput;
+  /** Sanitized provider evidence; never an instruction or replay payload. */
+  cause?: QwenRealtimeError;
 }
 
 export interface RealtimeTransportRecoveryEvent extends RealtimeEventContext {
@@ -1417,16 +1420,18 @@ export function openQwenRealtimeSession(
       code: RealtimeRecoveryRequest['code'],
       authority: RealtimeResponseAuthority,
       responseId: string,
+      cause?: QwenRealtimeError,
     ): void => {
       if (terminal || closedByClient) return;
       if (!callbacks.onRecoveryNeeded) {
         fail(
-          new QwenRealtimeError(
-            'Realtime response cancellation was not acknowledged.',
-            code,
-            true,
-            { kind: 'transient' },
-          ),
+          cause ??
+            new QwenRealtimeError(
+              'Realtime response cancellation was not acknowledged.',
+              code,
+              true,
+              { kind: 'transient' },
+            ),
         );
         return;
       }
@@ -1445,6 +1450,7 @@ export function openQwenRealtimeSession(
         authority,
         responseId,
         input,
+        ...(cause ? { cause } : {}),
       });
       closeSocket();
       settleClosed({ reason: 'client' });
@@ -4968,6 +4974,38 @@ export function openQwenRealtimeSession(
             break;
           }
           const kind = classifyRealtimeErrorKind(code, errorMessage, status);
+          if (
+            ready &&
+            code === 'COMMON_ERROR' &&
+            kind === 'transient' &&
+            (status === undefined || (status >= 500 && status <= 599)) &&
+            (providerType === undefined || providerType === 'server_error') &&
+            /^<50002>\s+InternalError\.Algo\.ModelServingError:/.test(
+              errorMessage.trim(),
+            )
+          ) {
+            // This known provider inference failure can leave the response
+            // unfinished. Replace only its transport using the existing bounded
+            // recovery path. Accepted tools/receipts and images are not replayed;
+            // other provider errors retain their original failure policy.
+            requestRecovery(
+              'provider_model_serving_error',
+              activeResponseAuthority ??
+                pendingResponseCreate?.authority ??
+                'direct',
+              activeResponseId ??
+                (pendingResponseCreate
+                  ? `unacknowledged-${pendingResponseCreate.requestId}`
+                  : `provider-error-${optionalString(message['event_id']) ?? randomUUID()}`),
+              new QwenRealtimeError(errorMessage, code, true, {
+                kind,
+                status,
+                providerType,
+                param,
+              }),
+            );
+            break;
+          }
           fail(
             new QwenRealtimeError(errorMessage, code, true, {
               kind,

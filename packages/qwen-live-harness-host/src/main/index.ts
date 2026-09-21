@@ -89,6 +89,8 @@ import {
   clampOverlayPosition,
   isOverlayPosition,
   overlayPosition,
+  overlayFramePosition,
+  visibleOverlayOffset,
   type OverlayPosition,
   type DisplayWorkArea,
 } from './overlay-position.ts';
@@ -173,6 +175,7 @@ let overlayLayout: OverlayLayout = 'setup';
 let desiredOverlayPosition: OverlayPosition | undefined;
 let hasCustomOverlayPosition = false;
 let overlayOffset: OverlayPosition = { x: 0, y: 0 };
+let overlayPositioning = false;
 let pointerInteractive = false;
 let pointerOverInteractive = false;
 let overlayDrag:
@@ -213,8 +216,13 @@ const overlayCapturePlacement = new CapturePlacementGuard(
   (before, offset) => {
     if (before.owner !== overlay || overlay?.isDestroyed() || overlayDrag)
       return;
-    overlayOffset = offset;
-    sendRendererCommand('live:overlay-offset', offset);
+    const content = overlayContentBounds(overlay!);
+    overlayOffset = visibleOverlayOffset(
+      { x: content.x + offset.x, y: content.y + offset.y },
+      content,
+      before.visible,
+    );
+    sendRendererCommand('live:overlay-offset', overlayOffset);
   },
   writeLiveDiagnostic,
 );
@@ -730,6 +738,10 @@ function handleDisplayChange(
 }
 
 function clampOverlayToDisplays(reason = 'display-change'): void {
+  // A display change invalidates the gesture's coordinate system, even when
+  // the visible panel happens to need no further clamping.
+  overlayDrag = undefined;
+  subagents?.setDragging(false);
   if (appshotCapture) refreshScreenDisplays();
   if (visualInput?.source === 'screen') {
     visualGeneration++;
@@ -751,11 +763,8 @@ function clampOverlayToDisplays(reason = 'display-change'): void {
       ? OVERLAY_GEOMETRY.settingsBounds
       : OVERLAY_GEOMETRY.bounds[overlayLayout],
   );
-  if (position.x === current.x && position.y === current.y) return;
-  if (overlayDrag) persistOverlayPosition();
-  overlayDrag = undefined;
-  subagents?.setDragging(false);
-  positionOverlay(position, reason);
+  desiredOverlayPosition = positionOverlay(position, reason) ?? position;
+  if (hasCustomOverlayPosition) persistOverlayPosition();
   syncPointerInteractivity();
 }
 
@@ -816,24 +825,36 @@ function positionOverlay(
   position: OverlayPosition,
   reason: string,
   window = overlay,
-): void {
+): OverlayPosition | undefined {
   if (!window || window.isDestroyed()) return;
   overlayCapturePlacement.invalidate(reason);
   const before = window.getBounds();
   const beforeContent = overlayContentBounds(window);
-  const requestedFrame = {
-    x: position.x - (beforeContent.x - before.x),
-    y: position.y - (beforeContent.y - before.y),
-  };
-  if (requestedFrame.x !== before.x || requestedFrame.y !== before.y) {
-    window.setPosition(requestedFrame.x, requestedFrame.y, false);
+  const workArea = overlayWorkArea(position);
+  const visible = settingsOpen
+    ? OVERLAY_GEOMETRY.settingsBounds
+    : OVERLAY_GEOMETRY.bounds[overlayLayout];
+  const logical = clampOverlayPosition(position, workArea, visible);
+  // The transparent canvas, not just its painted card, determines macOS
+  // display/Space ownership. Keep the entire native frame on the chosen screen
+  // and translate the card inside it to preserve the requested visible position.
+  const requestedFrame = overlayFramePosition(
+    logical,
+    workArea,
+    before,
+    beforeContent,
+  );
+  const wasPositioning = overlayPositioning;
+  overlayPositioning = true;
+  try {
+    if (requestedFrame.x !== before.x || requestedFrame.y !== before.y)
+      window.setPosition(requestedFrame.x, requestedFrame.y, false);
+  } finally {
+    overlayPositioning = wasPositioning;
   }
   const actual = window.getBounds();
   const contentBounds = overlayContentBounds(window);
-  const offset = {
-    x: position.x - contentBounds.x,
-    y: position.y - contentBounds.y,
-  };
+  const offset = visibleOverlayOffset(logical, contentBounds, visible);
   writeLiveDiagnostic('overlay_position', {
     reason,
     layout: overlayLayout,
@@ -844,12 +865,14 @@ function positionOverlay(
     after: actual,
     contentBounds,
     offset,
+    workArea,
   });
   if (offset.x !== overlayOffset.x || offset.y !== overlayOffset.y) {
     overlayOffset = offset;
     if (window === overlay)
       sendRendererCommand('live:overlay-offset', overlayOffset);
   }
+  return { x: contentBounds.x + offset.x, y: contentBounds.y + offset.y };
 }
 
 function setOverlayLayout(layout: OverlayLayout): void {
@@ -911,9 +934,9 @@ function dragOverlay(
         ? OVERLAY_GEOMETRY.settingsBounds
         : OVERLAY_GEOMETRY.bounds[overlayLayout],
     );
-    desiredOverlayPosition = position;
     hasCustomOverlayPosition = true;
-    positionOverlay(position, `drag-${phase}`);
+    desiredOverlayPosition =
+      positionOverlay(position, `drag-${phase}`) ?? position;
     if (phase === 'end') {
       overlayDrag = undefined;
       subagents?.setDragging(false);
@@ -2880,12 +2903,12 @@ function createOverlay(): BrowserWindow {
   };
   window.on('move', () => {
     if (window !== overlay || window.isDestroyed()) return;
-    overlayCapturePlacement.nativeMoved(window);
+    if (!overlayPositioning) overlayCapturePlacement.nativeMoved(window);
     traceNativeGeometry('overlay_native_moved', 'native-move');
   });
   const onNativeResize = (reason: string) => {
     if (window !== overlay || window.isDestroyed()) return;
-    overlayCapturePlacement.nativeResized(window);
+    if (!overlayPositioning) overlayCapturePlacement.nativeResized(window);
     traceNativeGeometry('overlay_native_resized', reason);
   };
   window.on('resize', () => onNativeResize('native-resize'));
