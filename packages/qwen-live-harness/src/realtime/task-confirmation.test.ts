@@ -116,6 +116,7 @@ async function connect() {
     onResponseDone: vi.fn(),
     onError: vi.fn(),
     onRecoveryNeeded: vi.fn(),
+    onTaskActionRejected: vi.fn(),
   };
   const opening = openQwenRealtimeSession(
     {
@@ -201,6 +202,173 @@ const handoffReceipt = JSON.stringify({
 });
 
 describe('task admission confirmation audio', () => {
+  it('keeps a mixed admission and rejection audible when no admission preamble was heard', async () => {
+    const { socket, callbacks, session } = await connect();
+    try {
+      startTools(
+        socket,
+        [call('create_live_narration', 'denied'), call('handoff', 'accepted')],
+        false,
+      );
+      session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'denied' },
+        '{"code":"task_authorization_required"}',
+        { taskAuthorizationRejected: true },
+      );
+      socket.acknowledge('denied');
+      session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'accepted' },
+        handoffReceipt,
+      );
+      socket.acknowledge('accepted');
+      created(socket, 'mixed-without-preamble');
+      audio(socket, 'mixed-without-preamble');
+      done(socket, 'mixed-without-preamble', [
+        call('create_live_narration', 'forbidden-retry'),
+      ]);
+      expect(callbacks.onOutputAudioDelta).toHaveBeenCalledOnce();
+      expect(callbacks.onTaskActionRejected).not.toHaveBeenCalled();
+      expect(callbacks.onFunctionCall).toHaveBeenCalledTimes(2);
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+  it.each([true, false])(
+    'does not speak a false success after a trusted task rejection (preamble=%s)',
+    async (preamble) => {
+      const { socket, callbacks, session } = await connect();
+      try {
+        startTools(
+          socket,
+          [call('create_live_narration', 'denied-narration')],
+          preamble,
+        );
+        callbacks.onOutputAudioDelta.mockClear();
+        session.submitFunctionOutput(
+          { callEpoch: 1, callId: 'denied-narration' },
+          '{"status":"clarification_required","code":"task_authorization_required"}',
+          { taskAuthorizationRejected: true },
+        );
+        expect(callbacks.onTaskActionRejected).not.toHaveBeenCalled();
+        socket.acknowledge('denied-narration');
+        expect(callbacks.onTaskActionRejected).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            responseId: 'parent',
+            inputItemId: 'input-parent',
+            tools: ['create_live_narration'],
+          }),
+        );
+        created(socket, 'denied-receipt');
+        audio(socket, 'denied-receipt');
+        socket.message({
+          type: 'response.audio_transcript.done',
+          response_id: 'denied-receipt',
+          transcript: '画面描述已经准备好了，我这就开始实时解说。',
+        });
+        done(socket, 'denied-receipt');
+        await flush();
+        expect(callbacks.onOutputAudioDelta).not.toHaveBeenCalled();
+        expect(callbacks.onOutputTextDone).toHaveBeenLastCalledWith(
+          expect.objectContaining({ audioSuppressed: true }),
+        );
+        expect(session.canStartExternalSpeech?.()).toBe(true);
+        commit(socket, 'fresh-user');
+        created(socket, 'fresh-response');
+        audio(socket, 'fresh-response');
+        done(socket, 'fresh-response');
+        expect(callbacks.onOutputAudioDelta).toHaveBeenCalledOnce();
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    },
+  );
+
+  it('requires trusted rejection metadata and preserves informative sibling receipts', async () => {
+    for (const mixed of [false, true]) {
+      const { socket, callbacks, session } = await connect();
+      try {
+        startTools(socket, [
+          call('create_live_narration', 'denied'),
+          ...(mixed ? [call('session_list', 'state')] : []),
+        ]);
+        callbacks.onOutputAudioDelta.mockClear();
+        session.submitFunctionOutput(
+          { callEpoch: 1, callId: 'denied' },
+          '{"status":"clarification_required","taskAuthorizationRejected":true}',
+          mixed ? { taskAuthorizationRejected: true } : undefined,
+        );
+        socket.acknowledge('denied');
+        if (mixed) {
+          session.submitFunctionOutput(
+            { callEpoch: 1, callId: 'state' },
+            '{"pending_permission":"Review the command first."}',
+          );
+          socket.acknowledge('state');
+        }
+        created(socket, 'information');
+        audio(socket, 'information');
+        done(socket, 'information');
+        expect(callbacks.onOutputAudioDelta).toHaveBeenCalledOnce();
+        expect(callbacks.onTaskActionRejected).not.toHaveBeenCalled();
+      } finally {
+        session.close({ discardPendingInput: true });
+      }
+    }
+  });
+
+  it('waits for all sibling admissions before isolating a rejection and cannot retry tools', async () => {
+    const { socket, callbacks, session } = await connect();
+    try {
+      startTools(socket, [
+        call('create_proactive_monitor', 'denied'),
+        call('web_search', 'accepted'),
+      ]);
+      callbacks.onOutputAudioDelta.mockClear();
+      session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'denied' },
+        '{"code":"task_authorization_required"}',
+        { taskAuthorizationRejected: true },
+      );
+      socket.acknowledge('denied');
+      expect(callbacks.onTaskActionRejected).not.toHaveBeenCalled();
+      session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'accepted' },
+        searchReceipt,
+      );
+      socket.acknowledge('accepted');
+      expect(callbacks.onTaskActionRejected).toHaveBeenCalledOnce();
+      created(socket, 'mixed-receipt');
+      audio(socket, 'mixed-receipt');
+      done(socket, 'mixed-receipt', [
+        call('create_proactive_monitor', 'forbidden-retry'),
+      ]);
+      expect(callbacks.onOutputAudioDelta).not.toHaveBeenCalled();
+      expect(callbacks.onFunctionCall).toHaveBeenCalledTimes(2);
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
+  it('does not announce a late rejection over a newer real input', async () => {
+    const { socket, callbacks, session } = await connect();
+    try {
+      startTools(socket, [call('create_live_narration', 'late-denied')]);
+      session.submitFunctionOutput(
+        { callEpoch: 1, callId: 'late-denied' },
+        '{"code":"task_authorization_required"}',
+        { taskAuthorizationRejected: true },
+      );
+      socket.message({
+        type: 'input_audio_buffer.speech_started',
+        item_id: 'new-input',
+      });
+      socket.acknowledge('late-denied');
+      expect(callbacks.onTaskActionRejected).not.toHaveBeenCalled();
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
   it('silently drains remain_silent receipts before external playback or the next user response', async () => {
     const { socket, callbacks, session } = await connect();
     try {

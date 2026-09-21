@@ -1293,6 +1293,18 @@ export const LIVE_MESSAGES = {
     en: 'A tool result could not be returned to the conversation. Check the task status before retrying.',
     'zh-CN': '工具结果未能返回对话，请先查看任务状态，再决定是否重试。',
   },
+  'runtime.narrationNotStarted': {
+    en: 'The new live narration was not started. Please specify what you want narrated.',
+    'zh-CN': '刚才没有新建持续解说。请再说一下要解说什么画面。',
+  },
+  'runtime.monitorNotStarted': {
+    en: 'The new monitor was not started. Please specify what to watch and when to notify you.',
+    'zh-CN': '刚才没有新建监控。请再说一下要监控什么、什么时候提醒。',
+  },
+  'runtime.taskActionNotExecuted': {
+    en: 'A task action was not carried out. Please specify the action and its target.',
+    'zh-CN': '刚才有个任务操作没有执行。请再说一下具体要做什么。',
+  },
   'memoryUI.closed': {
     en: 'Memory is no longer active. Restart Qwen Live Harness to use it again.',
     'zh-CN': '记忆功能已停止，请重启 Qwen Live Harness 后再使用。',

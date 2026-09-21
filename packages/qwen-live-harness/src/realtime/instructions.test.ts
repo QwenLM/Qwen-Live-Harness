@@ -12,6 +12,25 @@ import {
 import { REALTIME_NOTIFICATION_INSTRUCTIONS } from './notification-context.js';
 
 describe('live task lifecycle authority', () => {
+  it('distinguishes visible app monitoring from remote polling and treats denied operations as unexecuted', () => {
+    const text = buildLiveInstructions();
+    expect(text).not.toContain('present everything as done by you');
+    expect(text).toContain(
+      'never present a failed or unexecuted operation as work you have done',
+    );
+    expect(text).toContain(
+      'a website or app appearing on the selected screen is a supported visual EVENT',
+    );
+    expect(text).toContain(
+      'Do not poll websites, apps, prices, or remote systems outside the selected local media',
+    );
+    expect(text).toContain(
+      'task_authorization_required receipt means that particular operation was not executed',
+    );
+    expect(text).toContain(
+      'Other tasks keep their actual independently confirmed status',
+    );
+  });
   it('keeps explicit user authorization in every capability branch without disabling requested work', () => {
     for (const proactive of [false, true]) {
       for (const backend of [false, true]) {

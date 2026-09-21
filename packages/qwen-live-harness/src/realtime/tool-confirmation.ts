@@ -11,6 +11,8 @@ export interface RealtimeFunctionOutputOptions {
    * Omit it if the receipt is replaced by an error or otherwise changed.
    */
   taskAdmission?: boolean;
+  /** Trusted runtime refusal before any task mutation, never receipt text. */
+  taskAuthorizationRejected?: boolean;
 }
 
 function nonblankString(value: unknown): value is string {

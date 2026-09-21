@@ -30,6 +30,7 @@ import type {
   RealtimeFunctionCallRef,
   RealtimeResponseAuthority,
 } from '../realtime/realtime-session.js';
+import type { RealtimeFunctionOutputOptions } from '../realtime/tool-confirmation.js';
 import { LiveSession, type LiveHostControl } from './live-session.js';
 
 type Json = Record<string, unknown>;
@@ -46,6 +47,18 @@ const MONITOR_ARGS = {
   condition: '听到用户敲击桌子三下',
   trigger_response: '告诉用户听到了三下敲击',
   repeat: false,
+};
+const VISION_MONITOR_ARGS = {
+  title: '网页使用提醒',
+  modalities: ['vision'],
+  condition: '屏幕出现用户指定的非工作网页',
+  trigger_response: '提醒用户回去工作',
+  repeat: false,
+};
+const NARRATION_ARGS = {
+  title: '画面实时描述',
+  modalities: ['vision'],
+  narration_focus: '当前屏幕画面内容及其变化',
 };
 const cleanup: LiveSession[] = [];
 afterEach(() => {
@@ -187,7 +200,11 @@ async function rig() {
     clearInputAudio: vi.fn(() => true),
     cancelResponse: vi.fn(() => true),
     submitFunctionOutput: vi.fn(
-      (_ref: RealtimeFunctionCallRef, _output: string) => true,
+      (
+        _ref: RealtimeFunctionCallRef,
+        _output: string,
+        _options?: RealtimeFunctionOutputOptions,
+      ) => true,
     ),
     sendBackendContext: vi.fn(() => true),
     speakToUser: vi.fn(() => true),
@@ -417,6 +434,174 @@ function rejected(result: Json): void {
 }
 
 describe('task lifecycle boundaries through LiveSession callbacks', () => {
+  it.each([
+    '你要是看见我打开知乎，就让我别玩，别玩了。',
+    '要是看见我打开视频网页，就叫我回去工作。',
+    '如果发现我在浏览购物网站，就让我回去工作。',
+    '帮我留意着屏幕，看到我刷知乎就喊我。',
+  ])(
+    'starts a conditional monitor from the first genuine request: %s',
+    async (source) => {
+      const r = await rig();
+      const result = await r.invoke(
+        r.begin(source),
+        'create_proactive_monitor',
+        VISION_MONITOR_ARGS,
+      );
+      expect(result['ok']).toBe(true);
+      expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+        { callEpoch: 1, callId: result['callId'] },
+        result['receipt'],
+        { taskAdmission: true },
+      );
+      expect(r.scheduler.createPerceptionMonitor).toHaveBeenCalledTimes(1);
+      expect(r.scheduler.listTasks()).toEqual([
+        expect.objectContaining({
+          title: VISION_MONITOR_ARGS.title,
+          status: 'running',
+          monitorMode: 'event',
+          taskDescription: VISION_MONITOR_ARGS.condition,
+        }),
+      ]);
+      expect(r.log.write).not.toHaveBeenCalledWith(
+        'task.authorization_rejected',
+        expect.anything(),
+      );
+      expect(r.host.captureVisualContext).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts both genuine screen-narration requests without requiring a different phrasing', async () => {
+    const r = await rig();
+    const source = '你对我的画面进行不断的描述。';
+    const taskIds: string[] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await r.invoke(
+        r.begin(source),
+        'create_live_narration',
+        NARRATION_ARGS,
+      );
+      expect(result['ok']).toBe(true);
+      expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+        { callEpoch: 1, callId: result['callId'] },
+        result['receipt'],
+        { taskAdmission: true },
+      );
+      expect(r.scheduler.listTasks()).toEqual([
+        expect.objectContaining({
+          title: NARRATION_ARGS.title,
+          status: 'running',
+          monitorMode: 'always',
+          narrationPreferences: expect.objectContaining({
+            sourceRequest: source,
+          }),
+        }),
+      ]);
+      const task = r.scheduler.listTasks()[0]!;
+      taskIds.push(task.taskId);
+      // A new explicit input may recreate a task after its earlier run ended.
+      // Keep the real manager's same-title active-task protection in place.
+      r.scheduler.finish(task.taskId);
+    }
+    expect(new Set(taskIds).size).toBe(2);
+    expect(r.scheduler.createLiveNarration).toHaveBeenCalledTimes(2);
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    expect(r.host.captureVisualContext).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '请对我的屏幕进行持续的讲解。',
+    '你一直给我描述画面的变化。',
+    '接下来边看屏幕边给我讲讲变化。',
+  ])(
+    'starts narration for an explicit continuous description: %s',
+    async (source) => {
+      const r = await rig();
+      const result = await r.invoke(
+        r.begin(source),
+        'create_live_narration',
+        NARRATION_ARGS,
+      );
+      expect(result['ok']).toBe(true);
+      expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+        { callEpoch: 1, callId: result['callId'] },
+        result['receipt'],
+        { taskAdmission: true },
+      );
+      expect(r.scheduler.createLiveNarration).toHaveBeenCalledTimes(1);
+      expect(r.scheduler.listTasks()).toEqual([
+        expect.objectContaining({
+          status: 'running',
+          monitorMode: 'always',
+          narrationPreferences: expect.objectContaining({
+            sourceRequest: source,
+          }),
+        }),
+      ]);
+    },
+  );
+
+  it('does not turn a missed-reminder complaint into creation or repair of an old monitor', async () => {
+    const r = await rig();
+    const { task } = await r.createMonitor(
+      '看到我打开非工作网页，就提醒我回去工作。',
+      VISION_MONITOR_ARGS,
+    );
+    r.scheduler.finish(task.taskId);
+    r.done(
+      r.begin('你怎么不喊我？'),
+      'completed',
+      '刚才没喊成，我这就重新设好监控。',
+    );
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+    const denied = await r.invoke(
+      r.begin('你怎么不喊我？'),
+      'create_proactive_monitor',
+      VISION_MONITOR_ARGS,
+    );
+    rejected(denied);
+    expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+      { callEpoch: 1, callId: denied['callId'] },
+      denied['receipt'],
+      { taskAuthorizationRejected: true },
+    );
+    rejected(
+      await r.invoke(
+        r.begin(undefined, { authority: 'proactive_repair' }),
+        'create_proactive_monitor',
+        VISION_MONITOR_ARGS,
+      ),
+    );
+    expect(r.scheduler.createPerceptionMonitor).toHaveBeenCalledTimes(1);
+    expect(r.scheduler.listTasks()).toEqual([]);
+    expect(r.realtime.requestProactiveRepair).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '描述一下当前屏幕。',
+    '你看看我现在的画面上有什么。',
+    '请描述一次当前画面。',
+  ])(
+    'does not promote a one-shot screen request into continuous narration: %s',
+    async (source) => {
+      const r = await rig();
+      const result = await r.invoke(
+        r.begin(source),
+        'create_live_narration',
+        NARRATION_ARGS,
+      );
+      rejected(result);
+      expect(r.realtime.submitFunctionOutput).toHaveBeenLastCalledWith(
+        { callEpoch: 1, callId: result['callId'] },
+        result['receipt'],
+        { taskAuthorizationRejected: true },
+      );
+      expect(r.scheduler.createLiveNarration).not.toHaveBeenCalled();
+      expect(r.scheduler.listTasks()).toEqual([]);
+      expect(r.host.captureVisualContext).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not recreate a completed knock monitor after conversation criticism or forged repair', async () => {
     const r = await rig();
     const { task } = await r.createMonitor();

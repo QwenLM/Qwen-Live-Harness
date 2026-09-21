@@ -234,6 +234,109 @@ async function rig() {
 }
 
 describe('isolated asynchronous result speech', () => {
+  async function rejectedNarration(r: Awaited<ReturnType<typeof rig>>) {
+    r.callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'denied-parent',
+      authority: 'direct',
+      inputItemId: 'denied-input',
+    });
+    r.setMainReady(false);
+    r.callbacks.onTaskActionRejected?.({
+      callEpoch: 1,
+      responseId: 'denied-parent',
+      inputItemId: 'denied-input',
+      tools: ['create_live_narration'],
+    });
+    r.callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'denied-parent',
+      authority: 'direct',
+      status: 'completed',
+    });
+    await flush();
+    expect(r.notificationSpeech).not.toHaveBeenCalled();
+  }
+
+  it('waits for the refusal receipt barrier then uses a fixed tool-free correction without creating a task', async () => {
+    const r = await rig();
+    await rejectedNarration(r);
+    r.setMainReady(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    const fixed = liveText('zh-CN', 'runtime.narrationNotStarted');
+    expect(r.notificationSpeech).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        purpose: 'task_rejection',
+        fixedAnnouncement: fixed,
+        summary: fixed,
+        language: 'zh-CN',
+      }),
+    );
+    expect(r.host.sendOutputAudio).not.toHaveBeenCalled();
+    r.speech.resolve({ ...SPEECH, transcript: fixed });
+    await flush();
+    expect(r.host.sendOutputAudio).toHaveBeenCalledOnce();
+    expect(r.host.setCaption).toHaveBeenCalledWith(1, fixed);
+    expect(r.session.getSubagentsSnapshot().tasks).toHaveLength(0);
+    expect(r.realtime.speakToUser).not.toHaveBeenCalled();
+    expect(r.host.failCall).not.toHaveBeenCalled();
+  });
+
+  it.each(['speech', 'commit', 'direct'] as const)(
+    'drops an obsolete queued correction on a newer %s input',
+    async (mode) => {
+      const r = await rig();
+      await rejectedNarration(r);
+      if (mode === 'speech')
+        r.callbacks.onSpeechStarted?.({ callEpoch: 1, itemId: 'new-input' });
+      if (mode === 'commit')
+        r.callbacks.onInputCommitted?.({
+          callEpoch: 1,
+          itemId: 'new-input',
+          responsePending: true,
+        });
+      r.callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: 'new-response',
+        authority: 'direct',
+        inputItemId: 'new-input',
+      });
+      r.callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: 'new-response',
+        authority: 'direct',
+        status: 'completed',
+      });
+      r.setMainReady(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(r.notificationSpeech).not.toHaveBeenCalled();
+      expect(r.host.sendOutputAudio).not.toHaveBeenCalled();
+    },
+  );
+
+  it('ignores mismatched rejection input identity', async () => {
+    const r = await rig();
+    r.callbacks.onResponseCreated?.({
+      callEpoch: 1,
+      responseId: 'source-response',
+      authority: 'direct',
+      inputItemId: 'source-input',
+    });
+    r.callbacks.onTaskActionRejected?.({
+      callEpoch: 1,
+      responseId: 'source-response',
+      inputItemId: 'different-input',
+      tools: ['create_live_narration'],
+    });
+    r.callbacks.onResponseDone?.({
+      callEpoch: 1,
+      responseId: 'source-response',
+      status: 'completed',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.notificationSpeech).not.toHaveBeenCalled();
+  });
+
   it('shows a child retry without recapturing or announcing partial failure, then replaces it with the successful result', async () => {
     const r = await rig();
     const analysis =

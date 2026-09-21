@@ -252,6 +252,10 @@ If search fails and a backend is configured, the runtime creates one isolated re
 
 Duplicate confirmation audio is suppressed only if there was already an audio preamble and **all tools in the parent response** successfully accepted eligible async work: `web_search`, Appshot analysis, warning-free managed `handoff`, or `create_proactive_monitor` / `create_live_narration`. Errors, warnings, mixed queries, permission replies, terminal deliveries, `session_create`, timers and task updates/cancellation remain audible. Suppressed text stays in provider/debug history (`audioSuppressed:true`), not user-heard Memory, handoff or reconnect history. A receipt overtaken by a new user turn drains silently without old tool authority; new answers and final results are not muted.
 
+Clear conversational requests such as “keep an eye on the screen,” “don't let me keep watching videos,” or “narrate changes as you watch” can establish observation, supervision or live narration without fixed command wording. This does not relax cancellation rules or change the monitor's detection conditions.
+
+Runtime task-authorization refusals are a separate case: receipt-only refusal continuations are drained silently, then a tool-free voice worker reads a short local correction. Its complete transcript must match the correction before audio is played. Informative sibling receipts stay audible; a mixed acceptance/refusal also stays audible if its acceptance had no preamble. New user input drops stale queued corrections.
+
 ### Audio and visual input
 
 Main Realtime uses `semantic_vad`, `create_response:false`, `interrupt_response:true`: the service detects turns and the daemon schedules responses. Memory/tool continuations do not change VAD. Independent manual-input workers use `turn_detection:null`.

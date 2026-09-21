@@ -325,6 +325,10 @@ export interface QwenRealtimeCallbacks {
   ) => void;
   onFunctionArgumentsDelta?: (event: RealtimeFunctionArgumentsEvent) => void;
   onFunctionCall?: (event: RealtimeFunctionCall) => void;
+  /** A receipt-only rejected task batch needs a separate, truthful readout. */
+  onTaskActionRejected?: (
+    event: RealtimeResponseEvent & { tools: readonly string[] },
+  ) => void;
   onResponseCreated?: (event: RealtimeResponseCreatedEvent) => void;
   onResponseDone?: (event: RealtimeResponseDoneEvent) => void;
   onDirectTranscript?: (event: RealtimeDirectTranscriptEvent) => void;
@@ -557,6 +561,8 @@ interface ToolConfirmationBatch {
   parentHadAudio: boolean;
   admissionsOnly: boolean;
   duplicatesOnly: boolean;
+  receiptsOnly: boolean;
+  rejectedTools: Set<string>;
   receipts: Map<string, AdmissionReceipt>;
 }
 
@@ -1650,11 +1656,16 @@ export function openQwenRealtimeSession(
       output: string,
     ): boolean => {
       if (call.confirmation) {
-        call.confirmation.admissionsOnly &&= isSuccessfulTaskAdmission(
+        const admission = isSuccessfulTaskAdmission(
           call.name ?? '',
           output,
           call.outputOptions,
         );
+        const rejected = call.outputOptions?.taskAuthorizationRejected === true;
+        call.confirmation.admissionsOnly &&= admission;
+        call.confirmation.receiptsOnly &&= admission || rejected;
+        if (rejected && call.name)
+          call.confirmation.rejectedTools.add(call.name);
         call.confirmation.duplicatesOnly &&= call.reusedAdmission === true;
         const key = taskRequestKey(call.name ?? '', call.arguments);
         if (
@@ -2107,11 +2118,21 @@ export function openQwenRealtimeSession(
       if (!continuation) return;
       toolContinuationStates.delete(responseId);
       const superseded = continuation.speechGeneration !== speechGeneration;
+      // Never hide an informative result, permission question or warning from
+      // a sibling tool. Only receipt-only batches can use the fixed readout.
+      const hasRejection =
+        (continuation.confirmation?.rejectedTools.size ?? 0) > 0;
+      const isolatedRejection =
+        continuation.confirmation?.receiptsOnly === true &&
+        hasRejection &&
+        (continuation.confirmation.receipts.size === 0 ||
+          continuation.confirmation.parentHadAudio);
       const protocolOnly =
         superseded ||
+        hasRejection ||
         continuation.silentReceiptDrain === true ||
         continuation.confirmation?.duplicatesOnly === true;
-      requestResponseCreate(
+      const requested = requestResponseCreate(
         'tool_continuation',
         undefined,
         protocolOnly ? undefined : continuation.inputItemId,
@@ -2119,12 +2140,24 @@ export function openQwenRealtimeSession(
         protocolOnly ? 'none' : continuation.toolCapability,
         undefined,
         superseded ||
+          isolatedRejection ||
           continuation.silentReceiptDrain === true ||
           (continuation.confirmation?.parentHadAudio === true &&
             continuation.confirmation.admissionsOnly),
         continuation.confirmation?.receipts,
-        continuation.silentReceiptDrain,
+        continuation.silentReceiptDrain || isolatedRejection,
       );
+      if (requested && isolatedRejection && !superseded)
+        callback(() =>
+          callbacks.onTaskActionRejected?.({
+            ...eventContext(),
+            responseId,
+            ...(continuation.inputItemId
+              ? { inputItemId: continuation.inputItemId }
+              : {}),
+            tools: [...continuation.confirmation!.rejectedTools],
+          }),
+        );
     };
 
     const sendBackendConversationItem = (
@@ -2152,7 +2185,11 @@ export function openQwenRealtimeSession(
     ): boolean => {
       if (call.outputSubmitted || call.pendingOutput) return false;
       call.outputOptions =
-        options?.taskAdmission === true ? { taskAdmission: true } : undefined;
+        options?.taskAuthorizationRejected === true
+          ? { taskAuthorizationRejected: true }
+          : options?.taskAdmission === true
+            ? { taskAdmission: true }
+            : undefined;
       if (!call.responseCompleted && activeResponseId === call.responseId) {
         call.pendingOutput = { output };
         return true;
@@ -2977,6 +3014,8 @@ export function openQwenRealtimeSession(
             responseToolCapabilities.get(responseId) === 'direct'),
         admissionsOnly: true,
         duplicatesOnly: true,
+        receiptsOnly: true,
+        rejectedTools: new Set(),
         receipts: new Map(),
       };
       for (const call of valid) call.confirmation = confirmation;

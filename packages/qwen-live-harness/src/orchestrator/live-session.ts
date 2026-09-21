@@ -79,6 +79,7 @@ import {
   QWEN_REALTIME_LIMITS,
   QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
   type QwenRealtimeSession,
+  type QwenRealtimeCallbacks,
   type RealtimeEventContext,
   type RealtimeCloseInfo,
   type RealtimeResponseDoneEvent,
@@ -487,6 +488,7 @@ type ResultSpeechPurpose =
   | 'visual_result'
   | 'search_result'
   | 'task_result'
+  | 'task_rejection'
   | 'peer_report'
   | 'permission_execution';
 interface IsolatedResultSpeech {
@@ -969,6 +971,8 @@ export class LiveSession {
                 : 'task_result',
             );
           },
+          injectTaskRejection: (text) =>
+            this.startResultSpeech(context, text, 'task_rejection'),
           injectProactive: (event) => this.injectProactiveEvent(context, event),
           injectPeerReport: (text, reportId) =>
             this.injectPeerReport(context, text, reportId),
@@ -1686,7 +1690,9 @@ export class LiveSession {
     if (this.active !== context || context.stopping || !context.realtime)
       return false;
     const authority =
-      purpose === 'permission_execution' ? 'task_result' : purpose;
+      purpose === 'permission_execution' || purpose === 'task_rejection'
+        ? 'task_result'
+        : purpose;
     if (this.host.isOutputMuted?.() === true) {
       const accepted = context.realtime.sendBackendContext(
         `[RESULT_AVAILABLE] ${JSON.stringify({
@@ -1774,6 +1780,9 @@ export class LiveSession {
                 outputLanguage,
               ),
             }
+          : {}),
+        ...(state.purpose === 'task_rejection'
+          ? { fixedAnnouncement: state.source }
           : {}),
         language: outputLanguage,
         signal: state.controller.signal,
@@ -3288,6 +3297,7 @@ export class LiveSession {
       ) => {
         if (!current()) return;
         if (event.authority === 'direct' && event.inputItemId) {
+          context.injector.discardTaskRejections();
           if (!context.permissionTargetsByInput.has(event.inputItemId))
             this.rememberPermissionInput(context, event.inputItemId);
           context.bindRecoveredPermissionInput = false;
@@ -3624,6 +3634,34 @@ export class LiveSession {
             responseId: event.responseId,
           });
         }
+      },
+      onTaskActionRejected: (
+        event: Parameters<
+          NonNullable<QwenRealtimeCallbacks['onTaskActionRejected']>
+        >[0],
+      ) => {
+        if (!current() || context.stopping || context.speechInProgress) return;
+        const lease = context.taskActionLeases.get(event.responseId);
+        if (
+          !lease ||
+          !this.taskLeaseCurrent(context, event.responseId, lease) ||
+          (event.inputItemId !== undefined &&
+            event.inputItemId !== lease.inputId)
+        )
+          return;
+        const language = this.notificationLanguage();
+        // Only local tool categories select wording; never read model titles,
+        // arguments or a backend's suggested announcement as trusted speech.
+        const tool = event.tools.length === 1 ? event.tools[0] : undefined;
+        const text = liveText(
+          language.outputLanguage ?? language.fallbackLanguage,
+          tool === CREATE_LIVE_NARRATION_TOOL_NAME
+            ? 'runtime.narrationNotStarted'
+            : tool === CREATE_PROACTIVE_MONITOR_TOOL_NAME
+              ? 'runtime.monitorNotStarted'
+              : 'runtime.taskActionNotExecuted',
+        );
+        context.injector.enqueue({ kind: 'task_rejection', context: text });
       },
       onFunctionCall: (event: RealtimeFunctionCall) => {
         if (!current()) return;
@@ -4435,12 +4473,14 @@ export class LiveSession {
       const submitted = context.realtime.submitFunctionOutput(
         { callEpoch: context.epoch, callId: event.callId },
         receipt,
-        ...(result.ok &&
-        receipt === result.receipt &&
-        (event.name === CREATE_PROACTIVE_MONITOR_TOOL_NAME ||
-          event.name === CREATE_LIVE_NARRATION_TOOL_NAME)
-          ? [{ taskAdmission: true }]
-          : []),
+        ...(taskAuthorizationRejected && receipt === result.receipt
+          ? [{ taskAuthorizationRejected: true }]
+          : result.ok &&
+              receipt === result.receipt &&
+              (event.name === CREATE_PROACTIVE_MONITOR_TOOL_NAME ||
+                event.name === CREATE_LIVE_NARRATION_TOOL_NAME)
+            ? [{ taskAdmission: true }]
+            : []),
       );
       if (!submitted) {
         // A failed response, or an unexecuted authorization rejection after

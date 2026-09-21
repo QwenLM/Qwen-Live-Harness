@@ -64,6 +64,71 @@ function imperative(request: string): string {
   return withoutPoliteness(request.replace(QUOTED_TEXT, ''));
 }
 
+function isConditionalMonitorRequest(text: string): boolean {
+  return (
+    /^(?:你|您)?(?:如果|要是|当|只要|一旦|每当|听到|听见|看到|看见|有).+(?:就|时|后)?(?:(?:提醒|告诉|通知|喊|叫|劝)我|让我(?:别(?:再)?|不要|停止|回去|回来|去|继续|开始|保持)\S+)/u.test(
+      text,
+    ) ||
+    /^(?:if|when|whenever)\s+.+\b(?:let me know|alert me|notify me|remind me)\b/u.test(
+      text,
+    )
+  );
+}
+
+function isMonitorRequest(text: string): boolean {
+  return (
+    /^(?:再|继续)?(?:帮我)?(?:监控|监测|监听|观察|盯着|看着|听着|监督)(?:一下|一次)?\s*\S+/u.test(
+      text,
+    ) ||
+    /^(?:keep\s+)?(?:watch(?:ing)?|monitor(?:ing)?|listen(?:ing)? for)\s+(?!(?:monitors?|tasks?)\s*[?.!]*$)\S+/u.test(
+      text,
+    ) ||
+    /^(?:create|start|set up)\s+(?:a |an |another )?(?:new )?(?:audio |video |visual )?monitor\s+(?:for|to|that|which)\s+\S+/u.test(
+      text,
+    ) ||
+    /^(?:你|您)?(?:帮我|替我)?(?:留意着|盯着|看着点)(?:我(?:的)?)?(?:屏幕|画面|摄像头|视频|声音|声响|动静)(?:[。.!?！？]*$|.*(?:看到|听到|有变化|有动静|出现).*(?:提醒|通知|告诉|喊|叫)我)/u.test(
+      text,
+    ) ||
+    /^(?:你|您)?(?:帮我|替我)?(?:留意|盯)(?:一下|一会儿)?(?:我(?:的)?)?(?:屏幕|画面|摄像头|视频|声音|声响|动静).*(?:看到|听到|有变化|有动静|出现).*(?:提醒|通知|告诉|喊|叫)我/u.test(
+      text,
+    ) ||
+    /^(?:(?:你|您)?(?:帮我|替我)?(?:盯|看着|留意)(?:着|一下|一会儿|点)?[，, ]*)?别让我(?:一直|继续|再)(?:刷(?:手机|网页|网站|视频|短视频|知乎)|玩(?:手机|游戏)|浏览(?:网页|网站))(?:了|下去)?[。.!?！？]*$/u.test(
+      text,
+    ) ||
+    isConditionalMonitorRequest(text) ||
+    /^(?:你|您)?听(?:一下)?.+(?:声音|声响|动静).*(?:听到|一旦|如果|有).*(?:提醒|告诉|通知)我/u.test(
+      text,
+    )
+  );
+}
+
+function hasNegatedTaskRequest(source: string, kind: TaskIntentKind): boolean {
+  if (kind !== 'monitor' || !isMonitorRequest(imperative(source)))
+    return NEGATED_REQUEST.test(source);
+  // In an explicit monitoring/reminder request, "提醒我不要玩" / "remind
+  // me not to browse" is the requested reminder, not a refusal to monitor.
+  // Remove only the locally attached negation, never the rest of the utterance:
+  // a separate "但不要监控" or "do not monitor" must still deny creation.
+  const command = source
+    .replace(
+      /((?:提醒|告诉|通知|喊|叫|劝|让)我)(?:不要|别(?:再)?|不用|无需|不能|不需要|不必|不可以|不准|不得)/gu,
+      '$1',
+    )
+    .replace(
+      /(\b(?:remind|tell|warn) me(?: that i)?\s+)(?:not to|do not|don't|don’t|never|must not|mustn't|mustn’t|should not|shouldn't|shouldn’t|cannot|can't|can’t|no need to)\s+/gu,
+      '$1',
+    );
+  return (
+    NEGATED_REQUEST.test(command) ||
+    /(?:别|不能|不需要|不必|不可以|不准|不得)(?:再|去|来){0,2}(?:帮我)?(?:监控|监测|监听|观察|盯着|看着|听着|监督|创建|新建|启动|开启|提醒|通知|告诉|喊|叫|劝)/u.test(
+      command,
+    ) ||
+    /\b(?:must not|mustn't|mustn’t|should not|shouldn't|shouldn’t|cannot|can't|can’t|no need to)\s+(?:keep\s+)?(?:watch|monitor|listen|remind|tell|alert|notify|warn|create|start)\b/u.test(
+      command,
+    )
+  );
+}
+
 /**
  * A conservative additional filter, not a complete language-understanding or
  * authorization system. Callers must supply the current authentic user ASR,
@@ -77,7 +142,10 @@ export function hasExplicitTaskIntent(
   const source = normalize(request);
   if (!source) return false;
   if (kind === 'cancel') return cancellationObjects(source).length > 0;
-  if (NEGATED_REQUEST.test(source) || REPORTED_OR_HYPOTHETICAL.test(source))
+  if (
+    hasNegatedTaskRequest(source, kind) ||
+    REPORTED_OR_HYPOTHETICAL.test(source)
+  )
     return false;
   // Only explicit conjunctions may introduce another command, and the first
   // clause must itself be an actual task request. A quoted/reporting preface or
@@ -109,36 +177,15 @@ function hasSingleTaskIntent(
     /^(?:监控|监测|任务|提醒)(?:是否|是不是)(?:已|正在|启动|停止|创建|开启|结束)/u.test(
       text,
     ) ||
-    NEGATED_REQUEST.test(source) ||
+    hasNegatedTaskRequest(source, kind) ||
     (/^(?:如果|假如|假设|要是|if\b|suppose\b)/u.test(text) &&
-      !/就(?:提醒|告诉|通知)我|\b(?:let me know|alert me|notify me|remind me)\b/u.test(
-        text,
-      ))
+      !isConditionalMonitorRequest(text))
   )
     return false;
 
   switch (kind) {
     case 'monitor':
-      return (
-        /^(?:再|继续)?(?:帮我)?(?:监控|监测|监听|观察|盯着|看着|听着|监督)(?:一下|一次)?\s*\S+/u.test(
-          text,
-        ) ||
-        /^(?:keep\s+)?(?:watch(?:ing)?|monitor(?:ing)?|listen(?:ing)? for)\s+(?!(?:monitors?|tasks?)\s*[?.!]*$)\S+/u.test(
-          text,
-        ) ||
-        /^(?:create|start|set up)\s+(?:a |an |another )?(?:new )?(?:audio |video |visual )?monitor\s+(?:for|to|that|which)\s+\S+/u.test(
-          text,
-        ) ||
-        /^(?:你|您)?(?:如果|当|只要|一旦|听到|看到|有).+(?:就|时)?(?:提醒|告诉|通知)我/u.test(
-          text,
-        ) ||
-        /^(?:你|您)?听(?:一下)?.+(?:声音|声响|动静).*(?:听到|一旦|如果|有).*(?:提醒|告诉|通知)我/u.test(
-          text,
-        ) ||
-        /^(?:if|when|whenever)\s+.+\b(?:let me know|alert me|notify me|remind me)\b/u.test(
-          text,
-        )
-      );
+      return isMonitorRequest(text);
     case 'timer':
       return (
         (EN_TIME.test(text) || ZH_TIME.test(text)) &&
@@ -155,7 +202,16 @@ function hasSingleTaskIntent(
       );
     case 'narration':
       return (
-        /^(?:用(?:中文|英语|英文|汉语)\s*)?(?:持续|一直|继续|实时|不断)(?:地)?(?:帮我)?(?:描述|解说|讲解|播报|观察).*(?:画面|屏幕|摄像头|视频|变化|场景)/u.test(
+        /^(?:(?:接下来|现在|从现在开始)[，, ]*)?(?:你|您)?(?:帮我)?(?:一边|边)(?:看着?|观察|留意)(?:我(?:的)?)?(?:屏幕|画面|摄像头(?:画面)?|视频)(?:一边|边)(?:给我|帮我)?(?:描述|解说|讲解|讲讲|说说|播报)[^，。！？!?;；\n]{0,40}(?:内容|变化|场景|发生的事)(?:吧|好吗|可以吗)?[。.!?！？]*$/u.test(
+          text,
+        ) ||
+        /^(?:用(?:中文|英语|英文|汉语)\s*)?(?:持续|一直|继续|实时|不断)(?:地|的)?(?:帮我)?(?:描述|解说|讲解|播报|观察).*(?:画面|屏幕|摄像头|视频|变化|场景)/u.test(
+          text,
+        ) ||
+        /^(?:你|您)(?:用(?:中文|英语|英文|汉语)\s*)?(?:持续|一直|继续|实时|不断)(?:地|的)?(?:帮我|给我)?(?:描述|解说|讲解|播报|观察)[^，。！？!?;；\n]{0,80}(?:画面|屏幕|摄像头|视频|变化|场景)(?:的(?:内容|变化|细节))?(?:吧|好吗|可以吗)?[。.!?！？]*$/u.test(
+          text,
+        ) ||
+        /^(?:你|您)?对[^，。！？!?;；\n]{0,80}(?:画面|屏幕|摄像头|视频|变化|场景)(?:的(?:内容|变化|细节))?(?:进行|做)(?:持续|一直|继续|实时|不断)(?:地|的)?(?:描述|解说|讲解|播报)(?:吧|好吗|可以吗)?[。.!?！？]*$/u.test(
           text,
         ) ||
         /^(?:keep|continue)\s+(?:describing|narrating|watching)\s+.*\b(?:screen|scene|camera|video|workspace|view|changes)\b/u.test(

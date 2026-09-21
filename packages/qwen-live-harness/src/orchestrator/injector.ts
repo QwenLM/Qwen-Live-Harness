@@ -37,6 +37,7 @@ export type InjectorItemKind =
   | 'progress'
   | 'permission'
   | 'task_result'
+  | 'task_rejection'
   | 'error'
   | 'speak'
   | 'control'
@@ -73,6 +74,8 @@ export interface InjectorSink {
   injectPermission?(text: string): boolean;
   /** Model-authored task outcome; must never inherit a tool capability. */
   injectTaskResult?(text: string): boolean;
+  /** Locally authored correction; never merge into the main conversation. */
+  injectTaskRejection?(text: string): boolean;
   /** A model-authored Proactive response request; false when refused. */
   injectProactive?(text: string): boolean;
   /** Isolated external quotation; must never fall back to ordinary speech. */
@@ -176,6 +179,9 @@ export class Injector {
     for (const item of this.queue) {
       if (item.kind === 'progress') {
         this.lastProgressAt.delete(progressKeyOf(item));
+      } else if (item.kind === 'task_rejection') {
+        // A clarification about an older utterance must not interrupt a new one.
+        continue;
       } else {
         kept.push(item);
       }
@@ -186,9 +192,15 @@ export class Injector {
 
   noteInputCommitted(responsePending = false): void {
     this.clearRecoveredInputTimer();
+    this.queue = this.queue.filter((item) => item.kind !== 'task_rejection');
     this.speechInProgress = false;
     this.directResponsePending = responsePending;
     this.poke();
+  }
+
+  /** Direct responses can establish a newer input without a preceding VAD event. */
+  discardTaskRejections(): void {
+    this.queue = this.queue.filter((item) => item.kind !== 'task_rejection');
   }
 
   noteResponseCreated(authority?: string): void {
@@ -241,6 +253,7 @@ export class Injector {
   /** Fence stale transport state without treating it as a completed response. */
   beginTransportRecovery(): void {
     this.transportRecovering = true;
+    this.queue = this.queue.filter((item) => item.kind !== 'task_rejection');
     this.clearRecoveredInputTimer();
     this.recoveredInputPending = false;
     this.speechInProgress = false;
@@ -564,6 +577,7 @@ export class Injector {
       (this.queue[0]?.kind === 'proactive' ||
         this.queue[0]?.kind === 'peer_report' ||
         this.queue[0]?.kind === 'search_result' ||
+        this.queue[0]?.kind === 'task_rejection' ||
         this.queue[0]?.kind === 'control') &&
       (this.directResponsePending || this.responseRequestPending)
     ) {
@@ -619,6 +633,7 @@ export class Injector {
         item.kind === 'control' ||
         item.kind === 'permission' ||
         item.kind === 'task_result' ||
+        item.kind === 'task_rejection' ||
         item.kind === 'peer_report' ||
         item.kind === 'search_result',
     );
@@ -626,7 +641,8 @@ export class Injector {
       if (this.queue[0]?.kind === 'control') this.flushControl();
       else if (
         this.queue[0]?.kind === 'permission' ||
-        this.queue[0]?.kind === 'task_result'
+        this.queue[0]?.kind === 'task_result' ||
+        this.queue[0]?.kind === 'task_rejection'
       )
         this.flushNotification();
       else if (this.queue[0]?.kind === 'peer_report') this.flushPeerReport();
@@ -742,7 +758,10 @@ export class Injector {
 
   private flushNotification(): void {
     const item = this.queue[0];
-    if (!item || (item.kind !== 'permission' && item.kind !== 'task_result'))
+    if (
+      !item ||
+      !['permission', 'task_result', 'task_rejection'].includes(item.kind)
+    )
       return;
     // A committed user turn absorbs this as notification context. At idle,
     // reserve one response so later notifications cannot overtake it.
@@ -755,7 +774,9 @@ export class Injector {
           ? this.sink.injectContext(item.context)
           : item.kind === 'permission'
             ? this.sink.injectPermission?.(item.context)
-            : this.sink.injectTaskResult?.(item.context)) === true;
+            : item.kind === 'task_rejection'
+              ? this.sink.injectTaskRejection?.(item.context)
+              : this.sink.injectTaskResult?.(item.context)) === true;
     } catch {
       // Keep all facts and correlation handles queued on refusal.
     }

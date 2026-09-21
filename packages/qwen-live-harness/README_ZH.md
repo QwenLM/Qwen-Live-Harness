@@ -252,6 +252,10 @@ TEST_CLI_PATH=/absolute/path/to/qwen/cli.js npm run test:backends -- qwen-live-h
 
 只有已有音频铺垫，且**父响应内所有工具**均成功受理符合条件的异步任务，才抑制重复确认音频：`web_search`、Appshot 分析、不含警告的托管 `handoff`、`create_proactive_monitor`／`create_live_narration`。错误、警告、混合查询、授权答复、终端投递、`session_create`、定时器和任务更新／取消仍可播报。被抑制文字保留在服务端／debug 历史（`audioSuppressed:true`），不作为用户听到的对话进入 Memory、委托或重连历史。被新用户轮次取代的回执静默收完，不沿用旧工具权限；新回答和最终结果不静音。
 
+“帮我留意着屏幕”“别让我一直刷视频”“边看画面边讲变化”等清楚的自然表达，也可以建立观察、监督或持续解说任务，不要求固定口令。这不放宽取消规则，也不改变监控任务的检测条件。
+
+运行时拒绝任务操作时另行处理：纯回执续答静默收完，再由无工具能力的语音通道读取本地生成的简短纠正，完整转写与原句一致后才播放。包含实际内容的其他工具回执仍可播报；成功与拒绝混合的批次如果没有受理铺垫，也保留播报。新用户输入会丢弃过期的排队纠正。
+
 ### 语音与视觉
 
 主 Realtime 使用 `semantic_vad`、`create_response:false`、`interrupt_response:true`：服务端检测轮次，daemon 调度响应。Memory／工具续答不切换 VAD，独立手动输入的子模型使用 `turn_detection:null`。
