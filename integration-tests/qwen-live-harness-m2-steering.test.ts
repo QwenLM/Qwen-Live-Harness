@@ -21,6 +21,7 @@ import { sleep } from './qwen-backend-harness.js';
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -53,6 +54,7 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
   const modelRequests: string[] = [];
 
   const toolCall = async (
+    request: string,
     name: string,
     callId: string,
     args: Record<string, unknown>,
@@ -63,7 +65,7 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please ${name}: ${JSON.stringify(args)}`);
+    conn.speakTranscript(request);
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === callId,
       {
@@ -72,12 +74,7 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
         description: `${name} receipt ${callId}`,
       },
     );
-    if (name !== 'handoff')
-      await waitForLiveResponseAfter(
-        stack,
-        receiptMessage,
-        'tool_continuation',
-      );
+    await waitForLiveResponseAfter(stack, receiptMessage, 'tool_continuation');
     return JSON.parse(functionCallOutputOf(receiptMessage)!.output) as Record<
       string,
       unknown
@@ -85,9 +82,11 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
   };
 
   const handoff = (
+    request: string,
     callId: string,
     args: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> => toolCall('handoff', callId, args);
+  ): Promise<Record<string, unknown>> =>
+    toolCall(request, 'handoff', callId, args);
 
   /**
    * Poll the session through the protocol's own probe (session_monitor)
@@ -103,6 +102,7 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const snapshot = await toolCall(
+        'Is the background coding session idle now?',
         'session_monitor',
         `call-mon-${++monitorSeq}`,
         {
@@ -144,7 +144,9 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
   }, 60_000);
 
   it('joins the running turn when handing off to a busy session', async () => {
-    const first = await handoff('call-s1', { task: SLOW_MARKER });
+    const first = await handoff('Please run the project tests.', 'call-s1', {
+      task: SLOW_MARKER,
+    });
     expect(first['status']).toBe('accepted');
     expect(typeof first['job']).toBe('string');
     sessionHandle = String(first['session']);
@@ -158,10 +160,14 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
       'the slow turn to reach the fake model endpoint',
     );
 
-    const second = await handoff('call-s2', {
-      task: 'also update the changelog',
-      session: sessionHandle,
-    });
+    const second = await handoff(
+      'Please also update the project changelog.',
+      'call-s2',
+      {
+        task: 'also update the changelog',
+        session: sessionHandle,
+      },
+    );
     expect(second['status']).toBe('accepted');
     expect(second['session']).toBe(sessionHandle);
     expect(String(second['note'])).toContain('joined');
@@ -171,8 +177,10 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
     slowGate.resolve();
     const complete = await stack.fakeDash.waitForMessage(
       (message) => {
-        const text = contextTextOf(message);
-        return text !== undefined && /\[COMPLETE job_\d+\]/.test(text);
+        return (
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === first['job']
+        );
       },
       {
         timeoutMs: 30_000,
@@ -200,10 +208,14 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
     ).toBe(true);
 
     const inboxIndex = stack.fakeDash.inbox.length;
-    const receipt = await handoff('call-s3', {
-      task: 'one more quick task',
-      session: sessionHandle,
-    });
+    const receipt = await handoff(
+      'Please inspect the project configuration.',
+      'call-s3',
+      {
+        task: 'one more quick task',
+        session: sessionHandle,
+      },
+    );
     expect(receipt['status']).toBe('accepted');
     expect(receipt['session']).toBe(sessionHandle);
     expect(typeof receipt['job']).toBe('string');
@@ -212,14 +224,16 @@ describeE2E('qwen-live-harness M2 — mid-turn steering', () => {
     expect(String(receipt['note'] ?? '')).not.toContain('queued');
 
     const job = String(receipt['job']);
-    await stack.fakeDash.waitForMessage(
+    const completed = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === job,
       {
         fromIndex: inboxIndex,
         timeoutMs: 30_000,
         description: `[COMPLETE ${job}] for the idle handoff`,
       },
     );
+    await waitForLiveResponseAfter(stack, completed, 'task_result');
   });
 });

@@ -43,7 +43,9 @@ export class AppshotReadinessMonitor {
       const native = this.native();
       if (kind === 'accessibility') native.requestAccessibility();
       else native.requestScreenRecording();
-    } catch {}
+    } catch {
+      // Readiness below reports the current permission state if prompting fails.
+    }
     this.refresh();
   }
 

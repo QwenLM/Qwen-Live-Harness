@@ -168,9 +168,20 @@ async function createRig(initialMode: 'ask' | 'allow-all' = 'ask') {
     },
   });
   let sequence = 0;
-  const callTool = async (name: string, args: Record<string, unknown>) => {
+  const callTool = async (
+    name: string,
+    args: Record<string, unknown>,
+    request?: string,
+  ) => {
     const count = realtime.submitFunctionOutput.mock.calls.length;
     const id = `tool-${++sequence}`;
+    if (request)
+      callbacks.onResponseCreated?.({
+        callEpoch: 1,
+        responseId: `response-${sequence}`,
+        inputItemId: `input-${sequence}`,
+        authority: 'direct',
+      });
     callbacks.onFunctionCall?.({
       callEpoch: 1,
       responseId: `response-${sequence}`,
@@ -178,7 +189,17 @@ async function createRig(initialMode: 'ask' | 'allow-all' = 'ask') {
       name,
       arguments: JSON.stringify(args),
       activeTranscript: [],
+      ...(request
+        ? { inputItemId: `input-${sequence}`, inputTranscript: request }
+        : {}),
     });
+    if (request)
+      callbacks.onResponseDone?.({
+        callEpoch: 1,
+        responseId: `response-${sequence}`,
+        authority: 'direct',
+        status: 'completed',
+      });
     await vi.waitFor(() =>
       expect(realtime.submitFunctionOutput).toHaveBeenCalledTimes(count + 1),
     );
@@ -186,10 +207,14 @@ async function createRig(initialMode: 'ask' | 'allow-all' = 'ask') {
       realtime.submitFunctionOutput.mock.calls.at(-1)![1],
     ) as Record<string, unknown>;
   };
-  await callTool('handoff', {
-    task: 'Prepare the requested report',
-    cwd: directory,
-  });
+  await callTool(
+    'handoff',
+    {
+      task: 'Prepare the requested report',
+      cwd: directory,
+    },
+    'Create a report in the project.',
+  );
   const details = (
     toolCallId: string,
     command = 'printf "%s" "a  b"',
@@ -590,14 +615,22 @@ describe('permission delivery across LiveSession, Subagents and global permissio
 
   it('does not retract another session permission when one adaptor reuses a request id', async () => {
     const rig = await createRig();
-    const created = await rig.callTool('session_create', {
-      cwd: rig.directory,
-      label: 'Second task session',
-    });
-    await rig.callTool('handoff', {
-      session: created['handle'],
-      task: 'Prepare another report',
-    });
+    const created = await rig.callTool(
+      'session_create',
+      {
+        cwd: rig.directory,
+        label: 'Second task session',
+      },
+      'Create a new background task.',
+    );
+    await rig.callTool(
+      'handoff',
+      {
+        session: created['handle'],
+        task: 'Prepare another report',
+      },
+      'Create a second report.',
+    );
     const second: BackendHandle = { ...BACKEND, id: 'backend-session-2' };
     rig.callbacks.onResponseCreated?.({
       callEpoch: 1,

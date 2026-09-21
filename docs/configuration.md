@@ -115,11 +115,9 @@ Choose **what to see**, then **when to see it**:
 - **Capture Mode → On Demand**: capture a snapshot when needed; this is the default.
 - **Capture Mode → Live Feed**: continuously send recent frames during a call, so you can ask about what is visible now.
 
-**On Demand does not require a coding agent.** When you ask a visual question, a read-only Visual Analysis subagent analyzes one snapshot. A separate speech-only helper reads the result using the same model and voice, while the main conversation retains the text for follow-up questions. You can view its status and result or stop it in Subagents. Ending the call cancels unfinished analyses. It uses the same API key and region as the main conversation; no extra model configuration is needed.
+**On Demand does not require a coding agent.** A Visual Analysis subagent analyzes a snapshot and announces the answer; you can continue asking about its text result. It reuses your main model, key, and region. View or stop it in **Subagents**; ending the call cancels unfinished analyses. Selected temporary failures are retried once using the same image, without taking another screenshot.
 
-If visual analysis fails with the service's repeat-output error, a temporary network failure, or a timeout, it retries **once** using the same captured image and question with a shorter answer format. It does not capture another image or execute a background task. Cancellation, authentication/configuration errors, invalid input, and unsafe output are not retried. Each attempt is limited to 25 seconds, for a maximum of 50 seconds; if the retry also fails, the failure is reported normally.
-
-Screen Live Feed, On Demand, and visual monitors capture the full selected display, not just the foreground window. With multiple displays, choose one under **Display**; the default is the primary display. On Demand does not send the image directly to the main conversation. A failed analysis or missing metadata does not mean the desktop is blank. File and app operations still require a coding agent.
+Screen Live Feed, On Demand, and visual monitors capture the **full selected display**, not just the foreground window. Choose a display under **Display**; the default is the primary display. File and app operations still require a coding agent. For model routing and retry details, see [Audio and visual input](../packages/qwen-live-harness/README.md#audio-and-visual-input).
 
 ### Frame rate and resolution
 
@@ -249,11 +247,7 @@ If the model is speaking, proactive notifications wait and play in order after i
 
 ### When an announcement is not heard
 
-If a Proactive response finishes normally without generating speech, Live can try one independent announcement using the same model and voice. It reads the Monitor's observation summary, not the raw media again; no extra model setting is needed. This adds one model call, not another monitoring trigger.
-
-In Subagents, **Preparing announcement** means a response is still being prepared; **Announcing** starts only after the device confirms playback start. The fallback shows **Announced** only after playback completes, or **Not announced** if it was not played in full. A one-shot task can therefore be completed while its announcement remains unheard; a repeating monitor continues after this fallback fails.
-
-The helper has a 20-second generation timeout and follows the announcement deadline. A queued fallback waits for earlier replies or receipt processing; user speech, output mute, cancellation, or End call discards it. Interrupted fallback generation/playback is not replayed. Muting the primary path consumes the notification without replaying it on unmute: a completed event while muted does not mean you heard it.
+Check the announcement status in **Subagents**, not just whether the task is completed. A response with no audio may get one extra speech attempt using the same model and voice. Speaking, muting output, cancelling the task, or ending the call can interrupt it; interrupted or muted announcements are not replayed automatically. A completed task does not necessarily mean its notification was heard. See [announcement behavior](../packages/qwen-live-harness/README.md#proactive-announcement-fallback) for developer details.
 
 ### Common Proactive settings
 
@@ -261,10 +255,7 @@ The helper has a 20-second generation timeout and follows the announcement deadl
 {
   "proactive": {
     "enabled": true,
-    "monitor": { "representationCompact": "normal" },
-    "scheduler": { "evalIntervalSec": 1 },
-    "vision": { "windowSizeSec": 10 },
-    "audio": { "windowSizeSec": 60 }
+    "monitor": { "representationCompact": "normal" }
   }
 }
 ```
@@ -277,13 +268,9 @@ The helper has a 20-second generation timeout and follows the announcement deadl
 | `proactive.vision.windowSizeSec`          | `10`       | Maximum seconds of recent frames buffered locally                                                          |
 | `proactive.audio.windowSizeSec`           | `60`       | Maximum seconds of recent audio buffered locally                                                           |
 
-Monitor media cadence is **fixed at 1 FPS and two-second chunks**, independently of the configurable foreground Live Feed frame rate. Sampling, network, inference, and playback introduce delay; not every frame immediately produces a notification.
+Monitor input is **fixed at 1 FPS and two-second chunks**, independently of foreground Live Feed. Do not add Monitor FPS or chunk-duration fields to the file. Buffer windows must be at least two seconds; they limit locally waiting media, not model conversation history. Sampling, network, and inference cause delay, and incomplete chunks may be skipped.
 
-Each Monitor round covers **two seconds**. Audio-only monitoring sends two seconds of new microphone audio. Visual monitoring samples **one new frame per second**, giving two frames per round; combined monitoring pairs them with the same two seconds of microphone audio. Video-only monitoring uses a silent audio track for the API protocol, not microphone sound. The next chunk is sent after the Monitor answers. Earlier answers remain in the same model session; they are not repeatedly resent. `windowSizeSec` is a local buffer limit, not the amount resent each round or a limit on the server's conversation history.
-
-The Monitor frame rate and chunk duration are not configuration options. You can adjust buffering, scheduling, cooldown, and visual compression. Both `windowSizeSec` values must be at least two seconds. A visual or combined chunk needs two new frames from the same time span; slow capture can cause incomplete chunks to be skipped. Debug logs record why, and previously captured frames are not duplicated to fill gaps.
-
-This compression setting applies only to Proactive visual monitors, not foreground Live Feed or snapshot resolution. `normal` suits overall visual changes; try `none` for fine text or small details. On Demand Visual Analysis uses its own fixed `normal` setting. Restart Qwen Live Harness after editing it. Initialization does not ask about this option.
+`normal` compression suits overall visual changes; try `none` for small text or detail. It affects only Proactive visual monitors, not Live Feed or snapshots. Restart after editing. For cooldown and other advanced settings, see [Proactive tuning](../packages/qwen-live-harness/README.md#proactive-tuning).
 
 ## Do you need a background Harness?
 
@@ -305,7 +292,7 @@ Keep the empty array. Omitting `backends` selects the default local Qwen Serve c
 
 With or without a coding agent, a search subagent can look up public information. It uses the main conversation's complete model ID, including any invitation-only alias, endpoint, and API key; no separate search model is needed. The app does not restrict search by model name. Native search availability depends on the service.
 
-Qwen Omni briefly acknowledges a lookup, then searches in the background. You can continue talking or request other independent searches. Searches run concurrently; ready results wait for the current speech and playback to finish, then are answered in order by a separate speech-only helper using the same model and voice. Visual, search, and background task results use this helper without tools or further searching; their text remains available in the main conversation and Subagents. Interrupted announcements are not automatically replayed. Conversation that does not need current information is answered directly.
+Qwen Omni acknowledges a lookup, then searches in the background while you continue talking. Independent searches can run concurrently, and their answers wait until current speech finishes. Text results remain available for follow-up questions and in **Subagents**; interrupted announcements are not replayed automatically. Ordinary conversation does not need a search.
 
 If search fails, including when the service does not support native search, a configured coding agent takes over the same read-only query. Without one, the app reports the failure. The handoff uses a separate task without interrupting other work; its permission requests follow your selected global permission mode.
 
@@ -322,12 +309,12 @@ After configuring a background Harness, `init` asks how to handle its permission
 
 Every approval uses a one-time backend option, not a persistent backend grant. If no such option is available, Live cancels and explains why. An automatic-approval announcement confirms approval, not that the command has started or finished. Switching back to **Ask every time** stops future automatic approvals, but does not undo approvals already issued. Backend restrictions still apply, and Live only handles requests the backend actually sends.
 
-Older development versions may have created `permission-policies.json`. It is now ignored and left untouched; you do not need to delete it when changing mode. If a coding agent already has its own persistent permissions, revoke those separately in that agent's settings. See [Spoken permissions and persistent approval](../packages/qwen-live-harness/README.md#spoken-permissions-and-persistent-approval) for developer details.
+Permissions already granted in a coding agent's own settings must be revoked there. See [Spoken permissions and global approval mode](../packages/qwen-live-harness/README.md#spoken-permissions-and-global-approval-mode) for developer details and legacy configuration behavior.
 
 ## Which UI choices are saved?
 
 - **Video Source / Capture Mode** take effect immediately but are not written to the configuration. Edit `visualInput.source` / `mode` to change the next startup's defaults.
-- Confirmed **Display, Language, Memory, and background Harness permission** settings are saved.
+- Confirmed **Display, Language, and Memory** settings are saved.
 - **Background Harness permissions** are saved to `config.json` and apply immediately after Settings confirms success, including requests already waiting.
 - The desktop app saves microphone selection, appearance, and window positions locally. The color palette is saved in `config.json`.
 - Manual configuration-file edits require a full quit and restart.
@@ -342,7 +329,7 @@ Older development versions may have created `permission-policies.json`. It is no
 
 **There is no sound, or startup is stuck.** Check microphone permission, select an available device under **Settings → Sound → Microphone**, then click **Start call**. Wait for the current attempt to finish or show an error before retrying.
 
-**Music sounds worse after enabling a Bluetooth headset microphone.** Choose the built-in or a separate microphone under **Sound → Microphone** while keeping the headset for playback. Model output uses 24 kHz PCM; microphone audio is sent to the model at 16 kHz. Playback is resampled to the output device's actual rate. Changing the software sample rate cannot prevent the headset from switching to its lower-quality call profile.
+**Music sounds worse after enabling a Bluetooth headset microphone.** Choose the built-in or a separate microphone under **Sound → Microphone** while keeping the headset for playback. Changing the software sample rate cannot prevent the headset from switching to its lower-quality call profile.
 
 **I only want to end the call.** Use **End call** or `Command+E`. This also cancels the call's visual analyses, Proactive monitors, searches, and their fallback tasks. Use **Quit Qwen Live Harness** to exit the entire application, or `Ctrl+C` when launched from a terminal.
 
@@ -358,14 +345,10 @@ From source, run in the repository root:
 npm start -- --debug
 ```
 
-Debug mode prints more runtime information and creates a run archive under `<dataDir>/debug/run-*` (by default `~/.qwen-live-harness/debug/run-*`). Its log entry shows the exact directory. The archive connects model requests/responses, tool and runtime events, and the audio/images actually handled by the recorded paths. It is not a continuous device recording, and media from runs without debug cannot be recovered afterward.
+Debug mode prints more information and saves requests, responses, and recorded media under `~/.qwen-live-harness/debug/run-*` by default. Logs show the actual directory. It retains the **10 most recent finished runs**, with a **512 MiB budget per run**; active runs are protected. Monitor media also has a separate temporary archive retaining the **10 newest monitors**, not just ten requests.
 
-The **10 most recent finished runs** are retained, with a **512 MiB budget per run**. Active runs are protected, so more than ten directories can temporarily exist. Storage limits, dropped records, missing files, or write failures can make a capture incomplete; check `manifest.json` and the warning logs before treating it as a complete record. These diagnostic failures must not stop the interaction.
-
-Per-Monitor archives are stored separately in `qwen-live-harness-monitor-debug/` under the system temporary directory; logs show the exact location. The **10 most recently created monitors** are retained across all modalities. This does not mean only 10 requests or a fixed disk-space limit. For per-round analysis, see [Monitor diagnostic archives](../packages/qwen-live-harness/README.md#monitor-diagnostic-archives).
+These are diagnostic records, not continuous recordings. Storage limits or write errors can leave them incomplete, and media from non-debug runs cannot be recovered afterward. See [Run archives and offline inspection](../packages/qwen-live-harness/README.md#run-archives-and-offline-inspection) and [Monitor diagnostic archives](../packages/qwen-live-harness/README.md#monitor-diagnostic-archives) to inspect or export selected evidence without calling an API or executing recorded tasks.
 
 Debug archives can contain private voices, screen/camera images, prompts, Memory context, tool arguments/results, and conversation text. Known credentials are redacted, but that does not anonymize personal content or secrets inside media. Inspect files before sharing; do not upload your entire data directory. Disable debug when you finish troubleshooting.
-
-For offline verification and exporting a selected model connection, see [Run archives and offline inspection](../packages/qwen-live-harness/README.md#run-archives-and-offline-inspection). The helper does not call an API or execute recorded tasks; it cannot guarantee an identical future model response.
 
 For source development, see the [Daemon development guide](../packages/qwen-live-harness/README.md). For custom backends, environment variables, Memory retrieval parameters, and other advanced settings, see [Advanced configuration](../packages/qwen-live-harness/README.md#advanced-configuration).

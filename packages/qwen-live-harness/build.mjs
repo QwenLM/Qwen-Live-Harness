@@ -34,10 +34,13 @@ import {
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 await verifyPeerSources();
-cpSync(path.join(here, '../../LICENSE'), path.join(here, 'LICENSE'));
 
 rmSync(path.join(here, 'dist'), { recursive: true, force: true });
 rmSync(path.join(here, 'tsconfig.build.tsbuildinfo'), { force: true });
+mkdirSync(path.join(here, 'dist'), { recursive: true });
+// The repository root is the only source copy. The distributable still carries
+// the full license, alongside its compiled runtime and third-party notices.
+cpSync(path.join(here, '../../LICENSE'), path.join(here, 'dist', 'LICENSE'));
 
 // Resolve tsc through node rather than `npx` so this also works on Windows,
 // where execFileSync cannot resolve `npx.cmd` without a shell.

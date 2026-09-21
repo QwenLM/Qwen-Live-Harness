@@ -217,26 +217,12 @@ describe('Host visual readiness review regressions', () => {
     });
   }
 
-  it('surfaces a failed visual-mode send to the IPC caller', async () => {
+  it('rejects a failed visual-mode send, records its diagnostic and preserves the acknowledged mode', async () => {
     const value = fixture();
     value.flags.sent = false;
     await assert.rejects(async () =>
       value.invoke('live:set-visual-mode', 'on-demand'),
     );
-    assert.deepEqual(value.calls, [
-      { update: { mode: 'on-demand' }, epoch: 7 },
-    ]);
-    assert.equal(value.controls.mode(), 'live-feed');
-  });
-
-  it('records a diagnostic for failed visual-mode transport', async () => {
-    const value = fixture();
-    value.flags.sent = false;
-    try {
-      await value.invoke('live:set-visual-mode', 'on-demand');
-    } catch {
-      // The failure is allowed to reject; this case independently checks diagnostics.
-    }
     assert.deepEqual(value.calls, [
       { update: { mode: 'on-demand' }, epoch: 7 },
     ]);

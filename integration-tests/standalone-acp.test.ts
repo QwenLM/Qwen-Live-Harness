@@ -70,6 +70,7 @@ describe('standalone daemon with an external ACP process', () => {
   });
 
   async function tool(
+    request: string,
     name: string,
     args: Record<string, unknown>,
     callId: string,
@@ -80,7 +81,7 @@ describe('standalone daemon with an external ACP process', () => {
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please run ${name}.`);
+    conn.speakTranscript(request);
     const message = await fakeDash.waitForMessage(
       (m) => functionCallOutputOf(m)?.callId === callId,
       { fromIndex },
@@ -97,6 +98,7 @@ describe('standalone daemon with an external ACP process', () => {
 
   it('delegates and proactively delivers completion without a Qwen installation or serve process', async () => {
     const { receipt, fromIndex } = await tool(
+      'Please check whether this project runs without a Qwen installation.',
       'handoff',
       { task: 'standalone portability check' },
       'portable-handoff',
@@ -122,6 +124,7 @@ describe('standalone daemon with an external ACP process', () => {
 
   it('lists the independent backend and continues after the tool receipt', async () => {
     const { receipt, message } = await tool(
+      'List the available background sessions.',
       'session_list',
       {},
       'portable-list',
@@ -141,6 +144,7 @@ describe('standalone daemon with an external ACP process', () => {
 
   it('announces a blocked permission and resumes only after an explicit vote', async () => {
     const { receipt, fromIndex } = await tool(
+      'Please create a test file in the workspace.',
       'handoff',
       { task: 'permission: standalone write check' },
       'portable-permission',
@@ -190,6 +194,7 @@ describe('standalone daemon with an external ACP process', () => {
         ),
     ).toBe(false);
     const voted = await tool(
+      'Allow this operation once.',
       'respond_permission',
       { request_id: 'req_1', decision: 'allow' },
       'portable-vote',
@@ -211,6 +216,7 @@ describe('standalone daemon with an external ACP process', () => {
 
   it('keeps a UI permission waiting after an unavailable persistent scope and confirms an explicit once-only vote', async () => {
     const accepted = await tool(
+      'Please edit the project file.',
       'handoff',
       { task: 'permission: approve one synthetic edit from the task page' },
       'scoped-ui-permission',

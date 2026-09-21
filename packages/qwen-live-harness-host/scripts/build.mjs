@@ -119,6 +119,10 @@ await viteBuild({
   configFile: join(appDir, 'vite.config.ts'),
   plugins: [rendererProcessBoundary()],
 });
+cpSync(
+  join(appDir, 'resources', 'audio-input-worklet.js'),
+  join(distDir, 'renderer', 'audio-input-worklet.js'),
+);
 await esbuild({
   entryPoints: [join(appDir, 'src', 'preload', 'subagents.ts')],
   plugins: [hostProcessBoundary()],

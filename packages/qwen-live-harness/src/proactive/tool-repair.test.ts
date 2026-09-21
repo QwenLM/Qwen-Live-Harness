@@ -35,6 +35,9 @@ describe('Proactive missing-tool repair detection', () => {
     '奴才不会在后台监听或提醒您。',
     '我会尝试，但无法在回复结束后继续提醒。',
     '抱歉，这次没能停止画面解说。',
+    '我帮你纠正。',
+    '如果记错了，你可以告诉我具体吃了什么，我帮你纠正。',
+    '我帮你纠正这句错字。',
   ])(
     'does not infer a repair from requests or negative replies: %s',
     (text) => {

@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Stable Qwen Live Harness Host version to mirror, for example 0.3.0 or v0.3.0.'
+        description: 'Stable Qwen Live Harness Host version to mirror, for example 1.0.0 or v1.0.0.'
         required: true
         type: 'string'
       source:

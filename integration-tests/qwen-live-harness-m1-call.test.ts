@@ -20,8 +20,8 @@
  *      bare PCM frames;
  *   e. handoff path: a handoff function call lands on the real serve daemon
  *      as a prompt; the receipt (function_call_output), the [COMPLETE]
- *      structured outcome, and its task_result response.create speech
- *      request all arrive on the provider socket in order;
+ *      structured outcome, and its independent task-result speaker arrive
+ *      in order, with playback confirmed separately from task completion;
  *   f. SIGTERM removes the discovery file.
  */
 
@@ -31,6 +31,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
+  speechSummaryOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -65,6 +67,7 @@ const EXPECTED_TOOL_NAMES = [
   'session_list',
   'session_monitor',
   'session_stop',
+  'web_search',
 ];
 
 describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
@@ -141,14 +144,21 @@ describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
     );
     expect(typeof session['instructions']).toBe('string');
     expect(String(session['instructions']).length).toBeGreaterThan(0);
-    for (const section of [
-      'user_profile',
-      'recent',
-      'retrieved',
-      'personalized_user_memories',
-    ]) {
-      expect(String(session['instructions'])).not.toContain(`<${section}>`);
-    }
+    // Fixed instructions may explain Memory section names even when Memory is
+    // disabled. Its separate snapshot, not those words, is the data boundary.
+    const memoryMessage = await stack.fakeDash.waitForMessage(
+      (message) =>
+        contextTextOf(message)?.startsWith('[BACKEND] [MEMORY_CONTEXT] ') ===
+        true,
+    );
+    const memorySnapshot = JSON.parse(
+      contextTextOf(memoryMessage)!.slice('[BACKEND] [MEMORY_CONTEXT] '.length),
+    ) as Record<string, unknown>;
+    expect(memorySnapshot['enabled']).toBe(false);
+    expect(memorySnapshot).not.toHaveProperty('sections');
+    expect(String(session['instructions'])).not.toContain(
+      QWEN_LIVE_HARNESS_API_KEY,
+    );
 
     const listening = await stack.host.waitForState(
       (entry) => entry.status['state'] === 'listening',
@@ -200,26 +210,15 @@ describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
       (message) => message['type'] === 'response.create',
       { fromIndex: inboxIndex, description: 'direct response request' },
     );
-    const responseId = conn.beginResponse();
-    conn.send({
-      type: 'response.audio.delta',
-      response_id: responseId,
-      item_id: 'handoff-audio',
-      delta: Buffer.alloc(4_800).toString('base64'),
-    });
-    conn.send({ type: 'response.audio.done', response_id: responseId });
-    conn.send({
-      type: 'response.output_item.done',
-      response_id: responseId,
-      item: {
-        id: 'handoff-call',
-        type: 'function_call',
-        name: 'handoff',
-        arguments: '{"task":"fix the failing test"}',
-        call_id: 'call-1',
+    conn.functionCall({
+      name: 'handoff',
+      argumentsJson: '{"task":"fix the failing test"}',
+      callId: 'call-1',
+      preamble: {
+        audio: Buffer.alloc(4_800),
+        transcript: 'I will check the failing test.',
       },
     });
-    conn.finishResponse(responseId);
     stack.fakeDash.autoAckResponses = true;
 
     // Receipt: the handoff was admitted by qwen serve.
@@ -275,18 +274,18 @@ describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
 
     // No new user speech: the playback receipt must reopen result injection.
     const completeMessage = await stack.fakeDash.waitForMessage(
-      (message) => {
-        const text = contextTextOf(message);
-        return text !== undefined && text.includes('[COMPLETE job_1]');
-      },
+      (message) =>
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === 'job_1',
       {
         timeoutMs: 30_000,
         fromIndex: inboxIndex,
         description: 'the [COMPLETE job_1] context injection',
       },
     );
-    const completeText = contextTextOf(completeMessage)!;
-    expect(completeText).toMatch(/^\[BACKEND\] /);
+    const completeText = speechSummaryOf(completeMessage)!;
+    expect(conn.inbox).not.toContain(completeMessage);
+    expect(completeText).toMatch(/^\[COMPLETE job_1\] /);
     expect(completeText).toContain('m1 backend turn complete');
     expect(stack.fakeDash.inbox.indexOf(receiptMessage)).toBeLessThan(
       stack.fakeDash.inbox.indexOf(completeMessage),
@@ -294,7 +293,10 @@ describeE2E('qwen-live-harness M1 — end-to-end voice call', () => {
 
     // The model summarizes the outcome; no fixed English text is read aloud.
     expect(completeText).not.toContain('[SPEAK_TO_USER]');
-    expect(completeText).toContain('"status":"completed"');
+    expect(taskResultPayloadOf(completeMessage)).toMatchObject({
+      status: 'completed',
+      job: 'job_1',
+    });
     await waitForLiveResponseAfter(stack, completeMessage, 'task_result');
   });
 

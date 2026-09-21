@@ -51,6 +51,10 @@ import {
 } from './qwen-backend-harness.js';
 import {
   startFakeDashScopeServer,
+  contextTextOf,
+  notificationOf,
+  speechSummaryOf,
+  type FakeDashScopeConnection,
   type FakeDashScopeServer,
 } from './fake-dashscope-server.js';
 import {
@@ -506,6 +510,11 @@ export class FakeHost {
     this.send({ type: 'host.playback_completed', epoch, outputId });
   }
 
+  /** Deliberately bypass local bookkeeping to test the daemon's identity gate. */
+  sendUnverifiedPlaybackCompletion(epoch: number, outputId: number): void {
+    this.send({ type: 'host.playback_completed', epoch, outputId });
+  }
+
   /** Input audio frame: 8-byte BigUInt64BE epoch prefix + PCM16 payload. */
   sendAudio(epoch: number, pcm16: Buffer): void {
     const frame = Buffer.alloc(LIVE_INPUT_AUDIO_EPOCH_BYTES + pcm16.byteLength);
@@ -705,13 +714,103 @@ export async function waitForLiveLogEvents(
   }
 }
 
-/**
- * For a tool continuation, SPEAK_TO_USER item or permission context, wait for its next
- * response request to complete in Live, not just be sent by the fake provider.
- * The anchor must be from the current connection's inbox with no intervening
- * user turn. Handoff receipts consume a separate tool continuation before a
- * later task-result response, even when duplicate confirmation audio is muted.
- */
+type IsolatedSpeechPurpose =
+  'task_result' | 'peer_report' | 'search_result' | 'visual_result';
+
+/** A result must be quoted data on its own speech-only connection, not main history. */
+export function isolatedSpeechConnectionFor(
+  server: FakeDashScopeServer,
+  input: JsonObject,
+  purpose: IsolatedSpeechPurpose,
+): FakeDashScopeConnection {
+  const item = input['item'] as JsonObject | undefined;
+  if (
+    item?.['role'] !== 'user' ||
+    speechSummaryOf(input) === undefined ||
+    notificationOf(input)?.kind !== purpose
+  )
+    throw new Error(
+      `Expected a quoted ${purpose} speech input, not a foreground result cache`,
+    );
+  const connection = server.connections.find((candidate) =>
+    candidate.inbox.includes(input),
+  );
+  const update = connection?.inbox.find(
+    (message) => message['type'] === 'session.update',
+  );
+  const session = update?.['session'] as JsonObject | undefined;
+  if (
+    !connection ||
+    !session ||
+    !Array.isArray(session['tools']) ||
+    session['tools'].length !== 0 ||
+    session['tool_choice'] !== 'none' ||
+    session['enable_search'] !== false ||
+    session['turn_detection'] !== null ||
+    !Array.isArray(session['modalities']) ||
+    !session['modalities'].includes('audio')
+  )
+    throw new Error(
+      'The result input does not belong to an isolated no-tools speech connection',
+    );
+  return connection;
+}
+
+export async function waitForIsolatedSpeechRequest(
+  server: FakeDashScopeServer,
+  input: JsonObject,
+  purpose: IsolatedSpeechPurpose,
+  timeoutMs = 15_000,
+): Promise<{ connection: FakeDashScopeConnection; request: JsonObject }> {
+  const connection = isolatedSpeechConnectionFor(server, input, purpose);
+  const request = await server.waitForMessage(
+    (message) =>
+      connection.inbox.includes(message) &&
+      message['type'] === 'response.create',
+    {
+      fromIndex: server.inbox.indexOf(input) + 1,
+      timeoutMs,
+      description: `${purpose} response on its own connection`,
+    },
+  );
+  const inputIndex = connection.trace.findIndex(
+    (entry) => entry.direction === 'in' && entry.message === input,
+  );
+  const requestIndex = connection.trace.findIndex(
+    (entry) => entry.direction === 'in' && entry.message === request,
+  );
+  const acknowledged = connection.trace
+    .slice(inputIndex + 1, requestIndex)
+    .some((entry) => {
+      if (
+        entry.direction !== 'out' ||
+        entry.message['type'] !== 'conversation.item.created'
+      )
+        return false;
+      const item = entry.message['item'] as JsonObject | undefined;
+      const content = item?.['content'] as JsonObject[] | undefined;
+      return (
+        item?.['type'] === 'message' &&
+        item['role'] === 'user' &&
+        (item['status'] === undefined || item['status'] === 'completed') &&
+        Array.isArray(content) &&
+        content.length === 1 &&
+        content[0]?.['type'] === 'input_text' &&
+        content[0]?.['text'] === contextTextOf(input)
+      );
+    });
+  if (!acknowledged)
+    throw new Error(
+      'Speech response was requested before its exact quoted input was acknowledged',
+    );
+  if ('instructions' in ((request['response'] ?? {}) as JsonObject))
+    throw new Error(
+      'Speech response must not replace the fixed speech-only instructions',
+    );
+  return { connection, request };
+}
+
+/** Wait for the owning connection, never whichever connection responds next globally. */
 export async function waitForLiveResponseAfter(
   stack: Pick<LiveStack, 'fakeDash' | 'dataDir'>,
   anchor: JsonObject,
@@ -720,16 +819,31 @@ export async function waitForLiveResponseAfter(
 ): Promise<void> {
   const anchorIndex = stack.fakeDash.inbox.indexOf(anchor);
   if (anchorIndex < 0) throw new Error('Response anchor is not in the inbox');
-  const request = await stack.fakeDash.waitForMessage(
-    (message) => message['type'] === 'response.create',
-    {
-      fromIndex: anchorIndex + 1,
-      description: `${authority} response request`,
-    },
+  const owner = stack.fakeDash.connections.find((candidate) =>
+    candidate.inbox.includes(anchor),
   );
+  if (!owner) throw new Error('Response anchor has no owning connection');
+  const request =
+    authority === 'task_result'
+      ? (
+          await waitForIsolatedSpeechRequest(
+            stack.fakeDash,
+            anchor,
+            'task_result',
+          )
+        ).request
+      : await stack.fakeDash.waitForMessage(
+          (message) =>
+            owner.inbox.includes(message) &&
+            message['type'] === 'response.create',
+          {
+            fromIndex: anchorIndex + 1,
+            description: `${authority} response request`,
+          },
+        );
   const responseId = stack.fakeDash.autoResponseIdFor(request);
   if (!responseId) throw new Error('Expected an auto-acknowledged response');
-  await waitForLiveLogEvents(
+  const completion = await waitForLiveLogEvents(
     stack.dataDir,
     (event) =>
       authority === 'task_result'
@@ -743,6 +857,58 @@ export async function waitForLiveResponseAfter(
           event.payload['status'] === 'completed',
     { description: `${authority} ${responseId} completion` },
   );
+  if (authority === 'task_result') {
+    // A generated transcript is not proof of audible delivery. The runtime
+    // writes this silent history only after the matching Host playback receipt.
+    const summary = speechSummaryOf(anchor);
+    const available = stack.fakeDash.inbox
+      .slice(0, anchorIndex)
+      .findLast((message) => {
+        const body = contextTextOf(message)?.match(
+          /^\[BACKEND\] \[RESULT_AVAILABLE\] ([\s\S]+)$/u,
+        )?.[1];
+        if (!body) return false;
+        const value = JSON.parse(body) as JsonObject;
+        return value['kind'] === 'task_result' && value['payload'] === summary;
+      });
+    const main = stack.fakeDash.connections.find(
+      (candidate) => available && candidate.inbox.includes(available),
+    );
+    if (!available || !main || main === owner)
+      throw new Error(
+        'Missing separately attributed foreground result history',
+      );
+    const availableIndex = stack.fakeDash.inbox.indexOf(available);
+    const transcript = completion.at(-1)?.payload['text'];
+    await stack.fakeDash.waitForMessage(
+      (message) => {
+        if (!main.inbox.includes(message)) return false;
+        const body = contextTextOf(message)?.match(
+          /^\[BACKEND\] \[RESULT_DELIVERY\] ([\s\S]+)$/u,
+        )?.[1];
+        if (!body) return false;
+        const value = JSON.parse(body) as JsonObject;
+        return (
+          value['kind'] === 'task_result' &&
+          value['status'] === 'played' &&
+          value['spoken_text'] === transcript &&
+          !stack.fakeDash.inbox
+            .slice(availableIndex + 1, stack.fakeDash.inbox.indexOf(message))
+            .some(
+              (entry) =>
+                main.inbox.includes(entry) &&
+                contextTextOf(entry)?.startsWith(
+                  '[BACKEND] [RESULT_AVAILABLE]',
+                ),
+            )
+        );
+      },
+      {
+        fromIndex: stack.fakeDash.inbox.indexOf(request) + 1,
+        description: 'task result confirmed played by Host',
+      },
+    );
+  }
 }
 
 // -- full fixture ---------------------------------------------------------------
@@ -803,7 +969,12 @@ export async function bootLiveStack(
   // Keep the model round-trips predictable: no follow-up suggestion turns.
   writeFileSync(
     path.join(qwenHome, 'settings.json'),
-    JSON.stringify({ ui: { enableFollowupSuggestions: false } }),
+    JSON.stringify({
+      general: { enableAutoUpdate: false },
+      security: { auth: { selectedType: 'openai' } },
+      telemetry: { enabled: false },
+      ui: { enableFollowupSuggestions: false },
+    }),
   );
 
   const disposers: Array<() => Promise<void> | void> = [];
@@ -842,6 +1013,7 @@ export async function bootLiveStack(
       env: {
         HOME: homeDir,
         QWEN_HOME: qwenHome,
+        QWEN_NO_UPDATE_NOTIFIER: '1',
         QWEN_ACP_LOCAL_READ_ROOTS: '',
         OPENAI_API_KEY: 'fake-key',
         OPENAI_BASE_URL: fakeOpenAI.baseUrl,
@@ -1008,7 +1180,12 @@ export async function bootAcpLiveStack(
   mkdirSync(qwenHome, { recursive: true });
   writeFileSync(
     path.join(qwenHome, 'settings.json'),
-    JSON.stringify({ ui: { enableFollowupSuggestions: false } }),
+    JSON.stringify({
+      general: { enableAutoUpdate: false },
+      security: { auth: { selectedType: 'openai' } },
+      telemetry: { enabled: false },
+      ui: { enableFollowupSuggestions: false },
+    }),
   );
 
   const disposers: Array<() => Promise<void> | void> = [];
@@ -1046,6 +1223,7 @@ export async function bootAcpLiveStack(
         env: {
           HOME: homeDir,
           QWEN_HOME: qwenHome,
+          QWEN_NO_UPDATE_NOTIFIER: '1',
           QWEN_ACP_LOCAL_READ_ROOTS: '',
           OPENAI_API_KEY: 'fake-key',
           OPENAI_BASE_URL: fakeOpenAI.baseUrl,
@@ -1080,6 +1258,7 @@ export async function bootAcpLiveStack(
       env: {
         HOME: homeDir,
         QWEN_HOME: qwenHome,
+        QWEN_NO_UPDATE_NOTIFIER: '1',
         OPENAI_API_KEY: 'fake-key',
         OPENAI_BASE_URL: fakeOpenAI.baseUrl,
         OPENAI_MODEL: 'fake-model',

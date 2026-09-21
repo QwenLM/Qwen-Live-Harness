@@ -27,6 +27,7 @@ import {
   contextTextOf,
   permissionPayloadOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -96,7 +97,7 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
       argumentsJson: JSON.stringify({ task: 'perm-warmup' }),
       callId: 'call-w',
     });
-    conn.speakTranscript('Run perm-warmup.');
+    conn.speakTranscript('Please inspect the project workspace.');
     const warmupReceiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === 'call-w',
       {
@@ -112,7 +113,8 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
     const warmupJob = String(warmupReceipt['job']);
     const warmupComplete = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${warmupJob}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === warmupJob,
       {
         fromIndex: warmupIndex,
         timeoutMs: 30_000,
@@ -142,7 +144,7 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
       argumentsJson: JSON.stringify({ task: 'perm-write-task' }),
       callId: 'call-p',
     });
-    conn.speakTranscript('Run perm-write-task.');
+    conn.speakTranscript('Please create a report file in the project.');
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === 'call-p',
       {
@@ -203,7 +205,8 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
     // Serve accepted the vote: the tool ran and the turn completed.
     const completeMessage = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === job,
       {
         timeoutMs: 60_000,
         fromIndex: inboxIndex,
@@ -214,5 +217,6 @@ describeE2E('qwen-live-harness M2 — permission relay', () => {
       'permission turn complete',
     );
     expect(readFileSync(permFilePath, 'utf8')).toBe(PERM_FILE_CONTENT);
+    await waitForLiveResponseAfter(stack, completeMessage, 'task_result');
   });
 });

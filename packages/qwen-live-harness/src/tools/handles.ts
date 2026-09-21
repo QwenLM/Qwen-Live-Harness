@@ -151,6 +151,16 @@ export class HandleRegistry {
     return this.jobs.get(handle.trim());
   }
 
+  /** Full owned active-job set, not a paginated UI projection. Aliases share
+   * one record and must not count as separate cancellation candidates. */
+  activeJobs(): readonly JobRecord[] {
+    return [...new Set(this.jobs.values())].filter(
+      (job) =>
+        (job.state === 'accepted' || job.state === 'running') &&
+        !this.closedSessions.has(job.sessionHandle),
+    );
+  }
+
   /** Bind an exact join acknowledgement while preserving any promised alias. */
   bindJoinedJob(
     handle: string,

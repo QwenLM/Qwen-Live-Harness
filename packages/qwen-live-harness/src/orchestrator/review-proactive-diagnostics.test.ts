@@ -142,6 +142,7 @@ function harness(openOverride?: typeof openQwenRealtimeSession) {
       responseId: string,
       name: string,
       args: Record<string, unknown> | string,
+      request?: string,
     ) =>
       callbacks.onFunctionCall?.({
         callEpoch: 1,
@@ -149,6 +150,12 @@ function harness(openOverride?: typeof openQwenRealtimeSession) {
         callId: `review-call-${++nextCallId}`,
         name,
         arguments: typeof args === 'string' ? args : JSON.stringify(args),
+        inputItemId: `input-${responseId}`,
+        inputTranscript:
+          request ??
+          (name === 'cancel_proactive_task'
+            ? 'Cancel the current task.'
+            : 'Change the current monitor task to repeat every time.'),
         activeTranscript: [],
       }),
   };
@@ -189,7 +196,7 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
       await observed.start();
       observed.begin('invalid');
       observed.call('invalid', toolName, args);
-      expect(observed.outputs).toHaveLength(1);
+      await vi.waitFor(() => expect(observed.outputs).toHaveLength(1));
       expect(observed.outputs[0]).toContain(hint);
       expect(observed.outputs[0]).not.toContain('提交的信息未通过校验');
       expect(observed.scheduler.listTasks()).toEqual([]);
@@ -229,17 +236,30 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
     const observed = harness();
     await observed.start();
     observed.begin('create');
-    observed.call('create', 'create_proactive_timer', {
-      title: 'Tea timer',
-      duration_sec: 300,
-      reminder_text: 'Tea is ready.',
-    });
-    expect(observed.scheduler.listTasks()).toHaveLength(1);
+    observed.call(
+      'create',
+      'create_proactive_timer',
+      {
+        title: 'Tea timer',
+        duration_sec: 300,
+        reminder_text: 'Tea is ready.',
+      },
+      'Set a five-minute tea timer.',
+    );
+    await vi.waitFor(() =>
+      expect(observed.scheduler.listTasks()).toHaveLength(1),
+    );
     observed.done('create');
     observed.begin('rename');
-    observed.call('rename', 'update_proactive_task', {
-      title: 'Kitchen timer',
-    });
+    observed.call(
+      'rename',
+      'update_proactive_task',
+      {
+        title: 'Kitchen timer',
+      },
+      'Rename the Tea timer to Kitchen timer.',
+    );
+    await vi.waitFor(() => expect(observed.outputs).toHaveLength(2));
     const failureReceipt = observed.outputs.at(-1)!;
     const failureLog = observed.log.write.mock.calls.find(
       ([, details]) =>
@@ -248,11 +268,18 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
     );
     expect(failureLog).toBeDefined();
     expect(observed.scheduler.listTasks()[0]?.title).toBe('Tea timer');
-    observed.call('rename', 'update_proactive_task', {
-      target_title: 'Tea timer',
-      title: 'Kitchen timer',
-    });
-    expect(observed.scheduler.listTasks()[0]?.title).toBe('Kitchen timer');
+    observed.call(
+      'rename',
+      'update_proactive_task',
+      {
+        target_title: 'Tea timer',
+        title: 'Kitchen timer',
+      },
+      'Rename the Tea timer to Kitchen timer.',
+    );
+    await vi.waitFor(() =>
+      expect(observed.scheduler.listTasks()[0]?.title).toBe('Kitchen timer'),
+    );
     expect(failureReceipt).toContain('repeat=true');
   });
 
@@ -260,7 +287,17 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
     const observed = harness();
     await observed.start();
     let properties = 0;
+    const requests: Record<string, string> = {
+      create_proactive_monitor: 'Watch the window and remind me if it opens.',
+      create_live_narration: 'Keep narrating the screen.',
+      create_proactive_timer: 'Set a five-minute tea timer.',
+      update_proactive_task: 'Rename the Tea timer to Kitchen timer.',
+      cancel_proactive_task: 'Cancel the Tea timer.',
+      list_proactive_tasks: 'List the current tasks.',
+    };
     for (const tool of PROACTIVE_SESSION_TOOLS) {
+      const response = `schema-${tool.function.name}`;
+      observed.begin(response);
       const schema = tool.function.parameters['properties'] as Record<
         string,
         unknown
@@ -270,13 +307,26 @@ describe('PR #11369 proactive diagnostics review reproduction', () => {
       );
       properties += Object.keys(args).length;
       observed.log.write.mockClear();
-      observed.call('schema-sweep', tool.function.name, args);
+      const before = observed.outputs.length;
+      observed.call(
+        response,
+        tool.function.name,
+        args,
+        requests[tool.function.name],
+      );
+      await vi.waitFor(() => expect(observed.outputs).toHaveLength(before + 1));
       const logs = JSON.stringify(observed.log.write.mock.calls);
       expect(logs).not.toContain('Unknown Proactive argument');
       observed.log.write.mockClear();
-      observed.call('schema-sweep', tool.function.name, {
-        extra_review_key: true,
-      });
+      observed.call(
+        response,
+        tool.function.name,
+        {
+          extra_review_key: true,
+        },
+        requests[tool.function.name],
+      );
+      await vi.waitFor(() => expect(observed.outputs).toHaveLength(before + 2));
       expect(JSON.stringify(observed.log.write.mock.calls)).toContain(
         'Unknown Proactive argument: extra_review_key.',
       );

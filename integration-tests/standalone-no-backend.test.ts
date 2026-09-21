@@ -77,14 +77,19 @@ describe('standalone Omni without any coding backend', () => {
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
-  async function tool(name: string, args: Json, callId: string) {
+  async function tool(
+    request: string,
+    name: string,
+    args: Json,
+    callId: string,
+  ) {
     const fromIndex = fakeDash.inbox.length;
     conn.queueFunctionCall({
       name,
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please run ${name}.`);
+    conn.speakTranscript(request);
     const message = await fakeDash.waitForMessage(
       (value) => functionCallOutputOf(value)?.callId === callId,
       { fromIndex },
@@ -184,20 +189,33 @@ describe('standalone Omni without any coding backend', () => {
   });
 
   it.each([
-    ['handoff', { task: 'Create a file for me.' }],
+    [
+      'handoff',
+      { task: 'Create a file for me.' },
+      'Please create a file in the workspace.',
+    ],
     [
       'session_create',
       { backend: 'codex', label: 'Do not create this session' },
+      'Create a new background agent session.',
     ],
-    ['session_list', {}],
-    ['session_monitor', { session: 'session_1' }],
-    ['session_stop', { session: 'session_1' }],
-    ['respond_permission', { request_id: 'req_1', decision: 'allow' }],
-  ] as Array<[string, Json]>)(
+    ['session_list', {}, 'List my background sessions.'],
+    [
+      'session_monitor',
+      { session: 'session_1' },
+      'What is the background task doing?',
+    ],
+    ['session_stop', { session: 'session_1' }, 'Cancel the background task.'],
+    [
+      'respond_permission',
+      { request_id: 'req_1', decision: 'allow' },
+      'Allow this operation once.',
+    ],
+  ] as Array<[string, Json, string]>)(
     'turns %s into an install/configure receipt and continues the voice response',
-    async (name, args) => {
+    async (name, args, request) => {
       const receipt = JSON.parse(
-        await tool(name, args, `no-backend-${name}`),
+        await tool(request, name, args, `no-backend-${name}`),
       ) as Json;
       expect(receipt).toMatchObject({ status: 'error', code: 'no_backend' });
       expect(String(receipt['note'])).toMatch(/install.*configur/i);
@@ -214,7 +232,7 @@ describe('standalone Omni without any coding backend', () => {
 
   it('starts independent On Demand analysis and retains screen metadata without a backend', async () => {
     const receipt = JSON.parse(
-      await tool('appshot', {}, 'no-backend-appshot'),
+      await tool('What is on my screen?', 'appshot', {}, 'no-backend-appshot'),
     ) as Json;
     expect(receipt).toMatchObject({
       status: 'accepted',
@@ -250,6 +268,7 @@ describe('standalone Omni without any coding backend', () => {
     const fact = 'The user prefers concise answers in no-backend mode.';
     const fromIndex = fakeDash.inbox.length;
     const receipt = await tool(
+      'Remember that I prefer concise answers.',
       'omnibio',
       { operations: { add: [fact] } },
       'no-backend-memory',
@@ -286,6 +305,7 @@ describe('standalone Omni without any coding backend', () => {
   it('creates a Proactive timer and supports stopping it in Subagents', async () => {
     const title = 'Standalone reminder';
     const receipt = await tool(
+      'Remind me to take a break in ten minutes.',
       'create_proactive_timer',
       {
         title,

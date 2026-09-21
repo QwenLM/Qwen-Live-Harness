@@ -27,6 +27,6 @@ jobs:
           cache: 'npm'
       - run: 'npm ci'
       - run: 'npm run build && npm run typecheck'
-      - run: 'npm run lint && npm run format:check'
+      - run: 'npm run lint:all && npm run format:check'
       - run: 'npm run test:daemon && npm run test:scripts && npm run test:integration'
       - run: 'npm run check:boundaries && npm run check:package'

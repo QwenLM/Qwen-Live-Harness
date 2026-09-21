@@ -202,7 +202,11 @@ describePeers(
       return result.page;
     }
 
-    async function tool(name: string, args: Record<string, unknown>) {
+    async function tool(
+      request: string,
+      name: string,
+      args: Record<string, unknown>,
+    ) {
       const callId = `coexistence-${++sequence}`;
       const fromIndex = fakeDash.inbox.length;
       conn.queueFunctionCall({
@@ -210,7 +214,7 @@ describePeers(
         argumentsJson: JSON.stringify(args),
         callId,
       });
-      conn.speakTranscript(`Please run ${name}.`);
+      conn.speakTranscript(request);
       const message = await fakeDash.waitForMessage(
         (entry) => functionCallOutputOf(entry)?.callId === callId,
         { fromIndex },
@@ -282,9 +286,13 @@ describePeers(
         .poll(async () => (await page()).discoveredSessions?.length)
         .toBe(2);
 
-      const handoff = await tool('handoff', {
-        task: 'permission: coexistence write check',
-      });
+      const handoff = await tool(
+        'Please create a test file in this project.',
+        'handoff',
+        {
+          task: 'permission: coexistence write check',
+        },
+      );
       expect(handoff.receipt['status']).toBe('accepted');
       const permission = await fakeDash.waitForMessage(
         (entry) => permissionPayloadOf(entry)?.request_id === 'req_1',
@@ -378,10 +386,14 @@ describePeers(
       });
       expect(waiting.selected?.permissions).toHaveLength(1);
 
-      const voted = await tool('respond_permission', {
-        request_id: 'req_1',
-        decision: 'allow',
-      });
+      const voted = await tool(
+        'Allow this operation once.',
+        'respond_permission',
+        {
+          request_id: 'req_1',
+          decision: 'allow',
+        },
+      );
       expect(voted.receipt['status']).toBe('delivered');
       await completed(handoff.receipt['job'], handoff.fromIndex);
       expect((await page()).sessionReports).toHaveLength(2);
@@ -432,9 +444,13 @@ describePeers(
       const current = await page();
       expect(current.discoveredSessions).toBeUndefined();
       expect(current.sessionReports).toBeUndefined();
-      const handoff = await tool('handoff', {
-        task: 'peer-disabled default ACP check',
-      });
+      const handoff = await tool(
+        'Please inspect the project with the default background agent.',
+        'handoff',
+        {
+          task: 'peer-disabled default ACP check',
+        },
+      );
       expect(handoff.receipt['status']).toBe('accepted');
       await completed(handoff.receipt['job'], handoff.fromIndex);
       expect((await page()).snapshot.tasks[0]).toMatchObject({

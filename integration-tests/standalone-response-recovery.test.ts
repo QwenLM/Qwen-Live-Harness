@@ -67,6 +67,7 @@ it.each(['permission', 'direct'] as const)(
       await host.connect();
       const { conn } = await startLiveCall({ host, fakeDash });
       const invoke = async (
+        request: string,
         name: string,
         args: Record<string, unknown>,
         callId: string,
@@ -77,13 +78,14 @@ it.each(['permission', 'direct'] as const)(
           argumentsJson: JSON.stringify(args),
           callId,
         });
-        conn.speakTranscript(`Please run ${name}.`);
+        conn.speakTranscript(request);
         return fakeDash.waitForMessage(
           (message) => functionCallOutputOf(message)?.callId === callId,
           { fromIndex },
         );
       };
       const created = await invoke(
+        'Set a reminder for one hour from now.',
         'create_proactive_timer',
         {
           title: 'Synthetic reminder',
@@ -123,6 +125,7 @@ it.each(['permission', 'direct'] as const)(
       let fromIndex = fakeDash.inbox.length;
       if (authority === 'permission') {
         const handoffReceipt = await invoke(
+          'Please create the project report file in the background.',
           'handoff',
           { task: 'permission: keep this unrelated background task waiting' },
           'waiting-backend',

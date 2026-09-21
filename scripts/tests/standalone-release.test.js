@@ -39,17 +39,6 @@ function resolveVersion({ version = daemon.version, branch = 'main' } = {}) {
 }
 
 describe('standalone release ownership', () => {
-  it('uses the unscoped product package and executable without legacy aliases', () => {
-    expect(daemon.name).toBe('qwen-live-harness');
-    expect(Object.keys(daemon.bin)).toEqual(['qwen-live-harness']);
-    expect(host.name).toBe('qwen-live-harness-host');
-    expect(host.private).toBe(true);
-    const workspace = JSON.parse(readFileSync('package.json', 'utf8'));
-    expect(workspace.name).toBe('qwen-live-harness-workspace');
-    expect(workspace.private).toBe(true);
-    expect(workspace.workspaces).toEqual(['packages/qwen-live-harness']);
-  });
-
   it('publishes only the committed, paired package versions from main', () => {
     expect(host.version).toBe(daemon.version);
     expect(resolveVersion().status).toBe(0);

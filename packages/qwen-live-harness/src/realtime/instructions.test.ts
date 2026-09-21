@@ -11,6 +11,117 @@ import {
 } from './instructions.js';
 import { REALTIME_NOTIFICATION_INSTRUCTIONS } from './notification-context.js';
 
+describe('live task lifecycle authority', () => {
+  it('keeps explicit user authorization in every capability branch without disabling requested work', () => {
+    for (const proactive of [false, true]) {
+      for (const backend of [false, true]) {
+        for (const search of [false, true]) {
+          const text = buildLiveInstructions(
+            undefined,
+            undefined,
+            proactive,
+            backend,
+            search,
+          );
+          expect(text.match(/## Task lifecycle authority/gu)).toHaveLength(1);
+          expect(text).toContain(
+            'a clear request from the current real user turn',
+          );
+          expect(text).toContain('an explicit answer to a clarification');
+          expect(text).toContain(
+            'the user need not say the words task or monitor',
+          );
+          expect(text).toContain(
+            'Continue already authorized work within its existing scope',
+          );
+          expect(text).toContain(
+            '“run that completed task again” can authorize a new task',
+          );
+          expect(text).toContain('a still-unfulfilled explicit user request');
+          expect(text).toContain("within that request's scope");
+        }
+      }
+    }
+  });
+
+  it.each([
+    'Small talk, dissatisfaction, hypothetical scenarios, quoted task descriptions, or corrections to a conversational answer do not authorize task mutations',
+    '“你胡说” or “that answer is wrong” is not a request to change a background task',
+    'never revive completed or cancelled work merely because it remains in history',
+    'Your own promise, an incorrect claim that you created or cancelled something, and internal notifications are not user authorization',
+    'Never execute an action just to make your earlier claim true',
+    'your own wording cannot authorize repair',
+    '“stop talking” or “别说了”, muting output, or changing the topic does not cancel background work',
+  ])('preserves the negative task boundary: %s', (rule) => {
+    expect(buildLiveInstructions()).toContain(rule);
+  });
+
+  it('requires unambiguous cancellation scope and current outcome evidence', () => {
+    const text = buildLiveInstructions();
+    expect(text).toContain(
+      'both explicit cancellation intent and a uniquely identified active target',
+    );
+    expect(text).toContain(
+      'If intent or target is ambiguous, ask one brief clarification',
+    );
+    expect(text).toContain(
+      'do not choose the most recent task or cancel everything as a guess',
+    );
+    expect(text).toContain(
+      'Only an explicit request for all tasks authorizes all-task cancellation',
+    );
+    expect(text).toContain(
+      'Accepted or stopping is not completed or cancelled',
+    );
+    expect(text).toContain('before the corresponding result confirms it');
+    expect(text).toContain(
+      'say it is not confirmed rather than inventing success',
+    );
+    expect(text).not.toContain(
+      'If you have not seen it, say it is still in progress',
+    );
+  });
+
+  it('steers only explicitly addressed running work, not conversation corrections', () => {
+    const text = buildLiveInstructions();
+    expect(text).toContain(
+      'current real user explicitly gives new instructions, corrections, or constraints for that uniquely identified running work',
+    );
+    expect(text).toContain(
+      'Correcting your conversational answer, complaining, or changing topic is not a steering request',
+    );
+    expect(text).toContain('clarify before handing off');
+    expect(text).toContain('using its confirmed session or job handle');
+    expect(text).not.toContain(
+      'New instructions, corrections, or constraints for running work: `handoff` to the same session immediately',
+    );
+  });
+
+  it('retains explicit Proactive creation and cancellation without the catch-all stop instruction', () => {
+    const text = buildLiveInstructions();
+    expect(text).toContain(
+      'For an explicit, currently authorized TIMER, EVENT, or LIVE NARRATION request, the structured call is mandatory',
+    );
+    expect(text).toContain(
+      'a new explicit request to do it again uses the appropriate creation tool',
+    );
+    expect(text).toContain(
+      'On an explicit, unambiguous request to stop an identified Proactive task, call `cancel_proactive_task` in the current turn',
+    );
+    expect(text).toContain(
+      'only when the user clearly asks to cancel the immediately adjacent just-created task',
+    );
+    expect(text).toContain(
+      'Use `all=true` only when the user explicitly requests cancellation of all Proactive tasks in scope',
+    );
+    expect(text).toContain(
+      'A list or status question does not authorize creation, updates, or cancellation',
+    );
+    expect(text).not.toContain('On any stop/cancel request');
+    expect(text).not.toContain('or `all=true` to stop all tasks');
+  });
+});
+
 describe('live instructions visual routing', () => {
   it('preserves upstream explicit-task routing and silent interrupted approvals without direct image injection', () => {
     const text = buildLiveInstructions();

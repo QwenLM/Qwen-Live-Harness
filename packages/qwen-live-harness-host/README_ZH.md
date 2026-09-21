@@ -4,9 +4,9 @@
 
 [项目首页](../../README_ZH.md) · [配置与功能指南](../../docs/configuration_ZH.md) · [Daemon 开发指南](../qwen-live-harness/README_ZH.md)
 
-Host 是 Qwen-Live-Harness 的 macOS 桌面端，负责 UI、系统权限、音频采集与播放、摄像头和屏幕采集，以及全局快捷键。主 Omni 会话、工具调度、后台 Harness、Memory 和 Proactive 由后台服务（daemon）管理。Host 不直接调用模型 API，也不附带 Node.js 或 daemon 安装包。
+Host 是 macOS 桌面端，负责 UI、权限、音频采集与播放、摄像头和屏幕采集，以及全局快捷键。模型连接、工具、后台任务、Memory 和 Proactive 由 daemon 管理。Host 不直接调用模型 API，也不附带 Node.js 或 daemon 安装包。
 
-本文面向桌面端开发者。安装、输入设备、记忆设置和配置文件的使用方法见[配置与功能指南](../../docs/configuration_ZH.md)。
+本文面向桌面端开发者，安装与日常设置见[配置与功能指南](../../docs/configuration_ZH.md)。
 
 ## 开发环境
 
@@ -28,9 +28,9 @@ npm run init
 npm start
 ```
 
-`npm run init` 构建 daemon 并打开源码初始化向导，保存配置。它不会下载、安装或启动 Host，也不会更改已安装应用的桌面启动登记信息；向导中可以选择保留已有配置。
+`npm run init` 构建 daemon 并保存配置，也可选择保留已有配置。它不安装或启动 Host，不更改已安装应用的桌面启动登记信息。
 
-`npm start` 会依次构建 daemon 和 Host，启动当前源码目录的 daemon，等待就绪后用本地安装的 Electron 打开源码 Host。`Ctrl+C` 会停止启动器创建的两个进程。若已有 daemon 或 Host 正在运行，请先退出，避免混用发行版和源码实例。
+`npm start` 构建两个包，启动当前源码的 daemon，就绪后用本地 Electron 打开源码 Host。`Ctrl+C` 停止启动器创建的两个进程。请先退出已有实例，避免混用源码与发行版。
 
 同时查看两端调试日志：
 
@@ -66,62 +66,53 @@ npm --prefix packages/qwen-live-harness-host start -- --live-harness-debug
 | [`src/native/appshot.mm`](src/native/appshot.mm)                 | 前台窗口截图、辅助功能文本与完整显示器采集                 |
 | [`src/shared`](src/shared)                                       | 协议解析、IPC 类型、布局常量和主题                         |
 
-主窗口和子智能体窗口都启用 `contextIsolation` 和渲染进程沙箱，关闭 `nodeIntegration`；默认禁止页面跳转和打开新窗口。新增能力通过明确的 preload API 和 IPC 消息接入，由主进程校验发送窗口、字段、长度和通话代次（epoch）。渲染进程（renderer）不应获得任意执行 Node.js 或访问文件系统的权限。
+窗口启用 `contextIsolation` 和渲染进程沙箱，默认禁用 `nodeIntegration`、页面跳转和新窗口。通过明确的 preload API 与 IPC 消息扩展能力，由主进程校验发送方、字段、长度和通话代次（epoch），不要向 renderer 暴露任意 Node.js 执行或文件系统访问能力。
 
 ### 布局与交互
 
-主窗口几何参数位于 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)，子智能体窗口参数位于 [`subagents-geometry.ts`](src/shared/subagents-geometry.ts)，原生位置约束位于 [`overlay-position.ts`](src/main/overlay-position.ts)。透明窗口画布大于实际可见内容；初始化页、主界面、预览和设置需要分别按内容及阴影范围限位。
+几何参数位于 [`overlay-geometry.ts`](src/shared/overlay-geometry.ts)、[`subagents-geometry.ts`](src/shared/subagents-geometry.ts) 和 [`overlay-position.ts`](src/main/overlay-position.ts)。按实际可见内容限位，不要按更大的透明画布限位。[`subagents-windows.ts`](src/main/subagents-windows.ts) 负责让详情面板避开主 UI 和状态条。
 
-修改布局时，检查屏幕边缘、多显示器、负坐标、缩放、显示器移除，以及设置和预览展开的情况。临时调整位置时保留用户保存的位置，并确认状态刷新或截图不会移动 UI。媒体和编辑控件应保持挂载，避免字幕更新导致焦点、预览或草稿丢失。子智能体面板由 [`subagents-windows.ts`](src/main/subagents-windows.ts) 管理，展开详情时应避开主界面和状态条。
-
-主 UI 使用 234 × 171 px 交互卡片，包含常驻通话控件和任务摘要。拖动卡片背景、状态文字、波形或摄像头预览可移动 UI，按钮仍执行各自操作。无字幕时，预览位于卡片上方 12 px；字幕另有预留空间。设置在卡片旁展开，点击任务摘要可打开子智能体窗口。终端会话、指令投递、会话报告、搜索、视觉分析和 Monitor 各自展示状态与详情。
-
-默认配色为 Iris（雾紫）。**设置 → 个性化 → 配色** 提供七种带名称的色样：`iris`、`clay`、`sage`、`tide`、`graphite`、`rose` 和 `berry`。选择配色后，经校验的 IPC 只修改已连接 daemon 配置文件的顶层 `themeColor`，保留其他配置。主 UI 与子智能体窗口同步更新，不重建媒体流、移动窗口或丢弃正在编辑的内容。Host 也会在连接或重连时读取此字段；未设置或取值无效时使用 Iris。浅色、深色和跟随系统的外观选项单独保存，见[配置指南](../../docs/configuration_ZH.md#主题配色)。
+测试拖动、屏幕边缘、多显示器、负坐标、缩放、显示器移除，以及设置／预览展开。临时布局调整须保留已保存的位置；截图和状态刷新不能移动 UI。媒体与编辑控件保持挂载，保留焦点、预览和草稿。主题通过经校验的 IPC 更新，不重建媒体流或丢弃编辑内容；使用选项见[配置指南](../../docs/configuration_ZH.md#主题配色)。
 
 ## 与 daemon 的边界
 
-Host 通过回环地址上的 WebSocket 端点 `/live/host` 连接 daemon。默认发现文件为 `~/.qwen-live-harness/run/daemon.json`，权限为 `0600`，包含实例 PID、随机标识（nonce）和连接凭据，不应记录或公开分享其中的凭据。
+Host 通过回环地址 WebSocket 端点 `/live/host` 连接 daemon。发现文件为 `~/.qwen-live-harness/run/daemon.json`（权限 `0600`），包含实例 PID、nonce 和连接凭据，不应记录或分享其内容。
 
 协议当前为 **v9**，两端定义分别位于：
 
 - Host：[`src/shared/protocol.ts`](src/shared/protocol.ts)。
 - Daemon：[`src/host/types.ts`](../qwen-live-harness/src/host/types.ts) 与 [`qwen-live-harness-host-coordinator.ts`](../qwen-live-harness/src/host/qwen-live-harness-host-coordinator.ts)。
 
-修改消息时，同时检查两端解析和能力协商，并拒绝来自已结束通话代次的媒体和会话操作。进程级控制绑定 daemon 实例 nonce，播放回执还需匹配 output ID。模型名称、API key、会话配置和工具结果都由 daemon 管理；Host 只提交设备输入并播放返回音频，不直接创建 Realtime 响应或提交模型音频缓冲区。
+同时校验两端消息解析与能力协商。拒绝已结束通话代次的操作，进程控制绑定 daemon nonce，播放回执匹配 output ID。Host 只提交设备输入、播放输出；API key、模型会话、Realtime 响应、音频 commit 和工具结果均由 daemon 管理。
 
-已安装的 Host 使用 `run/runtime.json` 中登记的 Node.js、CLI 路径和工作目录按需启动 daemon，并通过内部参数 `--daemon-only` 避免循环启动。普通断线只重连，不反复重启进程。CLI 启动的 Host 会接收对应的发现文件路径和所属实例身份，并在收到该 daemon 实例的退出通知后关闭。
+已安装的 Host 从 `run/runtime.json` 登记的路径启动 daemon，以内部参数 `--daemon-only` 避免循环启动。普通断线只重连，不重启进程。CLI 启动的 Host 归属于对应 daemon 实例，并在其退出通知后关闭，见 [`daemon-bootstrap.ts`](src/main/daemon-bootstrap.ts) 和 [`daemon-lifecycle.ts`](src/main/daemon-lifecycle.ts)。
 
-`End call`（结束通话）结束交互并保留桌面界面；`Quit Qwen Live Harness`（退出 Qwen Live Harness）同时关闭 Host 和 daemon。退出未得到确认时，界面会保留错误信息和重试入口。实例身份、启动与退出逻辑见 [`daemon-bootstrap.ts`](src/main/daemon-bootstrap.ts)、[`daemon-lifecycle.ts`](src/main/daemon-lifecycle.ts)。发行版 CLI 与 Host 必须版本配套，协议号相同并不意味着不同版本兼容。
+`End call`（结束通话）保留 UI；`Quit Qwen Live Harness`（退出）同时停止 Host 和 daemon。退出未确认时保留错误提示和重试入口。发行版 CLI 与 Host 的版本必须一致，不能只看协议号。
 
 ## 设备与权限
 
-| 当前视觉模式       | 所需 macOS 权限  |
-| ------------------ | ---------------- |
-| Screen + On Demand | 麦克风、屏幕录制 |
-| Screen + Live Feed | 麦克风、屏幕录制 |
-| Camera             | 麦克风、摄像头   |
+| 当前视觉模式 | 所需 macOS 权限  |
+| ------------ | ---------------- |
+| Screen       | 麦克风、屏幕录制 |
+| Camera       | 麦克风、摄像头   |
 
-未选中来源的权限不应阻止交互。默认快捷键 `Command+E` 使用 Electron `globalShortcut`，不需要“输入监控”（Input Monitoring）权限。macOS 分别管理开发用 Electron 和发行版应用的权限，测试时应确认运行的是哪一个应用。
+未选中来源的权限不能阻止交互。`Command+E` 使用 Electron `globalShortcut`，无需输入监控权限。开发 Electron 与发行版应用在 macOS 中是不同的权限身份。
 
-Appshot 是随 Host 构建的内置模块，不依赖单独的截图应用、CLI、MCP 服务或运行时下载。Screen On Demand、Live Feed 和视觉 Proactive Monitor 都采集选定显示器的完整画面，并排除 Host 自身窗口。On Demand 保存原始 PNG 资产，再按分辨率配置和传输上限编码截图；完整显示器采集不需要辅助功能权限。摄像头使用同一引擎提供预览、实时帧和单次截图，隐藏预览不会停止采集。
+内置 Appshot 无需单独的截图应用、CLI、MCP 服务或运行时下载。Screen On Demand、Live Feed 和视觉 Monitor 采集选定显示器完整画面并排除 Host 窗口，不需要辅助功能权限。On Demand 保留原始 PNG，再编码为满足传输限制的截图。摄像头预览、实时帧和截图共用引擎；隐藏预览不会停止采集。
 
-daemon 将 On Demand 截图交给只读视觉分析子智能体，其文字结果由隔离的纯播报连接生成语音，同时作为静默证据保留在主对话中。视觉、搜索和后台任务结果共用无工具的播报通路；Host 只播放结果音频，并回报真实的播放开始／完成状态。Host 在 Subagents 中展示进度和结果，不直接调用模型。Live Feed 和 Proactive 使用各自的输入通路。来源、模式、分辨率和使用限制见[配置指南](../../docs/configuration_ZH.md)。
+Host 展示子智能体进度／结果，播放 daemon 生成的音频并回报真实播放开始／完成状态。截图分析、Live Feed、Proactive 和结果调度属于 daemon，见[语音与视觉](../qwen-live-harness/README_ZH.md#语音与视觉)。
 
-Subagents 展示后台提供的命令／参数、工作目录和资源，并提供当前请求的允许／拒绝按钮。设置中的全局**后台 Harness 授权**选择 `permissionMode: "ask"`（默认）或 `"allow-all"`，后者自动处理当前等待及之后的请求；界面只采用 daemon 确认保存成功后的状态。每次批准都使用后台单次选项，不创建原生持久授权。通话中会播报重要自动操作，普通目录／状态检查只记录，没有通话就不播放音频。批准与开始执行是两种不同事实。旧逐项策略文件被忽略，不会删除；见[语音授权与持续允许](../qwen-live-harness/README_ZH.md#语音授权与持续允许)。
+Subagents 展示后台命令、参数、工作目录和资源，提供允许／拒绝操作。设置可选择 `permissionMode: "ask"` 或 `"allow-all"`，只应用 daemon 确认的更改。后台批准与开始执行是不同状态，批准不会创建原生持久授权。策略和通知行为见[语音授权与全局授权模式](../qwen-live-harness/README_ZH.md#语音授权与全局授权模式)。
 
-采集尺寸和协议上限需要分开校验：实时帧目前最多 `1920 × 1080`、每帧 `190 KiB`，截图资产上限为 `8 MiB`。即使请求了更大的采集尺寸，传输前也可能缩小。摄像头原生截图优先使用拍照接口，不可用时尝试按视频采集约束获取画面；不支持的请求应返回明确错误。修改尺寸或编码策略时，同时检查 [`camera-engine.ts`](src/preload/camera-engine.ts)、[`appshot-capture.ts`](src/main/appshot-capture.ts) 和共享协议限制。
+分别校验采集尺寸与传输上限：实时帧最多 `1920 × 1080`、`190 KiB`；截图资产最多 `8 MiB`。摄像头截图优先拍照接口，再回退视频采集约束；不支持的请求须明确报错。调整编码或尺寸时，同时检查 [`camera-engine.ts`](src/preload/camera-engine.ts)、[`appshot-capture.ts`](src/main/appshot-capture.ts) 与共享协议限制。
 
 ### 音频与故障恢复
 
-麦克风通过 AudioWorklet 转为单声道 16-bit、16 kHz PCM。daemon 请求模型输出 **24 kHz PCM**，Host 按同一采样率解码。播放 AudioContext 使用输出设备自身的采样率，不强制切换系统设备时钟。协商了结束标记的连接采用连续流式重采样，并等待对应输出真正播放完毕。修改时保持帧顺序、output ID 和播放完成回执一致。
+麦克风通过 AudioWorklet 转为单声道 16-bit、**16 kHz PCM**。模型输出 **24 kHz PCM**，播放使用输出设备的 AudioContext 采样率，不强制修改系统采样率。协商了结束标记的连接采用连续流式重采样。保持帧顺序、output ID 和播放开始／完成回执一致：已生成、已转发不等于已播放。
 
-播放使用 **10 ms 调度余量**，不改变 PCM 流的播放速度。已排队分片连续衔接，不会每片再等 10 ms；停止播放或关闭播报会立即清理待播音频。响应生成、音频转发和设备实际播放是不同阶段，通知送达需要对应的播放回执。
+播放保留 **10 ms 调度余量**，分片连续衔接，不逐片增加延迟。停止和关闭播报立即清理待播音频。蓝牙麦克风可能触发 macOS 免提模式，与模型采样率无关；设备测试应包含内置／USB 输入搭配蓝牙输出。
 
-启用蓝牙耳机自带的麦克风时，macOS 可能切换到免提模式，这与模型输出采样率是两回事。测试时可搭配内置或 USB 麦克风与蓝牙耳机输出；强制修改采样率并不能解决系统音频路由问题。
-
-录音启动、设备切换和音频恢复都有超时限制。主进程最多等待 10 秒，确认设备就绪并收到首个输入帧；输入静音时只需确认设备就绪。关闭 AudioContext 最多等待 1 秒。停止、静音、切换通话和退出会取消不再需要的操作；取消后才返回的媒体流和 AudioContext 也需要释放，不能将取消操作误报为就绪或新的播放故障。
-
-音频超时会结束当前通话，但 UI、设置、拖动和退出功能仍可使用，不会立即循环重试。用户可选择输入设备，再点击开始通话或按 `Command+E` 重试。音频故障不会撤销系统授权；确实缺少权限时，界面优先显示授权提示。对应实现见 [`capture-readiness.ts`](src/main/capture-readiness.ts)、[`audio-operation.ts`](src/preload/audio-operation.ts) 和 [`audio-engine.ts`](src/preload/audio-engine.ts)。
+采集就绪最多等待 10 秒确认设备和首帧（静音时只检查就绪），AudioContext 关闭最多等待 1 秒。停止、静音、通话切换和退出取消待完成操作，并释放迟到的资源。超时结束通话但不循环重试，设置、拖动、退出和手动重试须保持可用；不要将音频故障当作权限撤销。见 [`capture-readiness.ts`](src/main/capture-readiness.ts)、[`audio-operation.ts`](src/preload/audio-operation.ts) 和 [`audio-engine.ts`](src/preload/audio-engine.ts)。
 
 ## 日志与文案
 
@@ -139,25 +130,26 @@ Host 偏好设置和常规错误日志保存在 Electron `userData` 目录下，
     └── host-window-trace.jsonl.1
 ```
 
-未开启 debug 时也会记录部分故障事件。这类日志只记录预先允许的错误码、阶段、epoch 等元数据，文件权限为 `0600`；达到 1 MiB 时轮转，保留当前文件和一份备份。日志写入失败不会中断音视频或退出流程，见 [`host-diagnostics.ts`](src/main/host-diagnostics.ts)。
+`host-errors.log` 未开启 debug 也记录预先允许的故障元数据，权限为 `0600`，达到 1 MiB 轮转并保留一份备份。日志故障不能中断媒体或退出，见 [`host-diagnostics.ts`](src/main/host-diagnostics.ts)。
 
-`--live-harness-debug` 记录 Host 状态、设备和帧传输诊断。daemon 的 `--debug` 在 `<dataDir>/debug/run-*` 归档主模型、Monitor、搜索、视觉分析和通知播报五类连接，以及运行和控制事件。这些归档含有提示词、Memory 上下文、工具和媒体等私密内容；凭据脱敏不会去除音视频中的敏感信息。每个 Monitor 的媒体归档另行保存。离线检查和导出方法见[运行归档与离线检查](../qwen-live-harness/README_ZH.md#运行归档与离线检查)，不会执行记录中的任务；面向用户的诊断开关和数据路径见[配置指南](../../docs/configuration_ZH.md)。
+`--live-harness-debug` 开启状态／设备／传输诊断和窗口 trace。trace 只含有大小限制的几何数据与预定义标签，不含画面、对话或凭据；达到 4 MiB 轮转并保留一份备份。排查位移时比较内容区域坐标和 renderer 偏移，不要只看原生外框尺寸。
 
-固定展示文本统一放在 [`packages/qwen-live-harness/src/i18n/messages.ts`](../qwen-live-harness/src/i18n/messages.ts)，每个键包含 `en` 与 `zh-CN`。Host 在构建时通过别名打包共享的文案、启动和子智能体模块，不在运行时依赖已安装的 daemon npm 包。修改共享文件后，需要重新构建并验证两个包。
+daemon 模型／媒体归档单独保存，凭据脱敏后仍可能包含敏感提示词、Memory、工具数据、音频和图片。位置、检查及导出方法见[运行归档与离线检查](../qwen-live-harness/README_ZH.md#运行归档与离线检查)。
 
-窗口跟踪日志（trace）记录截图 ID、原生外框与内容区域坐标、布局和尺寸变化，以及偏移的发送和应用结果。每条记录标明进程，启动记录还包含 Host 构建哈希。该日志仅在 debug 下启用，达到 4 MiB 时轮转，保留当前文件和一份备份；只记录有大小限制的几何数据和预定义状态标签，不含画面、对话、配置或凭据。排查位移时应结合内容区域坐标和 renderer 偏移：原生外框高度变化不一定意味着可见 UI 移动。
+固定展示文本集中在 [`messages.ts`](../qwen-live-harness/src/i18n/messages.ts)，使用成对的 `en`／`zh-CN` 条目。构建别名打包共享文案、启动和子智能体模块；Host 不在运行时依赖已安装的 daemon 包。共享内容修改后重新构建并测试两个包。
 
 ## 测试与打包
 
 在仓库根目录运行 Host 检查：
 
 ```sh
-npm --prefix packages/qwen-live-harness-host run typecheck
-npm --prefix packages/qwen-live-harness-host test
+npm run lint:host
+npm run typecheck:host
+npm run test:host
 npm run build:host
 ```
 
-修改协议、共享文案或生命周期时，也运行 daemon 的相关测试和根目录类型检查。自动化测试覆盖协议、布局、媒体时钟、超时和退出流程；真实设备、权限弹窗、拖动和签名安装仍需在 macOS 上验证，并在 PR 中注明测试环境。
+根目录 `npm test` **不包含** Host 测试。`npm run lint:all` 检查两个包；修改共享内容、协议或生命周期时，还须运行根目录类型检查和 daemon 相关测试。自动化检查不能替代 macOS 真实设备、授权、拖动和签名安装验证，请在 PR 中注明测试环境。
 
 生成本地安装包，不发布到 GitHub 或 npm：
 
@@ -165,7 +157,7 @@ npm run build:host
 npm --prefix packages/qwen-live-harness-host run dist:mac:no-publish
 ```
 
-编译产物在 `dist/`，安装包在 `release/`。打包配置见 [`electron-builder.yml`](electron-builder.yml)：App ID 为 `com.alibaba.qwen-live-harness.host`，产品名为 `Qwen Live Harness Host`，正式安装路径为 `/Applications/Qwen Live Harness Host.app`。原生模块作为独立资源随应用签名，并保留 ASAR 完整性校验和 Electron fuse 限制。构建成功后仍需验证正式签名与公证。
+编译产物在 `dist/`，安装包在 `release/`。[`electron-builder.yml`](electron-builder.yml) 定义 App ID `com.alibaba.qwen-live-harness.host` 和安装路径 `/Applications/Qwen Live Harness Host.app`。原生模块作为独立资源签名；保留 ASAR 完整性校验与 Electron fuse 限制，构建成功不能替代正式签名和公证验证。
 
 ### 发布维护
 

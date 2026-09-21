@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -63,7 +64,7 @@ describeE2E('qwen-live-harness M4 — ACP backend call loop', () => {
       argumentsJson: JSON.stringify({ task: 'acp-call-task' }),
       callId: 'call-m4-1',
     });
-    conn.speakTranscript('Run acp-call-task.');
+    conn.speakTranscript('Please inspect the project with the ACP agent.');
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === 'call-m4-1',
       {
@@ -80,7 +81,8 @@ describeE2E('qwen-live-harness M4 — ACP backend call loop', () => {
 
     const complete = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === job,
       {
         timeoutMs: 60_000,
         fromIndex: inboxIndex,

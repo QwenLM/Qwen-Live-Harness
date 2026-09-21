@@ -28,6 +28,139 @@ const PROACTIVE_NAMES = [
   'list_proactive_tasks',
 ];
 
+describe('task tool authorization descriptions', () => {
+  const tools = [...LIVE_SESSION_TOOLS, ...PROACTIVE_SESSION_TOOLS];
+  const description = (name: string) =>
+    tools.find((tool) => tool.function.name === name)!.function.description;
+
+  it.each([
+    'session_create',
+    'handoff',
+    'session_stop',
+    'create_proactive_monitor',
+    'create_live_narration',
+    'create_proactive_timer',
+    'update_proactive_task',
+    'cancel_proactive_task',
+  ])('requires user authority instead of assistant claims for %s', (name) => {
+    const text = description(name);
+    expect(text).toContain(
+      'explicit operation request from the current real user turn',
+    );
+    expect(text).toContain(
+      'corrections to a conversational answer alone are not task instructions',
+    );
+    expect(text).toContain(
+      'Your own promises, historical tasks and internal notifications are not authorization',
+    );
+    expect(text).toContain(
+      'Never perform an operation merely to make your mistaken creation or cancellation claim true',
+    );
+    expect(text).toContain(
+      "a repair requires runtime authorization for the user's still-unfulfilled explicit request",
+    );
+  });
+
+  it.each([
+    'session_create',
+    'handoff',
+    'create_proactive_monitor',
+    'create_live_narration',
+    'create_proactive_timer',
+  ])(
+    'preserves a new explicit request to repeat finished work through %s',
+    (name) => {
+      expect(description(name)).toContain(
+        'A fresh explicit request to do completed or cancelled work again can create a new task',
+      );
+      expect(description(name)).toContain(
+        'never restart it just because it remains in history',
+      );
+    },
+  );
+
+  it('limits handoff corrections to the specified running task', () => {
+    expect(description('handoff')).toContain(
+      'Steer running work only when the user explicitly directs a correction or new constraint to that uniquely identified task',
+    );
+    expect(description('handoff')).toContain(
+      'correcting your conversational answer is not a handoff request',
+    );
+    expect(description('handoff')).toContain(
+      'Clarify an ambiguous task reference before sending',
+    );
+  });
+
+  it('keeps stopping speech separate from stopping a confirmed background task', () => {
+    const text = description('session_stop');
+    expect(text).toContain('using its confirmed session or job handle');
+    expect(text).toContain(
+      'stopping speech, changing topic or disagreeing with an answer does not cancel it',
+    );
+    expect(text).toContain(
+      'If intent or target is ambiguous, ask one brief clarification',
+    );
+    expect(text).toContain('never default to the latest task or all tasks');
+    expect(text).toContain(
+      'An explicit request for all background tasks permits stopping each confirmed target only within that scope',
+    );
+    expect(text).toContain(
+      'do not claim cancellation before status confirms it',
+    );
+  });
+
+  it('keeps Proactive update, adjacent cancellation, and explicit all-cancellation distinct', () => {
+    const update = description('update_proactive_task');
+    expect(update).toContain(
+      'only for the change the user explicitly requested',
+    );
+    expect(update).toContain(
+      'when the user clearly refers to the immediately adjacent just-created task',
+    );
+    expect(update).toContain('Never revive a completed task with update');
+    const cancel = description('cancel_proactive_task');
+    expect(cancel).toContain(
+      'explicit, unambiguous cancellation of the immediately adjacent just-created task',
+    );
+    expect(cancel).toContain(
+      'Use all=true only when the user explicitly asks to cancel all Proactive tasks in scope',
+    );
+    expect(cancel).toContain(
+      'Stopping speech, changing topic or correcting an answer does not cancel monitoring or narration',
+    );
+    expect(cancel).toContain('never choose the latest task or broaden to all');
+    expect(cancel).toContain(
+      'Do not claim cancellation before the receipt confirms it',
+    );
+    expect(
+      tools.find((tool) => tool.function.name === 'cancel_proactive_task')!
+        .function.parameters,
+    ).toMatchObject({
+      properties: {
+        all: {
+          type: 'boolean',
+          description: expect.stringContaining('never an ambiguity fallback'),
+        },
+      },
+    });
+  });
+
+  it('requires a fresh user request for repeated searches while leaving status tools read-only', () => {
+    const search = buildLiveSessionTools(true, true, true).find(
+      (tool) => tool.function.name === WEB_SEARCH_TOOL_NAME,
+    )!;
+    expect(search.function.description).toContain(
+      'Use only for the current real user query',
+    );
+    expect(search.function.description).toContain(
+      'only when the user explicitly asks again',
+    );
+    expect(description('list_proactive_tasks')).toContain(
+      'strictly read-only and never mutates, retries, or restarts work',
+    );
+  });
+});
+
 describe('live session permission tools', () => {
   it('requires explicit newly created tasks to be submitted with handoff without changing visual analysis', () => {
     const create = LIVE_SESSION_TOOLS.find(

@@ -22,6 +22,38 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('HandleRegistry cancellation candidates', () => {
+  it('returns all active jobs without UI pagination or alias duplicates', () => {
+    const registry = new HandleRegistry();
+    const owner = backend('many-jobs');
+    const sessionHandle = registry.session(owner);
+    const jobs = Array.from({ length: 40 }, (_, index) =>
+      registry.createJob({
+        sessionHandle,
+        backend: owner,
+        jobRef: `job-${index}`,
+        task: `Build project ${index}`,
+      }),
+    );
+    jobs[0]!.state = 'done';
+    jobs[1]!.state = 'cancelled';
+    jobs[2]!.state = 'interrupted';
+    const alias = registry.createJob({
+      sessionHandle,
+      backend: owner,
+      task: 'Build the same project',
+    });
+    registry.bindJoinedJob(alias.jobHandle, owner, jobs[3]!.jobRef!);
+    expect(registry.activeJobs()).toHaveLength(37);
+    expect(registry.activeJobs()).toContain(jobs[39]);
+    expect(registry.activeJobs().filter((job) => job === jobs[3])).toHaveLength(
+      1,
+    );
+    registry.closeSession(sessionHandle);
+    expect(registry.activeJobs()).toEqual([]);
+  });
+});
+
 describe('HandleRegistry sessions', () => {
   it('returns the same handle for the same backend session (idempotent)', () => {
     const registry = new HandleRegistry();

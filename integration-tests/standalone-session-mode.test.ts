@@ -87,14 +87,19 @@ async function bootModeStack(sessionMode?: string): Promise<ModeStack> {
   }
 }
 
-async function handoff(stack: ModeStack, task: string, callId: string) {
+async function handoff(
+  stack: ModeStack,
+  request: string,
+  task: string,
+  callId: string,
+) {
   const fromIndex = stack.fakeDash.inbox.length;
   stack.conn.queueFunctionCall({
     name: 'handoff',
     argumentsJson: JSON.stringify({ task }),
     callId,
   });
-  stack.conn.speakTranscript('Please run handoff.');
+  stack.conn.speakTranscript(request);
   const message = await stack.fakeDash.waitForMessage(
     (entry) => functionCallOutputOf(entry)?.callId === callId,
     { fromIndex, timeoutMs: RECEIPT_TIMEOUT_MS },
@@ -120,6 +125,7 @@ describe('ACP backend sessionMode', () => {
     try {
       const { fromIndex, receipt } = await handoff(
         stack,
+        'Please create a test file in the workspace.',
         'permission: default mode check',
         'mode-ask',
       );
@@ -144,6 +150,7 @@ describe('ACP backend sessionMode', () => {
     try {
       const { fromIndex, receipt } = await handoff(
         stack,
+        'Please write the project report to a file.',
         'permission: yolo mode check',
         'mode-yolo',
       );
@@ -173,6 +180,7 @@ describe('ACP backend sessionMode', () => {
     try {
       const { fromIndex, receipt } = await handoff(
         stack,
+        'Please update the project documentation.',
         'permission: fallback mode check',
         'mode-fallback',
       );

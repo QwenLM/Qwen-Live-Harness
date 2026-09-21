@@ -38,6 +38,7 @@ export type SessionLogEventType =
   | 'response.cancelled'
   | 'realtime.protocol'
   | 'tool.call'
+  | 'task.authorization_rejected'
   | 'tool.result'
   | 'backend.event'
   | 'proactive.debug'

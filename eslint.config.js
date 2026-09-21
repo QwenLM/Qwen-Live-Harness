@@ -27,5 +27,12 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ['**/*.cjs'],
+    rules: {
+      // Electron Builder's CommonJS hooks deliberately use require/module.exports.
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
   prettier,
 );

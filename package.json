@@ -1,6 +1,6 @@
 {
   "name": "qwen-live-harness-workspace",
-  "version": "0.4.4",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -28,7 +28,9 @@
     "check:package": "node scripts/check-package.mjs",
     "check:peer-source": "node scripts/qwen-code-peer-source.mjs --verify",
     "restore:peer-source": "node scripts/qwen-code-peer-source.mjs --restore",
-    "lint": "eslint packages/qwen-live-harness/src integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
+    "lint": "eslint packages/qwen-live-harness/src packages/qwen-live-harness/build.mjs integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
+    "lint:host": "eslint packages/qwen-live-harness-host/src packages/qwen-live-harness-host/scripts packages/qwen-live-harness-host/vite.config.ts packages/qwen-live-harness-host/resources/audio-input-worklet.js",
+    "lint:all": "npm run lint && npm run lint:host",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },

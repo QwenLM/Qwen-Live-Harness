@@ -41,6 +41,8 @@ import {
   readLiveDiscovery,
   startLiveCall,
   waitForLiveResponseAfter,
+  isolatedSpeechConnectionFor,
+  waitForIsolatedSpeechRequest,
   type LiveStack,
 } from './qwen-live-harness.js';
 
@@ -113,15 +115,14 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
     stack.fakeDash.inbox.filter(
       (message) => notificationOf(message)?.kind === 'peer_report',
     );
-  const reportRequests = () => {
-    let pendingReport = false;
-    return stack.fakeDash.inbox.filter((message) => {
-      if (notificationOf(message)?.kind === 'peer_report') pendingReport = true;
-      if (message['type'] !== 'response.create' || !pendingReport) return false;
-      pendingReport = false;
-      return true;
-    });
-  };
+  const reportRequests = () =>
+    reportNotifications().flatMap((input) =>
+      isolatedSpeechConnectionFor(
+        stack.fakeDash,
+        input,
+        'peer_report',
+      ).inbox.filter((message) => message['type'] === 'response.create'),
+    );
 
   beforeAll(async () => {
     await exec('python3', ['--version']);
@@ -295,7 +296,11 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
     return result.page;
   }
 
-  async function tool(name: string, args: Record<string, unknown> = {}) {
+  async function tool(
+    request: string,
+    name: string,
+    args: Record<string, unknown> = {},
+  ) {
     const callId = `peer-reports-${++toolSequence}`;
     const fromIndex = stack.fakeDash.inbox.length;
     conn.queueFunctionCall({
@@ -303,13 +308,12 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       callId,
       argumentsJson: JSON.stringify(args),
     });
-    conn.speakTranscript(`Real test voice request for ${name}`);
+    conn.speakTranscript(request);
     const receipt = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === callId,
       { fromIndex, description: `${name} receipt` },
     );
-    if (name !== 'handoff')
-      await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
+    await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
     return JSON.parse(functionCallOutputOf(receipt)!.output) as Record<
       string,
       unknown
@@ -385,14 +389,21 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
   }
 
   it('routes a real TUI progress report and queues behind VAD, direct pending and Host playback', async () => {
-    const listed = await tool('session_list');
+    const listed = await tool(
+      'List the available coding sessions.',
+      'session_list',
+    );
     terminalHandle = String(
       (listed['sessions'] as Array<Record<string, unknown>>).find(
         (row) => row['cwd'] === terminalRecord.cwd,
       )!['handle'],
     );
     expect(
-      await tool('handoff', { session: terminalHandle, task: TASK }),
+      await tool(
+        'Ask the terminal agent to report the project progress here.',
+        'handoff',
+        { session: terminalHandle, task: TASK },
+      ),
     ).toMatchObject({ status: 'sent' });
     await Promise.race([
       contextReady.promise,
@@ -435,6 +446,10 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       },
     });
     conn.send({
+      type: 'input_audio_buffer.committed',
+      item_id: 'pr3-user-busy',
+    });
+    conn.send({
       type: 'conversation.item.input_audio_transcription.completed',
       item_id: 'pr3-user-busy',
       transcript: 'Please finish my current answer first.',
@@ -465,7 +480,16 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       ),
     ).toHaveLength(1);
     const reportHostFrom = stack.host.messages.length;
-    conn.respondWithAudio(Buffer.alloc(480, 2));
+    const { connection: speaker } = await waitForIsolatedSpeechRequest(
+      stack.fakeDash,
+      reportNotifications()[0]!,
+      'peer_report',
+    );
+    expect(speaker).not.toBe(conn);
+    speaker.respondWithAudio(
+      Buffer.alloc(480, 2),
+      'The terminal reports that the local check is running.',
+    );
     await reportWith(PROGRESS, 'speaking');
     await finishPlayback(reportHostFrom);
     await reportWith(PROGRESS, 'announced');
@@ -490,10 +514,27 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
     await expect
       .poll(() => reportRequests().length, { timeout: 5_000 })
       .toBe(before + 1);
-    const responseId = conn.beginResponse();
+    const input = reportNotifications().find((message) =>
+      notificationOf(message)?.payload.includes(RESULT),
+    )!;
+    const { connection: speaker } = await waitForIsolatedSpeechRequest(
+      stack.fakeDash,
+      input,
+      'peer_report',
+    );
+    expect(speaker).not.toBe(conn);
+    const responseId = speaker.beginResponse();
     const fromIndex = stack.fakeDash.inbox.length;
+    const hostFrames = stack.host.audioFrames.length;
+    // Even audio preceding the malicious tool is withheld until the complete
+    // no-tools result is validated. A rejected helper cannot leak a preamble.
+    speaker.send({
+      type: 'response.audio.delta',
+      response_id: responseId,
+      delta: Buffer.alloc(480, 3).toString('base64'),
+    });
     for (const name of ['handoff', 'respond_permission', 'turn_complete']) {
-      conn.send({
+      speaker.send({
         type: 'response.output_item.done',
         response_id: responseId,
         item: {
@@ -508,27 +549,24 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
         },
       });
     }
-    const hostFrom = stack.host.messages.length;
-    conn.send({
-      type: 'response.audio.delta',
-      response_id: responseId,
-      item_id: 'pr3-result-audio',
-      delta: Buffer.alloc(480, 3).toString('base64'),
-    });
-    conn.send({ type: 'response.audio.done', response_id: responseId });
-    conn.finishResponse(responseId);
+    speaker.send({ type: 'response.audio.done', response_id: responseId });
+    speaker.finishResponse(responseId);
+    await reportWith(RESULT, 'unspoken');
+    await expect
+      .poll(() => speaker.socket.readyState)
+      .toBe(speaker.socket.CLOSED);
     for (const name of ['handoff', 'respond_permission', 'turn_complete']) {
-      const output = await stack.fakeDash.waitForMessage(
-        (m) => functionCallOutputOf(m)?.callId === `pr3-malicious-${name}`,
-        { fromIndex },
-      );
-      expect(JSON.parse(functionCallOutputOf(output)!.output)).toMatchObject({
-        status: 'error',
-        note: 'This response is not authorized to call tools.',
-      });
+      expect(
+        stack.fakeDash.inbox
+          .slice(fromIndex)
+          .some(
+            (message) =>
+              functionCallOutputOf(message)?.callId === `pr3-malicious-${name}`,
+          ),
+      ).toBe(false);
     }
-    await finishPlayback(hostFrom);
-    await reportWith(RESULT, 'announced');
+    expect(stack.host.audioFrames).toHaveLength(hostFrames);
+    expect((await reportWith(RESULT)).text).toBe(RESULT);
     await expect
       .poll(() => terminalOutput.includes(DONE), { timeout: 10_000 })
       .toBe(true);
@@ -542,6 +580,8 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
       sourceStatus: resultReport.sourceStatus,
       category: resultReport.category,
       rejectedTools: ['handoff', 'respond_permission', 'turn_complete'],
+      announcement: 'unspoken',
+      partialAudioForwarded: false,
       taskCount: 0,
     };
   });
@@ -609,6 +649,10 @@ describeE2E('Qwen peer reports — real terminal backflow', () => {
         role: 'user',
         content: [{ type: 'input_audio' }],
       },
+    });
+    conn.send({
+      type: 'input_audio_buffer.committed',
+      item_id: 'pr3-unknown-queue',
     });
     conn.send({
       type: 'conversation.item.input_audio_transcription.completed',

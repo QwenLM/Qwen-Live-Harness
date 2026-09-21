@@ -572,6 +572,8 @@ export class HostCameraEngine {
         } catch (error) {
           photo?.close();
           this.fail(generation, 'camera_preview_restore_failed');
+          // Never return a successful snapshot when its preview cannot recover.
+          // eslint-disable-next-line no-unsafe-finally
           throw error;
         }
       }

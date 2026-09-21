@@ -17,6 +17,7 @@ import { sleep } from './qwen-backend-harness.js';
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -50,6 +51,7 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
   const modelRequests: string[] = [];
 
   const toolCall = async (
+    request: string,
     name: string,
     callId: string,
     args: Record<string, unknown>,
@@ -60,7 +62,7 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please ${name}: ${JSON.stringify(args)}`);
+    conn.speakTranscript(request);
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === callId,
       {
@@ -69,21 +71,18 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
         description: `${name} receipt ${callId}`,
       },
     );
-    if (name !== 'handoff') {
-      await waitForLiveResponseAfter(
-        stack,
-        receiptMessage,
-        'tool_continuation',
-      );
-    }
+    await waitForLiveResponseAfter(stack, receiptMessage, 'tool_continuation');
     return JSON.parse(functionCallOutputOf(receiptMessage)!.output) as Record<
       string,
       unknown
     >;
   };
 
-  const handoff = (callId: string, args: Record<string, unknown>) =>
-    toolCall('handoff', callId, args);
+  const handoff = (
+    request: string,
+    callId: string,
+    args: Record<string, unknown>,
+  ) => toolCall(request, 'handoff', callId, args);
 
   let monitorSeq = 0;
   const waitForIdleSession = async (
@@ -93,6 +92,7 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const snapshot = await toolCall(
+        'Is the background coding session idle now?',
         'session_monitor',
         `call-mon-${++monitorSeq}`,
         { session },
@@ -133,7 +133,11 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
   }, 60_000);
 
   it('delivers a steered instruction to the running ACP turn', async () => {
-    const first = await handoff('call-s1', { task: SLOW_MARKER });
+    const first = await handoff(
+      'Please run the project test suite.',
+      'call-s1',
+      { task: SLOW_MARKER },
+    );
     expect(first['status']).toBe('accepted');
     sessionHandle = String(first['session']);
     expect(sessionHandle).toMatch(/^session_\d+$/);
@@ -145,10 +149,14 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
       'the slow turn to reach the fake model endpoint',
     );
 
-    const second = await handoff('call-s2', {
-      task: STEER_MARKER,
-      session: sessionHandle,
-    });
+    const second = await handoff(
+      'Please also inspect the project documentation.',
+      'call-s2',
+      {
+        task: STEER_MARKER,
+        session: sessionHandle,
+      },
+    );
     // Either the agent drained it into the running turn (joined) or it is
     // queued for the next one — both are honest receipts on ACP.
     expect(['accepted', 'queued']).toContain(second['status']);
@@ -175,8 +183,10 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
     // And the slow turn's conclusion flows back.
     const complete = await stack.fakeDash.waitForMessage(
       (message) => {
-        const text = contextTextOf(message);
-        return text !== undefined && /\[COMPLETE job_\d+\]/.test(text);
+        return (
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === first['job']
+        );
       },
       {
         timeoutMs: 60_000,
@@ -191,19 +201,25 @@ describeE2E('qwen-live-harness M4 — ACP steering', () => {
 
   it('accepts a plain handoff to the now-idle acp session', async () => {
     await waitForIdleSession(sessionHandle);
-    const receipt = await handoff('call-s3', {
-      task: 'one more acp task',
-      session: sessionHandle,
-    });
+    const receipt = await handoff(
+      'Please check the project configuration.',
+      'call-s3',
+      {
+        task: 'one more acp task',
+        session: sessionHandle,
+      },
+    );
     expect(receipt['status']).toBe('accepted');
     const job = String(receipt['job']);
-    await stack.fakeDash.waitForMessage(
+    const completed = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === job,
       {
         timeoutMs: 30_000,
         description: `[COMPLETE ${job}] for the idle handoff`,
       },
     );
+    await waitForLiveResponseAfter(stack, completed, 'task_result');
   });
 });

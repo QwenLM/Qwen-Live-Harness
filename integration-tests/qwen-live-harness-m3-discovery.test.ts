@@ -106,6 +106,7 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
   };
 
   const toolCall = async (
+    request: string,
     name: string,
     callId: string,
     args: Record<string, unknown> = {},
@@ -116,14 +117,12 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please ${name}: ${JSON.stringify(args)}`);
+    conn.speakTranscript(request);
     const receipt = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === callId,
       { fromIndex, timeoutMs: 30_000, description: `${name} ${callId}` },
     );
-    if (name !== 'handoff') {
-      await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
-    }
+    await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
     return JSON.parse(functionCallOutputOf(receipt)!.output) as Record<
       string,
       unknown
@@ -137,7 +136,11 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
     await expect.poll(async () => (await liveRecords()).length).toBe(1);
     liveSessionId = (await liveRecords())[0].sessionId;
 
-    const listed = await toolCall('session_list', 'm3-list-first');
+    const listed = await toolCall(
+      'List the available coding sessions.',
+      'session_list',
+      'm3-list-first',
+    );
     expect(listed['status']).toBe('ok');
     const terminals = (
       listed['sessions'] as Array<Record<string, unknown>>
@@ -165,7 +168,11 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
     }
     terminalHandle = String(terminals[0]['handle']);
 
-    const again = await toolCall('session_list', 'm3-list-again');
+    const again = await toolCall(
+      'Show the coding sessions again.',
+      'session_list',
+      'm3-list-again',
+    );
     expect(
       (again['sessions'] as Array<Record<string, unknown>>).filter(
         (row) => row['source'] === 'terminal',
@@ -176,18 +183,33 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
   it('refuses terminal actions without creating tasks or model requests', async () => {
     const beforeRequests = stack.fakeOpenAI.requests.length;
     expect(
-      await toolCall('handoff', 'm3-handoff', {
-        session: terminalHandle,
-        task: 'This instruction must never be delivered.',
-      }),
+      await toolCall(
+        'Please inspect the repository in that terminal.',
+        'handoff',
+        'm3-handoff',
+        {
+          session: terminalHandle,
+          task: 'This instruction must never be delivered.',
+        },
+      ),
     ).toMatchObject({ status: 'rejected', session: terminalHandle });
     expect(
-      await toolCall('session_stop', 'm3-stop', { session: terminalHandle }),
+      await toolCall(
+        'Cancel the task in that terminal.',
+        'session_stop',
+        'm3-stop',
+        { session: terminalHandle },
+      ),
     ).toMatchObject({ status: 'unsupported', session: terminalHandle });
     expect(
-      await toolCall('session_monitor', 'm3-monitor', {
-        session: terminalHandle,
-      }),
+      await toolCall(
+        'What is the terminal session doing?',
+        'session_monitor',
+        'm3-monitor',
+        {
+          session: terminalHandle,
+        },
+      ),
     ).toMatchObject({ status: 'ok', state: 'unknown', read_only: true });
 
     const hostPage = await page();
@@ -235,7 +257,11 @@ describeE2E('qwen-live-harness M3 — read-only terminal discovery', () => {
 
   it('removes a closed terminal from both catalogs without a phantom task', async () => {
     await second.close();
-    const listed = await toolCall('session_list', 'm3-list-after-exit');
+    const listed = await toolCall(
+      'Which coding sessions are still available?',
+      'session_list',
+      'm3-list-after-exit',
+    );
     expect(
       (listed['sessions'] as Array<Record<string, unknown>>).filter(
         (row) => row['source'] === 'terminal',

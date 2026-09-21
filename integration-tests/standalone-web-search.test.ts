@@ -229,6 +229,7 @@ async function fixture(
   });
 
   const invoke = async (
+    userRequest: string,
     name: string,
     args: Json,
     callId: string,
@@ -249,7 +250,7 @@ async function fixture(
           }
         : {}),
     });
-    conn.speakTranscript(`Please run ${name}.`);
+    conn.speakTranscript(userRequest);
     const message = await fakeDash.waitForMessage(
       (value) => functionCallOutputOf(value)?.callId === callId,
       { fromIndex },
@@ -269,7 +270,13 @@ async function fixture(
     return { message, output: functionCallOutputOf(message)!.output };
   };
   const search = async (query: string, callId: string, preamble = false) => {
-    const result = await invoke('web_search', { query }, callId, preamble);
+    const result = await invoke(
+      query,
+      'web_search',
+      { query },
+      callId,
+      preamble,
+    );
     const receipt = JSON.parse(result.output) as Json;
     expect(receipt['status']).toBe('accepted');
     expect(receipt['taskId']).toMatch(/^search:/);
@@ -440,6 +447,7 @@ describe('asynchronous native search and result delivery', () => {
   it('drains an actual Harness admission after a preamble before speaking its completed result', async () => {
     const f = await fixture(true, undefined, true);
     const accepted = await f.invoke(
+      'Please inspect the project and report the result.',
       'handoff',
       { task: 'Synthetic delegated work with an audible final result' },
       'spoken-handoff',
@@ -472,6 +480,7 @@ describe('asynchronous native search and result delivery', () => {
   it('does not silence a rejected Harness request after the model already spoke a preamble', async () => {
     const f = await fixture(true, undefined, true);
     const rejected = await f.invoke(
+      'Please run the project tests.',
       'handoff',
       { task: '' },
       'rejected-handoff',
@@ -488,6 +497,7 @@ describe('asynchronous native search and result delivery', () => {
   it('keeps a Harness permission request audible after suppressing only the repeated admission', async () => {
     const f = await fixture(true, undefined, true);
     await f.invoke(
+      'Please write the project report to a file.',
       'handoff',
       { task: 'permission: synthetic write needing an explicit decision' },
       'permission-after-preamble',
@@ -651,7 +661,12 @@ describe('asynchronous native search and result delivery', () => {
   it('keeps Memory updates and every local function on the foreground connection', async () => {
     const f = await fixture();
     const fact = 'The user prefers concise search summaries.';
-    await f.invoke('omnibio', { operations: { add: [fact] } }, 'search-memory');
+    await f.invoke(
+      'Remember that I prefer concise search summaries.',
+      'omnibio',
+      { operations: { add: [fact] } },
+      'search-memory',
+    );
     await f.fakeDash.waitForMessage(
       (message) =>
         contextTextOf(message)?.startsWith('[BACKEND] [MEMORY_CONTEXT] ') ===
@@ -690,6 +705,7 @@ describe('asynchronous native search and result delivery', () => {
     const created = JSON.parse(
       (
         await f.invoke(
+          'Create a new background agent session for my project.',
           'session_create',
           { label: 'Existing work' },
           'work-session',
@@ -700,6 +716,7 @@ describe('asynchronous native search and result delivery', () => {
     const original = JSON.parse(
       (
         await f.invoke(
+          'Please inspect the private project in that session.',
           'handoff',
           { session, task: 'PRIVATE_EXISTING_WORK_CONTEXT' },
           'old-work',
@@ -828,6 +845,7 @@ describe('asynchronous native search and result delivery', () => {
     const existing = JSON.parse(
       (
         await f.invoke(
+          'Create a separate background agent session for the repository.',
           'session_create',
           { label: 'Unrelated work' },
           'unrelated-session',
@@ -838,6 +856,7 @@ describe('asynchronous native search and result delivery', () => {
     const work = JSON.parse(
       (
         await f.invoke(
+          'Please write a report file in that background session.',
           'handoff',
           {
             session: existingSession,

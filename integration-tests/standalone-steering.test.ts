@@ -92,14 +92,14 @@ describe('standalone daemon steering an ACP turn mid-flight', () => {
     if (temporary) await rm(temporary, { recursive: true, force: true });
   });
 
-  async function handoff(task: string, callId: string) {
+  async function handoff(request: string, task: string, callId: string) {
     const fromIndex = fakeDash.inbox.length;
     conn.queueFunctionCall({
       name: 'handoff',
       argumentsJson: JSON.stringify({ task }),
       callId,
     });
-    conn.speakTranscript(`Please run ${task}.`);
+    conn.speakTranscript(request);
     const message = await fakeDash.waitForMessage(
       (m) => functionCallOutputOf(m)?.callId === callId,
       { fromIndex, description: `the handoff receipt for ${callId}` },
@@ -131,10 +131,18 @@ describe('standalone daemon steering an ACP turn mid-flight', () => {
   it('joins a follow-up into the turn already running and completes with it', async () => {
     // The fixture pulls once at session/new, so native steering is available
     // from the first turn — no warm-up round trip, nothing timing-dependent.
-    const long = await handoff('long running task', 'steer-long');
+    const long = await handoff(
+      'Please run the project test suite.',
+      'long running task',
+      'steer-long',
+    );
     expect(long.receipt['status']).toBe('accepted');
 
-    const followUp = await handoff('also skip integration', 'steer-follow');
+    const followUp = await handoff(
+      'Please run only the unit tests and skip integration tests.',
+      'also skip integration',
+      'steer-follow',
+    );
     expect(followUp.receipt['status']).toBe('accepted');
     // Native steering, not the queue-until-idle degradation.
     expect(String(followUp.receipt['note'])).toContain(

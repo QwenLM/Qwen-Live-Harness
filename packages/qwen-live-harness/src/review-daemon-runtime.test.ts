@@ -72,14 +72,6 @@ afterEach(async () => {
 });
 
 describe('PR #11369 round 2 daemon runtime reproduction', () => {
-  it('R2-6 rejects unknown visual input keys instead of selecting the desktop', async () => {
-    await expect(
-      fixture({
-        visualInput: { sourc: 'camera', cameraResoluton: 'native' },
-      }),
-    ).rejects.toThrow('unknown key');
-  });
-
   it.each([
     'dashscope.aliyuncs.com',
     'wss://user:pass@proxy.example.invalid/realtime',

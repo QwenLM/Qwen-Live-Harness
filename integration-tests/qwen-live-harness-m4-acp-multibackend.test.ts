@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -60,6 +61,7 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
   }, 60_000);
 
   const toolCall = async (
+    request: string,
     name: string,
     callId: string,
     args: Record<string, unknown>,
@@ -70,7 +72,7 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
       argumentsJson: JSON.stringify(args),
       callId,
     });
-    conn.speakTranscript(`Please ${name}: ${JSON.stringify(args)}`);
+    conn.speakTranscript(request);
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === callId,
       {
@@ -79,13 +81,7 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
         description: `${name} receipt ${callId}`,
       },
     );
-    if (name !== 'handoff') {
-      await waitForLiveResponseAfter(
-        stack,
-        receiptMessage,
-        'tool_continuation',
-      );
-    }
+    await waitForLiveResponseAfter(stack, receiptMessage, 'tool_continuation');
     return JSON.parse(functionCallOutputOf(receiptMessage)!.output) as Record<
       string,
       unknown
@@ -94,25 +90,40 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
 
   it('runs a task on each backend and reports both in session_list', async () => {
     // A session on the ACP secondary (explicitly named)…
-    const acpCreate = await toolCall('session_create', 'call-c1', {
-      backend: 'qwen-acp',
-      label: 'acp worker',
-    });
+    const acpCreate = await toolCall(
+      'Create a new background session using the ACP backend.',
+      'session_create',
+      'call-c1',
+      {
+        backend: 'qwen-acp',
+        label: 'acp worker',
+      },
+    );
     expect(acpCreate['status']).toBe('ok');
     const acpHandle = String(acpCreate['handle']);
 
     // …and a default handoff (no session arg) that lands on serve.
-    const serveReceipt = await toolCall('handoff', 'call-h1', {
-      task: 'multi-serve-task',
-    });
+    const serveReceipt = await toolCall(
+      'Please run the project tests using the default background agent.',
+      'handoff',
+      'call-h1',
+      {
+        task: 'multi-serve-task',
+      },
+    );
     expect(serveReceipt['status']).toBe('accepted');
     const serveHandle = String(serveReceipt['session']);
 
     // A handoff naming the acp session routes to the acp child.
-    const acpReceipt = await toolCall('handoff', 'call-h2', {
-      task: 'multi-acp-task',
-      session: acpHandle,
-    });
+    const acpReceipt = await toolCall(
+      'Please inspect the project in the ACP session.',
+      'handoff',
+      'call-h2',
+      {
+        task: 'multi-acp-task',
+        session: acpHandle,
+      },
+    );
     expect(acpReceipt['status']).toBe('accepted');
     expect(acpReceipt['session']).toBe(acpHandle);
 
@@ -123,7 +134,8 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
     ] as const) {
       const complete = await stack.fakeDash.waitForMessage(
         (message) =>
-          contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === job,
         {
           timeoutMs: 60_000,
           description: `[COMPLETE ${job}]`,
@@ -135,7 +147,12 @@ describeE2E('qwen-live-harness M4 — multi-backend coexistence', () => {
     }
 
     // session_list shows both backends.
-    const list = await toolCall('session_list', 'call-l1', {});
+    const list = await toolCall(
+      'List the background sessions on both backends.',
+      'session_list',
+      'call-l1',
+      {},
+    );
     expect(list['status']).toBe('ok');
     const sessions = list['sessions'] as Array<Record<string, unknown>>;
     const backends = new Set(sessions.map((row) => row['backend']));

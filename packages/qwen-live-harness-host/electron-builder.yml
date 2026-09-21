@@ -12,8 +12,14 @@ files:
   - 'dist/main.cjs'
   - 'dist/preload.cjs'
   - 'dist/subagents-preload.cjs'
+  - 'dist/LICENSE'
   - 'dist/renderer/**/*'
   - 'package.json'
+  - '!**/*.map'
+  - '!**/*.{bak,backup,old,orig,tmp,temp,log,tsbuildinfo,swp,swo}'
+  - '!**/*~'
+  - '!dist/renderer/icon.*'
+  - '!dist/renderer/localizations/**'
 
 extraMetadata:
   main: 'dist/main.cjs'

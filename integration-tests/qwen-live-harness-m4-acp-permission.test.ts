@@ -19,6 +19,7 @@ import {
   contextTextOf,
   permissionPayloadOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -85,7 +86,7 @@ describeE2E('qwen-live-harness M4 — ACP permission relay', () => {
       argumentsJson: JSON.stringify({ task: 'perm-acp-task' }),
       callId: 'call-p',
     });
-    conn.speakTranscript('Run perm-acp-task.');
+    conn.speakTranscript('Please write the project report to a file.');
     const receiptMessage = await stack.fakeDash.waitForMessage(
       (message) => functionCallOutputOf(message)?.callId === 'call-p',
       {
@@ -144,7 +145,8 @@ describeE2E('qwen-live-harness M4 — ACP permission relay', () => {
     // The turn completes and the file landed.
     const complete = await stack.fakeDash.waitForMessage(
       (message) =>
-        contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+        taskResultPayloadOf(message)?.status === 'completed' &&
+        taskResultPayloadOf(message)?.job === job,
       {
         timeoutMs: 60_000,
         fromIndex: inboxIndex,
@@ -153,5 +155,6 @@ describeE2E('qwen-live-harness M4 — ACP permission relay', () => {
     );
     expect(contextTextOf(complete)).toContain('acp permission turn complete');
     expect(readFileSync(permFilePath, 'utf8')).toBe(PERM_FILE_CONTENT);
+    await waitForLiveResponseAfter(stack, complete, 'task_result');
   });
 });

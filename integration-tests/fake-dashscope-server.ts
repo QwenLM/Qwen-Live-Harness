@@ -56,6 +56,8 @@ export interface FakeDashScopeConnection {
   readonly socket: WebSocket;
   /** Messages received on this connection, separate from the shared inbox. */
   readonly inbox: JsonObject[];
+  /** Exact per-connection wire order for ACK and response ownership checks. */
+  readonly trace: Array<{ direction: 'in' | 'out'; message: JsonObject }>;
   /** Raw upgrade-request URL (path + query). */
   readonly requestUrl: string;
   /** `model` query parameter from the upgrade URL. */
@@ -209,6 +211,20 @@ export function notificationOf(message: JsonObject):
     if (!summary) return undefined;
     try {
       const payload: unknown = JSON.parse(summary);
+      if (isRecord(payload) && isRecord(payload['untrusted_report'])) {
+        const report = payload['untrusted_report'];
+        if (
+          typeof report['source'] === 'string' &&
+          typeof report['text'] === 'string' &&
+          ['matched', 'unconfirmed'].includes(
+            String(report['source_status']),
+          ) &&
+          ['progress', 'blocked', 'result', 'info'].includes(
+            String(report['category']),
+          )
+        )
+          return { kind: 'peer_report', payload: summary };
+      }
       if (
         isRecord(payload) &&
         typeof payload['query'] === 'string' &&
@@ -447,8 +463,17 @@ export async function startFakeDashScopeServer(
         : undefined;
 
     const responseOutputs = new Map<string, Map<string, JsonObject>>();
+    const trace: FakeDashScopeConnection['trace'] = [];
+    let latestInputId: string | undefined;
     const sendJson = (body: JsonObject) => {
       if (socket.readyState !== socket.OPEN) return;
+      if (
+        body['type'] === 'conversation.item.created' &&
+        isRecord(body['item']) &&
+        body['item']['role'] === 'user' &&
+        typeof body['item']['id'] === 'string'
+      )
+        latestInputId = body['item']['id'];
       if (
         body['type'] === 'response.output_item.done' &&
         typeof body['response_id'] === 'string' &&
@@ -465,10 +490,11 @@ export async function startFakeDashScopeServer(
         });
         responseOutputs.set(body['response_id'], items);
       }
-      socket.send(JSON.stringify({ event_id: `evt-${++eventSeq}`, ...body }));
+      const message = { event_id: `evt-${++eventSeq}`, ...body };
+      trace.push({ direction: 'out', message });
+      socket.send(JSON.stringify(message));
     };
 
-    let latestInputId: string | undefined;
     const responseInputs = new Map<string, string | undefined>();
     const messageItems = new Set<string>();
     const announceMessage = (
@@ -563,6 +589,7 @@ export async function startFakeDashScopeServer(
       index: connections.length,
       socket,
       inbox: connectionInbox,
+      trace,
       requestUrl,
       model: query.get('model') ?? undefined,
       authorization,
@@ -670,6 +697,7 @@ export async function startFakeDashScopeServer(
       if (!isRecord(parsed)) return;
       inbox.push(parsed);
       connectionInbox.push(parsed);
+      trace.push({ direction: 'in', message: parsed });
       if (
         speechOnly &&
         (speechSummaryOf(parsed) !== undefined ||

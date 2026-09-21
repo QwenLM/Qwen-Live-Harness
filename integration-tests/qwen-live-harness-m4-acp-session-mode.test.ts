@@ -23,6 +23,7 @@ import {
   contextTextOf,
   permissionPayloadOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import {
@@ -52,6 +53,7 @@ const TASK = 'mode-e2e-task';
 async function handOffWriteTask(
   stack: AcpLiveStack,
   conn: FakeDashScopeConnection,
+  request: string,
   callId: string,
 ): Promise<{ fromIndex: number; job: string }> {
   const fromIndex = stack.fakeDash.inbox.length;
@@ -60,7 +62,7 @@ async function handOffWriteTask(
     argumentsJson: JSON.stringify({ task: TASK }),
     callId,
   });
-  conn.speakTranscript(`Run ${TASK}.`);
+  conn.speakTranscript(request);
   const receiptMessage = await stack.fakeDash.waitForMessage(
     (message) => functionCallOutputOf(message)?.callId === callId,
     {
@@ -118,17 +120,24 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
     });
     try {
       const conn = (await startLiveCall(stack)).conn;
-      const { fromIndex, job } = await handOffWriteTask(stack, conn, 'call-y');
+      const { fromIndex, job } = await handOffWriteTask(
+        stack,
+        conn,
+        'Please write the project report to a file.',
+        'call-y',
+      );
 
-      await stack.fakeDash.waitForMessage(
+      const completed = await stack.fakeDash.waitForMessage(
         (message) =>
-          contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === job,
         {
           timeoutMs: 120_000,
           fromIndex,
           description: `[COMPLETE ${job}] with no approval round trip`,
         },
       );
+      await waitForLiveResponseAfter(stack, completed, 'task_result');
       expect(readFileSync(filePath, 'utf8')).toBe(FILE_CONTENT);
       expect(
         injectedContext(stack, fromIndex).some((text) =>
@@ -155,7 +164,12 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
     });
     try {
       const conn = (await startLiveCall(stack)).conn;
-      const { fromIndex, job } = await handOffWriteTask(stack, conn, 'call-f');
+      const { fromIndex, job } = await handOffWriteTask(
+        stack,
+        conn,
+        'Please create a test file in the project workspace.',
+        'call-f',
+      );
 
       const permissionMessage = await stack.fakeDash.waitForMessage(
         (message) => permissionPayloadOf(message) !== undefined,
@@ -210,15 +224,17 @@ describeE2E('qwen-live-harness M4 — ACP approval mode selection', () => {
         'tool_continuation',
       );
 
-      await stack.fakeDash.waitForMessage(
+      const completed = await stack.fakeDash.waitForMessage(
         (message) =>
-          contextTextOf(message)?.includes(`[COMPLETE ${job}]`) ?? false,
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === job,
         {
           timeoutMs: 120_000,
           fromIndex,
           description: `[COMPLETE ${job}] after the allow vote`,
         },
       );
+      await waitForLiveResponseAfter(stack, completed, 'task_result');
       expect(readFileSync(filePath, 'utf8')).toBe(FILE_CONTENT);
     } finally {
       await stack.dispose();

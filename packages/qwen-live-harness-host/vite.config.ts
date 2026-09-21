@@ -4,7 +4,9 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   base: './',
-  publicDir: resolve(__dirname, 'resources'),
+  // Native icons/localizations belong in mac.extraResources, not in renderer.
+  // build.mjs copies only the audio worklet that the renderer actually loads.
+  publicDir: false,
   resolve: {
     alias: {
       'qwen-live-harness/subagents': resolve(

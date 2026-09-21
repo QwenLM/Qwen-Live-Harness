@@ -74,6 +74,7 @@ jobs:
 
           test -x "$app/Contents/MacOS/Qwen Live Harness Host"
           test -f "$app/Contents/Resources/app.asar"
+          node -e 'require("./scripts/after-pack.cjs").assertPackagedContents(process.argv[1])' "$app"
 
           asar_entries="$(npx --no-install asar list "$app/Contents/Resources/app.asar")"
           if printf '%s\n' "$asar_entries" | grep -Eiq '(^|/)(native/|.*command[-_]?monitor|.*commandtap)'; then

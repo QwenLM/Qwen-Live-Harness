@@ -19,7 +19,7 @@
 
 ## News
 
-- **2026-09-19**: 🎉 We officially released **Qwen3.8 Omni Flash Realtime** and its companion [**Qwen-Live-Harness**](https://github.com/QwenLM/Qwen-Live-Harness)!
+- **2026-09-21**: 🎉 We officially released **Qwen3.8 Omni Flash Realtime** and its companion [**Qwen-Live-Harness**](https://github.com/QwenLM/Qwen-Live-Harness) **v1.0.0**!
 
 ## What can Qwen Live Harness do?
 

@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Committed Qwen Live Harness version, for example 0.3.0 or v0.3.0.'
+        description: 'Committed Qwen Live Harness version, for example 1.0.0 or v1.0.0.'
         required: true
         type: 'string'
       dry_run:
@@ -121,6 +121,7 @@ jobs:
           cache: 'npm'
       - run: 'npm ci'
       - run: 'npm run build && npm run typecheck'
+      - run: 'npm run lint:all && npm run format:check'
       - run: 'npm run test:daemon && npm run test:scripts && npm run test:integration'
       - run: 'npm run check:boundaries && npm run check:package'
 
@@ -240,6 +241,15 @@ jobs:
             Qwen-Live-Harness-Host-manifest.json; do
             test -f "release/$asset"
           done
+          app_count=0
+          while IFS= read -r -d '' app; do
+            app_count=$((app_count + 1))
+            node -e 'require("./scripts/after-pack.cjs").assertPackagedContents(process.argv[1])' "$app"
+          done < <(find release -mindepth 2 -maxdepth 2 -type d -name 'Qwen Live Harness Host.app' -print0)
+          if [ "$app_count" -ne 2 ]; then
+            echo '::error::Expected verified Host app contents for both release architectures.'
+            exit 1
+          fi
           node --input-type=module -e '
             import { createHash } from "node:crypto";
             import { readFileSync, statSync } from "node:fs";

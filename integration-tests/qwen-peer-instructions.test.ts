@@ -25,6 +25,7 @@ import type { SubagentsControlResult } from '../packages/qwen-live-harness/src/s
 import {
   contextTextOf,
   functionCallOutputOf,
+  taskResultPayloadOf,
   type FakeDashScopeConnection,
 } from './fake-dashscope-server.js';
 import { qwenCliPath, sleep } from './qwen-backend-harness.js';
@@ -310,7 +311,11 @@ describeE2E(
       return result.page;
     }
 
-    async function tool(name: string, args: Record<string, unknown> = {}) {
+    async function tool(
+      request: string,
+      name: string,
+      args: Record<string, unknown> = {},
+    ) {
       const callId = `peer-instructions-${++sequence}`;
       const fromIndex = stack.fakeDash.inbox.length;
       conn.queueFunctionCall({
@@ -318,14 +323,12 @@ describeE2E(
         argumentsJson: JSON.stringify(args),
         callId,
       });
-      conn.speakTranscript(`${TRANSCRIPT}: ${name}`);
+      conn.speakTranscript(request);
       const receipt = await stack.fakeDash.waitForMessage(
         (message) => functionCallOutputOf(message)?.callId === callId,
         { fromIndex, timeoutMs: 30_000, description: `${name} receipt` },
       );
-      if (name !== 'handoff') {
-        await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
-      }
+      await waitForLiveResponseAfter(stack, receipt, 'tool_continuation');
       const result = JSON.parse(
         functionCallOutputOf(receipt)!.output,
       ) as Record<string, unknown>;
@@ -347,7 +350,11 @@ describeE2E(
           { timeout },
         )
         .toBe(status);
-      const monitored = await tool('session_monitor', { delivery: id });
+      const monitored = await tool(
+        'Has the terminal received my instruction?',
+        'session_monitor',
+        { delivery: id },
+      );
       expect(monitored).toMatchObject({
         status: 'ok',
         delivery: id,
@@ -373,7 +380,10 @@ describeE2E(
     }
 
     it('delivers only the original instruction and keeps the receipt separate from completion', async () => {
-      const listed = await tool('session_list');
+      const listed = await tool(
+        'List the available coding sessions.',
+        'session_list',
+      );
       const rows = (
         listed['sessions'] as Array<Record<string, unknown>>
       ).filter((row) => row['source'] === 'terminal');
@@ -396,10 +406,14 @@ describeE2E(
         rows.find((row) => row['cwd'] === refused.cwd)!['handle'],
       );
       expect(stack.fakeOpenAI.requests).toHaveLength(0);
-      const receipt = await tool('handoff', {
-        session: terminalHandle,
-        task: SUCCESS,
-      });
+      const receipt = await tool(
+        'Ask the terminal agent to report the project test marker. My private note is: PR2 unrelated spoken context must not enter terminal input.',
+        'handoff',
+        {
+          session: terminalHandle,
+          task: SUCCESS,
+        },
+      );
       expect(receipt['status']).toBe('sent');
       expect(receipt['job']).toBeUndefined();
       successDelivery = String(receipt['delivery']);
@@ -431,26 +445,34 @@ describeE2E(
         .toBe(true);
       await expectNoTasks();
       expect(
-        stack.fakeDash.inbox.some((message) =>
-          contextTextOf(message)?.startsWith('[COMPLETE '),
+        stack.fakeDash.inbox.some(
+          (message) => taskResultPayloadOf(message) !== undefined,
         ),
       ).toBe(false);
     });
 
     it('rejects images and stopping without sending another instruction', async () => {
       const before = (await page()).instructionDeliveries?.length;
-      const images = await tool('handoff', {
-        session: terminalHandle,
-        task: 'This image instruction must not be delivered.',
-        input_refs: ['asset-not-for-terminal'],
-      });
+      const images = await tool(
+        'Ask the terminal agent to inspect this image.',
+        'handoff',
+        {
+          session: terminalHandle,
+          task: 'This image instruction must not be delivered.',
+          input_refs: ['asset-not-for-terminal'],
+        },
+      );
       expect(images['status']).toBe('rejected');
       expect(images['delivery']).toBeUndefined();
       expect(
-        await tool('session_stop', { session: terminalHandle }),
+        await tool('Cancel the task in that terminal.', 'session_stop', {
+          session: terminalHandle,
+        }),
       ).toMatchObject({ status: 'unsupported', session: terminalHandle });
       expect(
-        await tool('session_monitor', { session: terminalHandle }),
+        await tool('What is the terminal session doing?', 'session_monitor', {
+          session: terminalHandle,
+        }),
       ).toMatchObject({
         status: 'ok',
         state: 'unknown',
@@ -462,10 +484,14 @@ describeE2E(
     });
 
     it('tracks held and then denied without granting permission or invoking the model', async () => {
-      const receipt = await tool('handoff', {
-        session: heldHandle,
-        task: HELD,
-      });
+      const receipt = await tool(
+        'Please ask the terminal agent to inspect the project.',
+        'handoff',
+        {
+          session: heldHandle,
+          task: HELD,
+        },
+      );
       expect(receipt['status']).toBe('sent');
       const delivery = String(receipt['delivery']);
       await waitForDelivery(delivery, 'held');
@@ -482,10 +508,14 @@ describeE2E(
       expect((await expectNoTasks()).unassignedPermissions ?? []).toEqual([]);
       evidence['heldThenDenied'] = true;
 
-      const accepted = await tool('handoff', {
-        session: heldHandle,
-        task: HELD_ACCEPT,
-      });
+      const accepted = await tool(
+        'Please ask the terminal agent to run the project tests.',
+        'handoff',
+        {
+          session: heldHandle,
+          task: HELD_ACCEPT,
+        },
+      );
       const acceptedDelivery = String(accepted['delivery']);
       await waitForDelivery(acceptedDelivery, 'held');
       expect(hasModelInput(HELD_ACCEPT)).toBe(false);
@@ -515,10 +545,14 @@ describeE2E(
     });
 
     it('reports explicit receiver refusal without invoking the model', async () => {
-      const receipt = await tool('handoff', {
-        session: refusedHandle,
-        task: REFUSED,
-      });
+      const receipt = await tool(
+        'Please ask the terminal agent to review the project documentation.',
+        'handoff',
+        {
+          session: refusedHandle,
+          task: REFUSED,
+        },
+      );
       await waitForDelivery(String(receipt['delivery']), 'refused');
       expect(hasModelInput(REFUSED)).toBe(false);
       await expectNoTasks();
@@ -529,10 +563,14 @@ describeE2E(
       await controllers(['remove', controllerId]);
       controllerRemoved = true;
       expect((await controllers(['list', '--json'])).stdout.trim()).toBe('');
-      const receipt = await tool('handoff', {
-        session: terminalHandle,
-        task: REVOKED,
-      });
+      const receipt = await tool(
+        'Please ask the terminal agent to check the project configuration.',
+        'handoff',
+        {
+          session: terminalHandle,
+          task: REVOKED,
+        },
+      );
       expect(['sent', 'unknown']).toContain(receipt['status']);
       expect(receipt['job']).toBeUndefined();
       await waitForDelivery(String(receipt['delivery']), 'unknown', 45_000);
@@ -545,25 +583,34 @@ describeE2E(
     });
 
     it('keeps managed daemon prompts on REST with their normal job and completion', async () => {
-      const created = await tool('session_create', {
-        label: 'PR2 REST worker',
-      });
+      const created = await tool(
+        'Create a new managed background agent session.',
+        'session_create',
+        {
+          label: 'PR2 REST worker',
+        },
+      );
       expect(created['status']).toBe('ok');
-      const receipt = await tool('handoff', {
-        session: created['handle'],
-        task: MANAGED,
-      });
+      const receipt = await tool(
+        'Please inspect the repository with the managed background agent.',
+        'handoff',
+        {
+          session: created['handle'],
+          task: MANAGED,
+        },
+      );
       expect(receipt['status']).toBe('accepted');
       expect(receipt['job']).toMatch(/^job_\d+$/);
       expect(receipt['delivery']).toBeUndefined();
       const completion = await stack.fakeDash.waitForMessage(
         (message) =>
-          contextTextOf(message)?.includes(
-            `[COMPLETE ${String(receipt['job'])}]`,
-          ) ?? false,
+          taskResultPayloadOf(message)?.status === 'completed' &&
+          taskResultPayloadOf(message)?.job === receipt['job'],
         { timeoutMs: 30_000, description: 'managed REST completion' },
       );
       expect(contextTextOf(completion)).toContain('PR2 managed REST response');
+      expect(conn.inbox).not.toContain(completion);
+      await waitForLiveResponseAfter(stack, completion, 'task_result');
       expect(hasModelInput(MANAGED)).toBe(true);
       const current = await page();
       expect(current.total).toBe(1);
