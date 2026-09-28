@@ -1,7 +1,9 @@
+import { isVoiceId } from '../shared/protocol.ts';
 import type { HostPublicState, LiveHostApi } from '../shared/host-api.ts';
 import { OVERLAY_GEOMETRY } from '../shared/overlay-geometry.ts';
 import { uiIcon, setIcon } from './ui-icons.ts';
 import { MemoryPanel } from './memory-panel.ts';
+import { VoiceCreationPanel } from './voice-creation.ts';
 import {
   liveText,
   displayLiveMessage,
@@ -83,6 +85,26 @@ export class SettingsPanel {
   private readonly configStatus = document.createElement('p');
   private openingConfig = false;
   private configError: unknown = '';
+  private readonly voice = document.createElement('select');
+  private readonly customVoice = document.createElement('input');
+  private readonly saveVoice = button('voice.save', () => {
+    if (!this.api.setVoice || this.saveVoice.disabled) return;
+    const value = this.customVoice.value.trim();
+    void this.run(() => this.api.setVoice!(value));
+  });
+  private readonly voiceHint = document.createElement('p');
+  private readonly createVoice = button('voice.cloneTitle', () =>
+    this.voiceCreation.show(),
+  );
+  private readonly voiceCreation: VoiceCreationPanel;
+  private readonly voiceField = field(
+    'voice.label',
+    this.voice,
+    this.customVoice,
+    this.saveVoice,
+  );
+  private voiceOptionsKey = '';
+  private voiceSavedKey = '';
   private readonly language = document.createElement('select');
   private readonly permissionMode = document.createElement('select');
   private readonly permissionModeHint = document.createElement('p');
@@ -139,6 +161,7 @@ export class SettingsPanel {
     private readonly visibilityChanged: (open: boolean) => void,
     private readonly reportError: (error: unknown) => void = () => {},
   ) {
+    this.voiceCreation = new VoiceCreationPanel(api);
     this.element.className = 'settings-layer';
     this.element.hidden = true;
     this.panel.dataset.liveInteractive = '';
@@ -178,6 +201,33 @@ export class SettingsPanel {
     this.configStatus.setAttribute('role', 'status');
     this.openConfig.setAttribute('aria-describedby', this.configStatus.id);
     config.append(this.openConfig, this.configStatus);
+    this.voiceField.classList.add('settings-row', 'settings-voice');
+    uiLabel(this.voice, 'voice.label');
+    uiLabel(this.customVoice, 'voice.customId');
+    this.customVoice.type = 'text';
+    this.customVoice.maxLength = 256;
+    this.customVoice.autocomplete = 'off';
+    this.customVoice.spellcheck = false;
+    this.voiceHint.className = 'settings-hint';
+    this.voiceHint.id = 'voice-settings-hint';
+    this.voice.setAttribute('aria-describedby', this.voiceHint.id);
+    this.customVoice.setAttribute('aria-describedby', this.voiceHint.id);
+    this.voiceField.append(
+      this.voiceHint,
+      this.createVoice,
+      this.voiceCreation.element,
+    );
+    this.customVoice.addEventListener('input', () => this.render());
+    this.voice.addEventListener('change', () => {
+      if (this.voice.value === '__custom__') {
+        this.render();
+        this.customVoice.focus();
+        return;
+      }
+      const value = this.voice.value;
+      this.voiceSavedKey = '';
+      if (this.api.setVoice) void this.run(() => this.api.setVoice!(value));
+    });
     uiLabel(this.device, 'ui.audioSource');
     this.device.addEventListener('change', () => {
       const id = this.device.value || undefined;
@@ -342,7 +392,7 @@ export class SettingsPanel {
       paletteGroup.append(option);
     }
     for (const [name, children] of [
-      ['ui.sound', [audio]],
+      ['ui.sound', [audio, this.voiceField]],
       ['ui.visual', [source, this.displayField, capture]],
       [
         'ui.personalization',
@@ -406,6 +456,7 @@ export class SettingsPanel {
 
   hide(): void {
     if (!this.isOpen) return;
+    this.voiceCreation.dismiss();
     const generation = ++this.openingGeneration;
     this.opening = false;
     this.element.hidden = true;
@@ -418,6 +469,7 @@ export class SettingsPanel {
   }
 
   dispose(): void {
+    this.voiceCreation.dispose();
     this.removeDrag();
     this.hide();
     this.disposed = true;
@@ -451,6 +503,8 @@ export class SettingsPanel {
     const unavailable = state.connection !== 'ready';
     const language = state.language ?? 'en';
     localizeUi(this.element, language);
+    this.renderVoice(state);
+    this.voiceCreation.update(state);
     this.permissionMode.value = state.permissionModeV1?.mode ?? 'ask';
     this.permissionMode.disabled =
       this.busy ||
@@ -636,6 +690,81 @@ export class SettingsPanel {
       this.busy = false;
       this.render();
     }
+  }
+
+  private renderVoice(state: HostPublicState): void {
+    const value = state.voiceSettingsV1;
+    const language = state.language ?? 'en';
+    this.voiceField.hidden = !value || !this.api.setVoice;
+    if (!value) return;
+    const key = JSON.stringify([
+      value.model,
+      value.presets,
+      value.custom,
+      value.voice,
+      language,
+    ]);
+    const savedKey = JSON.stringify([value.model, value.voice]);
+    if (key !== this.voiceOptionsKey) {
+      const selection = this.voice.value;
+      this.voiceOptionsKey = key;
+      const values = [...value.presets];
+      const preset = values.includes(value.voice);
+      if (!preset && value.custom === 'unsupported')
+        values.unshift(value.voice);
+      const options = values.map((id) => {
+        const option = document.createElement('option');
+        option.value = option.textContent = id;
+        return option;
+      });
+      if (value.custom !== 'unsupported') {
+        const option = document.createElement('option');
+        option.value = '__custom__';
+        option.textContent = liveText(language, 'voice.custom');
+        options.push(option);
+      }
+      this.voice.replaceChildren(...options);
+      this.voice.value = selection;
+    }
+    if (savedKey !== this.voiceSavedKey) {
+      this.voiceSavedKey = savedKey;
+      this.voice.value =
+        value.presets.includes(value.voice) || value.custom === 'unsupported'
+          ? value.voice
+          : '__custom__';
+      this.customVoice.value = value.presets.includes(value.voice)
+        ? ''
+        : value.voice;
+    }
+    const custom = this.voice.value === '__custom__';
+    const disabled =
+      this.busy ||
+      state.connection !== 'ready' ||
+      Boolean(state.quitState) ||
+      Boolean(value.creating) ||
+      value.overridden;
+    this.voice.disabled = disabled;
+    this.createVoice.hidden =
+      !value.cloningV1 ||
+      !this.api.createVoice ||
+      value.custom === 'unsupported';
+    this.createVoice.disabled = disabled;
+    this.customVoice.hidden = this.saveVoice.hidden = !custom;
+    this.customVoice.disabled = disabled;
+    this.saveVoice.disabled =
+      disabled ||
+      !isVoiceId(this.customVoice.value.trim()) ||
+      this.customVoice.value.trim() === value.voice;
+    const hint = value.overridden
+      ? 'voice.overridden'
+      : value.availability === 'unsupported'
+        ? 'voice.unsupported'
+        : custom && value.custom === 'unverified'
+          ? 'voice.unverified'
+          : custom
+            ? 'voice.customHint'
+            : 'voice.nextCall';
+    this.voiceHint.textContent = liveText(language, hint);
   }
 
   private async loadDevices(): Promise<void> {

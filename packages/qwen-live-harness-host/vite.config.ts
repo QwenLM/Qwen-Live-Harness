@@ -9,6 +9,10 @@ export default defineConfig({
   publicDir: false,
   resolve: {
     alias: {
+      'qwen-live-harness/voice-sample': resolve(
+        __dirname,
+        '../qwen-live-harness/src/voice-sample.ts',
+      ),
       'qwen-live-harness/subagents': resolve(
         __dirname,
         '../qwen-live-harness/src/subagents/types.ts',

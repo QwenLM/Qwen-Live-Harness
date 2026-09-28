@@ -3469,7 +3469,10 @@ export function openQwenRealtimeSession(
         session: {
           modalities: ['text', 'audio'],
           smooth_output: false,
-          ...(config.voice ? { voice: config.voice } : {}),
+          ...(config.voice &&
+          !/^qwen3\.8-omni-flash-realtime(?:-|$)/u.test(config.model)
+            ? { voice: config.voice }
+            : {}),
           audio: {
             input: {
               format: {
@@ -3478,6 +3481,10 @@ export function openQwenRealtimeSession(
               },
             },
             output: {
+              ...(config.voice &&
+              /^qwen3\.8-omni-flash-realtime(?:-|$)/u.test(config.model)
+                ? { voice: config.voice }
+                : {}),
               format: {
                 type: 'pcm',
                 sample_rate: QWEN_REALTIME_OUTPUT_SAMPLE_RATE,

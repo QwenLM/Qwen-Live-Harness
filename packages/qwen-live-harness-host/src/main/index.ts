@@ -25,6 +25,7 @@ import {
 } from '../shared/theme.ts';
 import {
   app,
+  dialog,
   BrowserWindow,
   globalShortcut,
   ipcMain,
@@ -59,7 +60,10 @@ import {
   type ConnectionSnapshot,
 } from './daemon-connection.ts';
 import { LiveGlobalShortcut } from './global-shortcut.ts';
+import { readVoiceAudioFile } from './voice-audio-file.ts';
+import { voiceSampleSeconds } from 'qwen-live-harness/voice-sample';
 import {
+  isVoiceId,
   isValidInputAudioFrame,
   isValidInputImageFrame,
   isValidCameraSnapshotAsset,
@@ -601,6 +605,9 @@ function publicState(): HostPublicState {
     ...(connection.memory ? { memory: connection.memory } : {}),
     ...(connection.permissionModeV1
       ? { permissionModeV1: connection.permissionModeV1 }
+      : {}),
+    ...(connection.voiceSettingsV1
+      ? { voiceSettingsV1: connection.voiceSettingsV1 }
       : {}),
     ...(connection.subagentsV1 ? { subagentsV1: connection.subagentsV1 } : {}),
     live: startupMessage ? { ...status, message: startupMessage } : status,
@@ -1611,6 +1618,7 @@ function applyLiveStatus(status: LiveStatus): void {
 }
 
 function toggleLive(): void {
+  if (connection.voiceSettingsV1?.creating) return;
   startupInteraction.cancel();
   writeLiveDiagnostic('shortcut_toggle', {
     epoch: daemon.getEpoch(),
@@ -1643,6 +1651,7 @@ function toggleLive(): void {
 }
 
 function newConversation(): void {
+  if (connection.voiceSettingsV1?.creating) return;
   if (audioError || audioRetryPending) return;
   startupInteraction.cancel();
   showOverlay();
@@ -1974,6 +1983,55 @@ async function captureOnDemandVisual(request: {
 }
 
 function registerIpc(): void {
+  const checkVoiceCreation = (event: Electron.IpcMainInvokeEvent) => {
+    if (
+      !isTrustedSender(event) ||
+      !rendererEventsEnabled ||
+      quitState ||
+      connection.phase !== 'ready' ||
+      !connection.voiceSettingsV1?.cloningV1
+    )
+      throw new Error(liveMessage('voice.unavailable'));
+    if (connection.voiceSettingsV1.overridden)
+      throw new Error(liveMessage('voice.overridden'));
+    if (connection.voiceSettingsV1.creating)
+      throw new Error(liveMessage('voice.creating'));
+    if (isActiveLiveCall(connection.status ?? live))
+      throw new Error(liveMessage('voice.cloneIdle'));
+  };
+  ipcMain.handle('live:choose-voice-sample', async (event) => {
+    checkVoiceCreation(event);
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    checkVoiceCreation(event);
+    try {
+      return await readVoiceAudioFile(result.filePaths[0]);
+    } catch (error) {
+      throw new Error(
+        error instanceof Error &&
+          error.message.startsWith('qwen-live-harness-ui:')
+          ? error.message
+          : liveMessage('voice.sampleInvalid'),
+      );
+    }
+  });
+  ipcMain.handle('live:voice-recording-ready', (event) => {
+    checkVoiceCreation(event);
+    if (permissions.microphone !== 'granted')
+      throw new Error(liveMessage('voice.recordFailed'));
+  });
+  ipcMain.handle('live:create-voice', async (event, value: unknown) => {
+    checkVoiceCreation(event);
+    if (
+      !(value instanceof Uint8Array) ||
+      voiceSampleSeconds(value) === undefined
+    )
+      throw new Error(liveMessage('voice.sampleInvalid'));
+    return daemon.requestVoiceClone(value);
+  });
   ipcMain.handle('live:subagents:open', (event) => {
     if (
       !isTrustedSender(event) ||
@@ -2111,6 +2169,17 @@ function registerIpc(): void {
     )
       throw new Error(liveMessage('permissionMode.unavailable'));
     await daemon.requestPermissionMode(value);
+  });
+  ipcMain.handle('live:set-voice', async (event, value: unknown) => {
+    if (!isTrustedSender(event) || !rendererEventsEnabled || !isVoiceId(value))
+      throw new Error(liveMessage('voice.invalid'));
+    if (
+      quitState ||
+      connection.phase !== 'ready' ||
+      !connection.voiceSettingsV1
+    )
+      throw new Error(liveMessage('voice.unavailable'));
+    await daemon.requestVoice(value);
   });
   ipcMain.on('live:overlay-layout', (event, layout: unknown) => {
     if (

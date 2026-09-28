@@ -503,6 +503,41 @@ export class FakeHost {
     });
   }
 
+  async setVoice(
+    voice: string,
+    overrides: { epoch?: number; nonce?: string } = {},
+  ): Promise<JsonObject> {
+    const discovery = await readLiveDiscovery(this.discoveryDir);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Voice response timed out'));
+      }, 5000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.emitter.off('message', receive);
+      };
+      const receive = (message: JsonObject) => {
+        if (
+          message['type'] !== 'host.voice_result' ||
+          message['requestId'] !== requestId
+        )
+          return;
+        cleanup();
+        resolve(message);
+      };
+      this.emitter.on('message', receive);
+      this.send({
+        type: 'host.voice_action',
+        requestId,
+        epoch: overrides.epoch ?? this.states.at(-1)?.epoch ?? 0,
+        daemonInstanceNonce: overrides.nonce ?? discovery.instanceNonce,
+        voice,
+      });
+    });
+  }
+
   completePlayback(epoch: number, outputId: number): void {
     if (!this.pendingPlayback.delete(`${epoch}:${outputId}`)) {
       throw new Error('FakeHost: completion does not match pending output');

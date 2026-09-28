@@ -369,6 +369,7 @@ function createFakeRealtime() {
 type FakeRealtime = ReturnType<typeof createFakeRealtime>;
 
 interface StartSessionOptions {
+  getVoice?: () => string;
   getLanguage?: () => 'en' | 'zh-CN';
   getPermissionMode?: () => 'ask' | 'allow-all';
   withoutBackends?: boolean;
@@ -628,6 +629,7 @@ async function startSession(
   const session = new LiveSession({
     host,
     getLanguage: options.getLanguage,
+    getVoice: options.getVoice,
     registry:
       options.registry ??
       new BackendRegistry(
@@ -8019,6 +8021,7 @@ describe('LiveSession', () => {
   });
 
   it('uses one independent no-tools speech fallback and only records delivery after actual playback', async () => {
+    let voice = 'Tina';
     const harness = createProactiveHarness();
     const notificationSpeech = vi
       .fn<typeof synthesizeNotificationSpeech>()
@@ -8030,8 +8033,10 @@ describe('LiveSession', () => {
         createProactiveScheduler: harness.createScheduler,
         notificationSpeech,
         getLanguage: () => 'zh-CN',
+        getVoice: () => voice,
       },
     );
+    voice = 'Ryan'; // A saved setting affects the next call, including notification channels.
     const delivery = fallbackDelivery();
     harness.options().onEvent(delivery);
     callbacks.onResponseCreated?.({
@@ -8050,7 +8055,7 @@ describe('LiveSession', () => {
       expect.objectContaining({
         endpoint: 'https://dashscope.example.com',
         model: DEFAULT_REALTIME_MODEL,
-        voice: 'Cherry',
+        voice: 'Tina',
         language: 'zh-CN',
         summary: '这是第1次听到敲击桌子的声音',
         signal: expect.any(AbortSignal),

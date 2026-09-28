@@ -501,10 +501,17 @@ export function synthesizeNotificationSpeech(
               type: 'session.update',
               session: {
                 modalities: ['text', 'audio'],
-                voice: options.voice ?? 'Tina',
+                ...(!/^qwen3\.8-omni-flash-realtime(?:-|$)/u.test(options.model)
+                  ? { voice: options.voice ?? 'Tina' }
+                  : {}),
                 smooth_output: false,
                 audio: {
                   output: {
+                    ...(/^qwen3\.8-omni-flash-realtime(?:-|$)/u.test(
+                      options.model,
+                    )
+                      ? { voice: options.voice ?? 'Tina' }
+                      : {}),
                     format: {
                       type: 'pcm',
                       sample_rate: QWEN_REALTIME_OUTPUT_SAMPLE_RATE,

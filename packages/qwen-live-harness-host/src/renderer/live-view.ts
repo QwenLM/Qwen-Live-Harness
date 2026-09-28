@@ -424,6 +424,7 @@ export class LiveView {
     const pending = this.busy || quitting || quitFailed;
     this.call.disabled =
       pending ||
+      Boolean(state.voiceSettingsV1?.creating) ||
       state.connection !== 'ready' ||
       state.live.state === 'stopping';
     this.microphone.disabled = this.speaker.disabled =

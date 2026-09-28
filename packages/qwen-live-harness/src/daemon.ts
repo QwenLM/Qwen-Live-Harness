@@ -14,6 +14,14 @@
  * when another Qwen Live Harness daemon already owns it.
  */
 
+import { getVoiceState, isVoiceId } from './voice-catalog.js';
+import { persistVoicePreference } from './voice-preferences.js';
+import { createClonedVoice, VoiceCloneRequests } from './voice-cloning.js';
+import {
+  voiceSampleSeconds,
+  VOICE_CLONE_MAX_REQUEST_BYTES,
+  type VoiceCloneOutcome,
+} from './voice-sample.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -107,6 +115,8 @@ function buildAdaptor(
 }
 
 export class LiveDaemon {
+  private readonly voiceClones = new VoiceCloneRequests();
+  private readonly voiceCloneAbort = new AbortController();
   private readonly logger: LiveLogger;
   private readonly registry: BackendRegistry;
   private readonly installer: LiveHostInstaller;
@@ -346,6 +356,30 @@ export class LiveDaemon {
       daemonShutdownV1: true,
       getUiLanguage: () => ({ language: this.config.language ?? 'en' }),
       getPermissionMode: () => ({ mode: this.config.permissionMode ?? 'ask' }),
+      getVoice: () => ({
+        ...getVoiceState(
+          this.config.realtime.model,
+          this.config.realtime.voice ?? 'Tina',
+          this.config.realtime.voiceOverridden,
+        ),
+        cloningV1: true,
+        creating: this.voiceClones.busy,
+      }),
+      onVoiceAction: (voice) => {
+        if (this.voiceClones.busy)
+          throw new Error(liveMessage('voice.creating'));
+        if (this.config.realtime.voiceOverridden)
+          throw new Error(liveMessage('voice.overridden'));
+        if (!isVoiceId(voice)) throw new Error(liveMessage('voice.invalid'));
+        const state = getVoiceState(this.config.realtime.model, voice);
+        if (state.availability === 'unsupported')
+          throw new Error(liveMessage('voice.unsupported'));
+        this.config.realtime.voice = persistVoicePreference(
+          this.config.dataDir,
+          voice,
+        );
+        return state;
+      },
       onPermissionModeAction: (mode) => {
         this.config.permissionMode = persistPermissionModePreference(
           this.config.dataDir,
@@ -455,6 +489,7 @@ export class LiveDaemon {
 
     const session = new LiveSession({
       getLanguage: () => this.config.language ?? 'en',
+      getVoice: () => this.config.realtime.voice,
       getPermissionMode: () =>
         this.stopping ? 'ask' : (this.config.permissionMode ?? 'ask'),
       onFailure: (failure) => this.recordFailure(failure, false),
@@ -677,6 +712,7 @@ export class LiveDaemon {
 
   private stopResources(): Promise<void> {
     this.stopping = true;
+    this.voiceCloneAbort.abort();
     this.pendingCleanup ??= new Map<string, () => unknown>([
       ['session', () => this.session?.dispose()],
       ['coordinator', () => this.coordinator?.dispose()],
@@ -781,6 +817,25 @@ export class LiveDaemon {
   ): void {
     const url = (req.url ?? '').split('?', 1)[0];
     const route = `${req.method} ${url}`;
+    if (route === 'POST /live/voice-clone') {
+      if (!this.authorize(req)) {
+        res.writeHead(401).end();
+        req.resume();
+        return;
+      }
+      if (!this.authorizeInstance(req)) {
+        res.writeHead(409).end();
+        req.resume();
+        return;
+      }
+      if (this.stopping) {
+        res.writeHead(503).end();
+        req.resume();
+        return;
+      }
+      void this.serveVoiceClone(req, res);
+      return;
+    }
     if (route === 'POST /live/quit') {
       if (!this.authorize(req)) {
         res.writeHead(401).end();
@@ -845,6 +900,105 @@ export class LiveDaemon {
     }
     res.statusCode = route.startsWith('GET /live/setup') ? 401 : 404;
     res.end();
+  }
+
+  private async serveVoiceClone(
+    req: IncomingMessage,
+    res: import('node:http').ServerResponse,
+  ): Promise<void> {
+    const reply = (status: number, result: VoiceCloneOutcome) => {
+      if (!res.destroyed && !res.writableEnded)
+        res
+          .writeHead(status, { 'content-type': 'application/json' })
+          .end(JSON.stringify(result));
+    };
+    if (req.headers['content-type']?.split(';', 1)[0] !== 'application/json') {
+      reply(415, { ok: false, error: liveMessage('voice.sampleInvalid') });
+      req.resume();
+      return;
+    }
+    const timer = setTimeout(() => req.destroy(), 15_000);
+    timer.unref();
+    let input: { requestId: string; epoch: number; audio: string };
+    let audio: Buffer;
+    try {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > VOICE_CLONE_MAX_REQUEST_BYTES) throw new Error();
+        chunks.push(chunk);
+      }
+      const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (!value || typeof value !== 'object') throw new Error();
+      input = value as typeof input;
+      if (
+        typeof input.requestId !== 'string' ||
+        !/^[a-f0-9]{32}$/u.test(input.requestId) ||
+        !Number.isSafeInteger(input.epoch) ||
+        input.epoch < 0 ||
+        typeof input.audio !== 'string'
+      )
+        throw new Error();
+      audio = Buffer.from(input.audio, 'base64');
+      if (
+        audio.toString('base64') !== input.audio ||
+        voiceSampleSeconds(audio) === undefined
+      )
+        throw new Error();
+    } catch {
+      reply(400, { ok: false, error: liveMessage('voice.sampleInvalid') });
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+    const config = this.config.realtime;
+    const result = await this.voiceClones.run(
+      input.requestId,
+      `${input.epoch}:${config.model}`,
+      audio,
+      async () => {
+        let createdVoice: string | undefined;
+        try {
+          if (this.stopping || !this.coordinator)
+            throw new Error(liveMessage('voice.unavailable'));
+          if (config.voiceOverridden)
+            throw new Error(liveMessage('voice.overridden'));
+          if (
+            getVoiceState(config.model, config.voice ?? 'Tina').custom ===
+            'unsupported'
+          )
+            throw new Error(liveMessage('voice.cloneUnsupported'));
+          const current = this.coordinator.voiceCreationGuard(input.epoch);
+          this.coordinator.refreshVoiceSettings();
+          const created = await createClonedVoice({
+            ...config,
+            audio,
+            signal: this.voiceCloneAbort.signal,
+          });
+          createdVoice = created.voice;
+          if (this.stopping || !current())
+            throw new Error(liveMessage('voice.callChanged'));
+          config.voice = persistVoicePreference(
+            this.config.dataDir,
+            created.voice,
+          );
+          return { ok: true, ...created };
+        } catch (error) {
+          return {
+            ok: false,
+            error:
+              error instanceof Error &&
+              error.message.startsWith('qwen-live-harness-ui:')
+                ? error.message
+                : liveMessage('voice.cloneFailed'),
+            ...(createdVoice ? { createdVoice } : {}),
+          };
+        }
+      },
+    );
+    this.coordinator?.refreshVoiceSettings();
+    reply(200, result);
   }
 
   private async serveSubagents(

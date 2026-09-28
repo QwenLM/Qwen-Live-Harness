@@ -8,6 +8,147 @@ export type LiveLanguage = 'en' | 'zh-CN';
 
 // Edit all fixed Qwen Live Harness display text here. Keep placeholders in sync.
 export const LIVE_MESSAGES = {
+  'voice.cloneTitle': { en: 'Create a voice', 'zh-CN': '创建音色' },
+  'voice.chooseFile': { en: 'Choose audio', 'zh-CN': '选择音频' },
+  'voice.record': { en: 'Record', 'zh-CN': '录音' },
+  'voice.stopRecording': { en: 'Stop recording', 'zh-CN': '停止录音' },
+  'voice.discard': { en: 'Discard sample', 'zh-CN': '清除样本' },
+  'voice.create': { en: 'Create and use', 'zh-CN': '创建并使用' },
+  'voice.creating': {
+    en: 'Creating your voice… Please wait before starting a call or changing voices.',
+    'zh-CN': '正在创建音色…请完成后再开始通话或切换音色。',
+  },
+  'voice.cloneGuide': {
+    en: 'Record or choose 10–20 seconds of clear speech. WAV, MP3 and M4A; 3–60 seconds, up to 10 MB.',
+    'zh-CN':
+      '录制或选择一段 10–20 秒的清晰人声。支持 WAV、MP3、M4A，时长 3–60 秒，文件不超过 10 MB。',
+  },
+  'voice.cloneConsent': {
+    en: 'Create and use uploads this sample to your configured speech service to create a reusable voice. Service charges may apply.',
+    'zh-CN':
+      '点击“创建并使用”会将这段音频上传至当前语音服务，生成可复用的音色，可能产生服务费用。',
+  },
+  'voice.recording': {
+    en: 'Recording… {seconds}s / 60s',
+    'zh-CN': '正在录音…{seconds} 秒 / 60 秒',
+  },
+  'voice.sampleReady': {
+    en: '{name} · {seconds}s',
+    'zh-CN': '{name} · {seconds} 秒',
+  },
+  'voice.recordedSample': { en: 'Recording', 'zh-CN': '录音样本' },
+  'voice.created': {
+    en: 'Voice created and selected. It will be used on the next call.',
+    'zh-CN': '音色已创建并选用，下次通话开始生效。',
+  },
+  'voice.createdUnsaved': {
+    en: 'The voice was created, but could not be selected. Keep this ID and use it as a custom voice; do not create it again.',
+    'zh-CN':
+      '音色已创建，但未能选用。请保留这个 ID，作为已有自定义音色保存，无需再次创建。',
+  },
+  'voice.cloneIdle': {
+    en: 'End the current call before recording or creating a voice.',
+    'zh-CN': '请先结束当前通话，再录音或创建音色。',
+  },
+  'voice.sampleInvalid': {
+    en: 'Choose a valid audio sample containing 3–60 seconds of speech.',
+    'zh-CN': '请选择有效音频，包含 3–60 秒的人声。',
+  },
+  'voice.sampleTooLarge': {
+    en: 'Choose an audio file no larger than 10 MB.',
+    'zh-CN': '请选择不超过 10 MB 的音频文件。',
+  },
+  'voice.recordFailed': {
+    en: 'Could not record. Check microphone access or choose an audio file.',
+    'zh-CN': '录音失败，请检查麦克风权限，或选择音频文件。',
+  },
+  'voice.cloneEndpoint': {
+    en: 'Voice creation needs a secure speech service endpoint.',
+    'zh-CN': '创建音色需要安全的语音服务地址。',
+  },
+  'voice.cloneUncertain': {
+    en: 'Voice creation could not be confirmed. Check the service for the new voice before creating another one.',
+    'zh-CN': '未能确认创建结果。再次创建前，请先检查服务端是否已生成音色。',
+  },
+  'voice.cloneAccess': {
+    en: 'This API key cannot access voice creation. Check the speech service configuration.',
+    'zh-CN': '当前 API Key 无法访问音色创建接口，请检查语音服务配置。',
+  },
+  'voice.cloneUnsupported': {
+    en: 'This service does not support voice creation for the selected model. Your current voice has not changed.',
+    'zh-CN': '当前服务尚不支持为所选模型创建音色，原音色未改变。',
+  },
+  'voice.cloneAudioRejected': {
+    en: 'The service rejected this sample. Try 10–20 seconds of clear speech from one speaker, without music or background noise.',
+    'zh-CN':
+      '服务端未接受这段音频。请使用 10–20 秒清晰的单人人声，避免音乐和背景噪声。',
+  },
+  'voice.cloneFailed': {
+    en: 'Could not create the voice. Your current voice has not changed.',
+    'zh-CN': '音色创建失败，原音色未改变。',
+  },
+  'voice.cloneQuality': {
+    en: 'The voice was created with reduced quality. Listen to it before using it regularly.',
+    'zh-CN': '音色已创建，但样本质量较低，请先试听确认效果。',
+  },
+  'voice.label': { en: 'Voice', 'zh-CN': '音色' },
+  'voice.custom': { en: 'Custom voice…', 'zh-CN': '自定义音色…' },
+  'voice.customId': { en: 'Custom voice ID', 'zh-CN': '自定义音色 ID' },
+  'voice.save': { en: 'Save voice', 'zh-CN': '保存音色' },
+  'voice.nextCall': {
+    en: 'Saved selections apply to the next call.',
+    'zh-CN': '保存后从下一次通话开始生效。',
+  },
+  'voice.customHint': {
+    en: 'Enter an existing voice ID created for this model and service region. Applies to the next call.',
+    'zh-CN':
+      '输入为当前模型和服务区域创建的已有音色 ID，从下一次通话开始生效。',
+  },
+  'voice.unverified': {
+    en: 'Custom voice compatibility is unverified for this model. The provider validates the ID on the next call.',
+    'zh-CN': '此模型的自定义音色兼容性尚未确认，将在下一次通话时由服务端校验。',
+  },
+  'voice.overridden': {
+    en: 'Voice is controlled by QWEN_LIVE_HARNESS_VOICE. Remove the override and restart to edit it here.',
+    'zh-CN':
+      '音色由 QWEN_LIVE_HARNESS_VOICE 控制。移除覆盖并重启后可在此修改。',
+  },
+  'voice.unsupported': {
+    en: 'This voice is unavailable for the selected model. Choose a supported preset or a matching custom ID.',
+    'zh-CN': '当前模型不支持此音色，请选择支持的预设或匹配的自定义 ID。',
+  },
+  'voice.invalid': {
+    en: 'Enter a valid voice ID (1–256 characters, without control characters).',
+    'zh-CN': '请输入有效音色 ID（1–256 个字符，不含控制字符）。',
+  },
+  'voice.configInvalid': {
+    en: 'The configuration file is missing or invalid. Voice was not changed.',
+    'zh-CN': '配置文件不存在或无效，音色未更改。',
+  },
+  'voice.concurrentEdit': {
+    en: 'The configuration changed while saving. Try again.',
+    'zh-CN': '保存时配置文件已被修改，请重试。',
+  },
+  'voice.saveFailed': {
+    en: 'Could not save the voice. The selection has not changed.',
+    'zh-CN': '音色保存失败，仍使用当前音色。',
+  },
+  'voice.unavailable': {
+    en: 'Connect to a daemon that supports this setting to change the voice.',
+    'zh-CN': '连接到支持此设置的 daemon 后可修改音色。',
+  },
+  'voice.busy': {
+    en: 'The voice is still being saved.',
+    'zh-CN': '音色正在保存中。',
+  },
+  'voice.callChanged': {
+    en: 'The connection or call changed. Check the saved voice and try again.',
+    'zh-CN': '连接或通话已变化，请检查已保存的音色后重试。',
+  },
+  'voice.timeout': {
+    en: 'Saving the voice timed out. Reconnect to check the saved selection.',
+    'zh-CN': '音色保存超时，请重新连接以确认已保存的选择。',
+  },
   'language.choose': {
     en: 'Language / 语言 (← 简体中文 · English →, Enter / 回车)',
     'zh-CN': 'Language / 语言 (← 简体中文 · English →, Enter / 回车)',

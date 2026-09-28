@@ -24,6 +24,10 @@ const liveTextAlias = {
     appDir,
     '../qwen-live-harness/src/subagents/types.ts',
   ),
+  'qwen-live-harness/voice-sample': join(
+    appDir,
+    '../qwen-live-harness/src/voice-sample.ts',
+  ),
   'qwen-live-harness/i18n': join(
     appDir,
     '../qwen-live-harness/src/i18n/messages.ts',

@@ -3106,6 +3106,39 @@ describe('realtime-session', () => {
     );
   });
 
+  it.each([
+    'qwen3.8-omni-flash-realtime',
+    'qwen3.5-omni-flash-realtime',
+    'private-deployment',
+  ])('passes an opaque custom voice unchanged for %s', async (model) => {
+    const socket = new FakeSocket();
+    const opening = openQwenRealtimeSession(
+      {
+        endpoint: 'https://example.test',
+        apiKey: 'fixture',
+        model,
+        callEpoch: 1,
+        voice: 'custom voice-123',
+        instructions: 'test',
+        tools: [],
+      },
+      {},
+      { createWebSocket: () => socket },
+    );
+    socket.message({ type: 'session.created' });
+    sessionUpdated(socket, 'ready');
+    const session = await opening;
+    try {
+      const update = sentJson(socket, 0)['session'];
+      expect(update).toHaveProperty(
+        model.startsWith('qwen3.8-') ? 'audio.output.voice' : 'voice',
+        'custom voice-123',
+      );
+    } finally {
+      session.close({ discardPendingInput: true });
+    }
+  });
+
   it('sends the configured instructions and wire-shaped tools in session.update', async () => {
     const socket = new FakeSocket();
     await connect(socket);
@@ -3114,7 +3147,8 @@ describe('realtime-session', () => {
     expect(update['type']).toBe('session.update');
     const session = update['session'] as Record<string, unknown>;
     expect(session['modalities']).toEqual(['text', 'audio']);
-    expect(session['voice']).toBe('Tina');
+    expect(session).not.toHaveProperty('voice');
+    expect(session).toHaveProperty('audio.output.voice', 'Tina');
     expect(session['tool_choice']).toBe('auto');
     expect(session['instructions']).toBe('test instructions');
     expect(session['smooth_output']).toBe(false);

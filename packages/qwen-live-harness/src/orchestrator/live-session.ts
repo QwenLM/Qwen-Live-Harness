@@ -387,6 +387,7 @@ export interface LiveSessionOptions {
   host: LiveHostControl;
   registry: BackendRegistry;
   realtime: LiveRealtimeConfig;
+  getVoice?: () => string | undefined;
   getLanguage?: () => LiveLanguage;
   getPermissionMode?: () => PermissionMode;
   log: SessionLog;
@@ -488,6 +489,7 @@ interface IsolatedResultSpeech {
 }
 
 interface CallContext {
+  voice?: string;
   epoch: number;
   callId: string;
   providerSessionId?: string;
@@ -878,6 +880,7 @@ export class LiveSession {
     this.closeActive();
     if (this.reportSubscriptions.length) this.reports.clear();
     const context: CallContext = {
+      voice: this.options.getVoice?.() ?? this.options.realtime.voice,
       epoch: call.epoch,
       callId: call.callId,
       stopping: false,
@@ -982,7 +985,7 @@ export class LiveSession {
       mode: call.mode,
       backends: this.registry.names().join(','),
       model: this.options.realtime.model,
-      voice: this.options.realtime.voice,
+      voice: context.voice,
       outputSampleRate: QWEN_REALTIME_OUTPUT_SAMPLE_RATE,
     });
     this.log.write('audio.input_mute_changed', {
@@ -1037,9 +1040,7 @@ export class LiveSession {
             callId: context.callId,
             epoch: context.epoch,
           }),
-          ...(this.options.realtime.voice
-            ? { voice: this.options.realtime.voice }
-            : {}),
+          ...(context.voice ? { voice: context.voice } : {}),
           instructions: this.instructions(context),
           tools: this.sessionTools(context),
         },
@@ -1744,6 +1745,7 @@ export class LiveSession {
         language.outputLanguage ?? language.fallbackLanguage;
       const result = await this.notificationSpeech({
         ...this.options.realtime,
+        voice: context.voice,
         ...this.realtimeDebugContext({
           epoch: context.epoch,
           callId: context.callId,
@@ -6693,6 +6695,7 @@ export class LiveSession {
       }
       const result = await this.notificationSpeech({
         ...this.options.realtime,
+        voice: context.voice,
         ...this.realtimeDebugContext({
           epoch: context.epoch,
           taskId: state.delivery.taskId,

@@ -276,6 +276,17 @@ export type LiveHostVisualCaptureResult =
     };
 
 export type LiveLanguageState = { language: 'en' | 'zh-CN' };
+export interface LiveVoiceState {
+  cloningV1?: true;
+  creating?: boolean;
+  model: string;
+  voice: string;
+  presets: string[];
+  custom: 'supported' | 'unsupported' | 'unverified';
+  availability: 'supported' | 'unsupported' | 'unverified';
+  overridden: boolean;
+}
+
 export type LivePermissionModeState = { mode: 'ask' | 'allow-all' };
 export type LiveHostPermissionModeAction = {
   type: 'host.permission_mode_action';
@@ -292,6 +303,22 @@ export type LivePermissionModeResult = {
 } & (
   | { ok: true; permissionModeV1: LivePermissionModeState }
   | { ok: false; error: string; permissionModeV1?: LivePermissionModeState }
+);
+export type LiveHostVoiceAction = {
+  type: 'host.voice_action';
+  requestId: string;
+  epoch: number;
+  daemonInstanceNonce: string;
+  voice: LiveVoiceState['voice'];
+};
+export type LiveVoiceResult = {
+  type: 'host.voice_result';
+  requestId: string;
+  epoch: number;
+  daemonInstanceNonce: string;
+} & (
+  | { ok: true; voiceSettingsV1: LiveVoiceState }
+  | { ok: false; error: string; voiceSettingsV1?: LiveVoiceState }
 );
 export type LiveHostLanguageAction = {
   type: 'host.language_action';
@@ -335,6 +362,7 @@ export type LiveDaemonMessage =
       displayCaptureV1?: true;
       uiLanguageV1?: LiveLanguageState;
       permissionModeV1?: LivePermissionModeState;
+      voiceSettingsV1?: LiveVoiceState;
       heartbeatIntervalMs: number;
       epoch: number;
       capabilities?: {
@@ -349,6 +377,7 @@ export type LiveDaemonMessage =
       epoch: number;
       uiLanguageV1?: LiveLanguageState;
       permissionModeV1?: LivePermissionModeState;
+      voiceSettingsV1?: LiveVoiceState;
       visualInput?: LiveVisualInput;
       memory?: LiveMemoryState;
       status: LiveHostStatus;
@@ -356,6 +385,7 @@ export type LiveDaemonMessage =
   | LiveMemoryResult
   | LiveLanguageResult
   | LivePermissionModeResult
+  | LiveVoiceResult
   | { type: 'host.ping'; pingId: string }
   | { type: 'host.clear_output'; epoch: number }
   | { type: 'host.output_audio_finished'; epoch: number; outputId: number }

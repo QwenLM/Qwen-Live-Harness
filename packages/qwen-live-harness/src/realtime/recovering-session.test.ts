@@ -152,6 +152,7 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}, apiKey?: string) {
     {
       endpoint: 'wss://fixture.example.test',
       model: 'test',
+      voice: 'Liora Mira',
       apiKey,
       callEpoch: 1,
       instructions: 'Synthetic test only',
@@ -485,7 +486,11 @@ describe('response state recovery', () => {
     first.user('input-before-recovery', '请继续');
     // Extra fields from JavaScript callers must not change the logical call's
     // system prompt, even though configure's TypeScript API only takes tools.
-    const settings = { tools: [], instructions: 'Do not use this prompt' };
+    const settings = {
+      tools: [],
+      instructions: 'Do not use this prompt',
+      voice: 'Ryan',
+    };
     expect(r.session.configure(settings)).toBe(true);
     await vi.advanceTimersByTimeAsync(100);
     const second = r.sockets[1]!;
@@ -508,6 +513,7 @@ describe('response state recovery', () => {
     );
     expect(updates[0]?.['session']).toMatchObject({
       instructions: expect.stringContaining('Synthetic test only'),
+      voice: 'Liora Mira',
       tools: [],
     });
     expect(updates.at(-1)?.['session']).toMatchObject({ tools });

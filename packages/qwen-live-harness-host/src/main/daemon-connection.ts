@@ -1,5 +1,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  voiceSampleSeconds,
+  parseVoiceCloneOutcome,
+  VOICE_CLONE_TIMEOUT_MS,
+  type VoiceCloneOutcome,
+} from 'qwen-live-harness/voice-sample';
+import {
   isLiveLanguage,
   liveMessage,
   displayLiveMessage,
@@ -45,6 +51,8 @@ import {
   type VisualSource,
   type UiLanguageState,
   type PermissionModeState,
+  type VoiceState,
+  isVoiceId,
   isPermissionMode,
 } from '../shared/protocol.ts';
 import {
@@ -74,6 +82,7 @@ export type ConnectionSnapshot = {
   memory?: MemoryState;
   uiLanguageV1?: UiLanguageState;
   permissionModeV1?: PermissionModeState;
+  voiceSettingsV1?: VoiceState;
   subagentsV1?: SubagentsSnapshot;
   subagentsControlV1?: true;
   displayCaptureV1?: true;
@@ -198,6 +207,7 @@ function rawDataToBuffer(data: RawData): Buffer {
 }
 
 export class LiveDaemonConnection {
+  private cloningVoice = false;
   private readonly hostInstanceNonce = randomBytes(24).toString('base64url');
   private readonly reconnectPolicy: BoundedReconnectPolicy;
   private readonly discovery: DiscoveryMonitor;
@@ -223,6 +233,16 @@ export class LiveDaemonConnection {
     mode: PermissionModeState['mode'];
     timer: NodeJS.Timeout;
     resolve: (mode: PermissionModeState['mode']) => void;
+    reject: (error: Error) => void;
+  };
+  private voiceSettingsV1: VoiceState | undefined;
+  private pendingVoiceRequest?: {
+    requestId: string;
+    epoch: number;
+    daemonInstanceNonce: string;
+    voice: string;
+    timer: NodeJS.Timeout;
+    resolve: (voice: string) => void;
     reject: (error: Error) => void;
   };
   private subagentsV1: SubagentsSnapshot | undefined;
@@ -696,6 +716,130 @@ export class LiveDaemonConnection {
     });
   }
 
+  async requestVoiceClone(audio: Uint8Array): Promise<VoiceCloneOutcome> {
+    const target = this.currentRecord;
+    const epoch = this.epoch;
+    const socket = this.socket;
+    const current = () =>
+      this.currentRecord === target &&
+      this.socket === socket &&
+      this.epoch === epoch &&
+      socket?.readyState === WebSocket.OPEN &&
+      this.welcomed &&
+      this.snapshot.phase === 'ready' &&
+      !this.quitRequested;
+    if (voiceSampleSeconds(audio) === undefined)
+      throw new Error(liveMessage('voice.sampleInvalid'));
+    if (!target?.token || !current() || !this.voiceSettingsV1?.cloningV1)
+      throw new Error(liveMessage('voice.unavailable'));
+    if (this.cloningVoice || this.voiceSettingsV1.creating)
+      throw new Error(liveMessage('voice.creating'));
+    if (this.voiceSettingsV1.overridden)
+      throw new Error(liveMessage('voice.overridden'));
+    const url = new URL(buildHostWebSocketUrl(target.url));
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = '/live/voice-clone';
+    this.cloningVoice = true;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          authorization: `Bearer ${target.token}`,
+          'x-qwen-live-harness-nonce': target.instanceNonce,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          requestId: randomBytes(16).toString('hex'),
+          epoch,
+          audio: Buffer.from(audio).toString('base64'),
+        }),
+        signal: AbortSignal.timeout(VOICE_CLONE_TIMEOUT_MS + 20_000),
+      });
+      if (!response.body) throw new Error();
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        bytes += part.value.byteLength;
+        if (bytes > 4096) {
+          await reader.cancel();
+          throw new Error();
+        }
+        chunks.push(part.value);
+      }
+      const result = parseVoiceCloneOutcome(
+        JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      );
+      if (!result) throw new Error();
+      if (!current())
+        return {
+          ok: false,
+          error: liveMessage('voice.callChanged'),
+          ...(result.ok
+            ? { createdVoice: result.voice }
+            : result.createdVoice
+              ? { createdVoice: result.createdVoice }
+              : {}),
+        };
+      return result;
+    } catch {
+      return { ok: false, error: liveMessage('voice.cloneUncertain') };
+    } finally {
+      this.cloningVoice = false;
+    }
+  }
+
+  requestVoice(voice: string): Promise<string> {
+    if (this.cloningVoice || this.voiceSettingsV1?.creating)
+      return Promise.reject(new Error(liveMessage('voice.creating')));
+    if (!isVoiceId(voice))
+      return Promise.reject(new Error(liveMessage('voice.invalid')));
+    const nonce = this.currentRecord?.instanceNonce;
+    if (
+      !this.welcomed ||
+      this.snapshot.phase !== 'ready' ||
+      !this.voiceSettingsV1 ||
+      !nonce
+    )
+      return Promise.reject(new Error(liveMessage('voice.unavailable')));
+    if (this.pendingVoiceRequest)
+      return Promise.reject(new Error(liveMessage('voice.busy')));
+    const requestId = randomBytes(16).toString('hex');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => this.rejectVoiceRequest(new Error(liveMessage('voice.timeout'))),
+        30_000,
+      );
+      timer.unref();
+      this.pendingVoiceRequest = {
+        requestId,
+        epoch: this.epoch,
+        daemonInstanceNonce: nonce,
+        voice,
+        timer,
+        resolve,
+        reject,
+      };
+      try {
+        if (
+          !this.sendControl({
+            type: 'host.voice_action',
+            requestId,
+            epoch: this.epoch,
+            daemonInstanceNonce: nonce,
+            voice,
+          })
+        )
+          this.rejectVoiceRequest(new Error(liveMessage('voice.saveFailed')));
+      } catch {
+        this.rejectVoiceRequest(new Error(liveMessage('voice.saveFailed')));
+      }
+    });
+  }
+
   sendAudio(frame: Uint8Array, epoch: number): boolean {
     const socket = this.socket;
     const encoded = encodeInputAudioFrame(epoch, frame);
@@ -971,6 +1115,7 @@ export class LiveDaemonConnection {
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
           this.permissionModeV1 = message.permissionModeV1;
+          this.voiceSettingsV1 = message.voiceSettingsV1;
           this.subagentsV1 = message.subagentsV1;
           this.subagentsControlV1 = message.subagentsControlV1;
           this.displayCaptureV1 = message.displayCaptureV1;
@@ -993,6 +1138,9 @@ export class LiveDaemonConnection {
             ...(this.permissionModeV1
               ? { permissionModeV1: this.permissionModeV1 }
               : {}),
+            ...(this.voiceSettingsV1
+              ? { voiceSettingsV1: this.voiceSettingsV1 }
+              : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
             ...(this.displayCaptureV1 ? { displayCaptureV1: true } : {}),
@@ -1011,6 +1159,17 @@ export class LiveDaemonConnection {
           )
             this.rejectPermissionModeRequest(
               new Error(liveMessage('permissionMode.callChanged')),
+            );
+          if (this.pendingVoiceRequest && !message.voiceSettingsV1)
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.unavailable')),
+            );
+          if (
+            this.pendingVoiceRequest &&
+            this.pendingVoiceRequest.epoch !== message.epoch
+          )
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.callChanged')),
             );
           if (
             this.pendingLanguageRequest &&
@@ -1032,6 +1191,7 @@ export class LiveDaemonConnection {
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
           this.permissionModeV1 = message.permissionModeV1;
+          this.voiceSettingsV1 = message.voiceSettingsV1;
           if (
             message.subagentsV1 &&
             (!this.subagentsV1 ||
@@ -1073,6 +1233,9 @@ export class LiveDaemonConnection {
             ...(this.uiLanguageV1 ? { uiLanguageV1: this.uiLanguageV1 } : {}),
             ...(this.permissionModeV1
               ? { permissionModeV1: this.permissionModeV1 }
+              : {}),
+            ...(this.voiceSettingsV1
+              ? { voiceSettingsV1: this.voiceSettingsV1 }
               : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
@@ -1158,6 +1321,43 @@ export class LiveDaemonConnection {
             });
           }
           if (message.ok) pending.resolve(message.permissionModeV1.mode);
+          else pending.reject(new Error(message.error));
+          break;
+        }
+        case 'host.voice_result': {
+          const pending = this.pendingVoiceRequest;
+          if (!pending || pending.requestId !== message.requestId) break;
+          if (
+            message.epoch !== pending.epoch ||
+            message.epoch !== this.epoch ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              pending.daemonInstanceNonce,
+            ) ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              record.instanceNonce,
+            )
+          ) {
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.callChanged')),
+            );
+            break;
+          }
+          if (message.ok && message.voiceSettingsV1.voice !== pending.voice) {
+            this.rejectVoiceRequest(new Error(liveMessage('voice.invalid')));
+            break;
+          }
+          clearTimeout(pending.timer);
+          this.pendingVoiceRequest = undefined;
+          if (message.voiceSettingsV1) {
+            this.voiceSettingsV1 = message.voiceSettingsV1;
+            this.publish({
+              ...this.snapshot,
+              voiceSettingsV1: this.voiceSettingsV1,
+            });
+          }
+          if (message.ok) pending.resolve(message.voiceSettingsV1.voice);
           else pending.reject(new Error(message.error));
           break;
         }
@@ -1438,6 +1638,8 @@ export class LiveDaemonConnection {
       new Error(liveMessage('permissionMode.callChanged')),
     );
     this.permissionModeV1 = undefined;
+    this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+    this.voiceSettingsV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1466,6 +1668,8 @@ export class LiveDaemonConnection {
       new Error(liveMessage('permissionMode.callChanged')),
     );
     this.permissionModeV1 = undefined;
+    this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+    this.voiceSettingsV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1526,6 +1730,8 @@ export class LiveDaemonConnection {
         new Error(liveMessage('permissionMode.callChanged')),
       );
       this.permissionModeV1 = undefined;
+      this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+      this.voiceSettingsV1 = undefined;
       this.rejectLanguageRequest(
         new Error(liveMessage('host.language.disconnected')),
       );
@@ -1559,6 +1765,13 @@ export class LiveDaemonConnection {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingPermissionModeRequest = undefined;
+    pending.reject(error);
+  }
+  private rejectVoiceRequest(error: Error): void {
+    const pending = this.pendingVoiceRequest;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingVoiceRequest = undefined;
     pending.reject(error);
   }
 }

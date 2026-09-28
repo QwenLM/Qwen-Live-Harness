@@ -18,6 +18,10 @@
     "qwen-live-harness": "dist/index.js"
   },
   "exports": {
+    "./voice-sample": {
+      "types": "./dist/voice-sample.d.ts",
+      "import": "./dist/voice-sample.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

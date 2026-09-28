@@ -10,6 +10,7 @@ After setup, most everyday options are available in **Settings** on the voice ca
 
 | I want to…                                         | Where to go                                        |
 | -------------------------------------------------- | -------------------------------------------------- |
+| Choose or create a voice                           | Settings → Sound → Voice                           |
 | Change the microphone                              | Settings → Sound → Microphone                      |
 | Switch between screen and camera                   | Settings → Video Source                            |
 | Continuously share the current view                | Settings → Capture Mode → Live Feed                |
@@ -81,16 +82,30 @@ The default main model is `qwen3.8-omni-flash-realtime`. For another model or an
 
 ### Common settings at a glance
 
-| Field              | Default or common value         | When to change it                                   |
-| ------------------ | ------------------------------- | --------------------------------------------------- |
-| `language`         | `"zh-CN"` or `"en"`             | Fixed UI text; changing it in Settings is easier    |
-| `realtimeApiKey`   | Entered during initialization   | Change account or service region                    |
-| `realtimeModel`    | `"qwen3.8-omni-flash-realtime"` | Change the live conversation model                  |
-| `realtimeEndpoint` | Beijing endpoint                | Switch between Beijing and Singapore                |
-| `voice`            | `"Tina"`                        | Change the voice; use a name supported by the model |
-| `shortcut`         | `"Command+E"`                   | Change the start/end interaction shortcut           |
+| Field              | Default or common value              | When to change it                                   |
+| ------------------ | ------------------------------------ | --------------------------------------------------- |
+| `language`         | `"zh-CN"` or `"en"`                  | Fixed UI text; changing it in Settings is easier    |
+| `realtimeApiKey`   | Entered during initialization        | Change account or service region                    |
+| `realtimeModel`    | `"qwen3.8-omni-flash-realtime"`      | Change the live conversation model                  |
+| `realtimeEndpoint` | Beijing endpoint                     | Switch between Beijing and Singapore                |
+| `voice`            | Model default (`"Tina"` for 3.8/3.5) | Change the voice; use a name supported by the model |
+| `shortcut`         | `"Command+E"`                        | Change the start/end interaction shortcut           |
 
 Memory and Proactive also use the selected region by default. Separate endpoints are usually unnecessary.
+
+## Voice
+
+Choose a voice under **Settings → Sound → Voice**. The list follows the currently configured Realtime model. Presets save when selected; choose **Custom voice…**, enter an existing voice ID, then select **Save voice** for a custom voice. To create a voice, end the current call and select **Create a voice**. **Record** a sample and stop, or **Choose audio** (WAV, MP3 or M4A, up to 10 MB). Use 3–60 seconds of clear speech; 10–20 seconds is recommended. Listen to the local preview, then select **Create and use**. The app uploads the sample to the configured speech service, creates a voice for the current model, and automatically saves and selects its ID. The next call uses that voice.
+
+Recording and preview stay local until **Create and use**. Samples are held in memory and discarded when closed; the app does not save them to disk. Cloning runs on the service, requires network access and API-key permission, and may incur service charges. During creation, starting a call and changing the voice are blocked. Creation requests are not retried automatically. If the voice was created but saving failed, keep the displayed ID and enter it as an existing custom voice. If the result could not be confirmed, check the service before creating another voice.
+
+A saved selection applies to the **next call**, without restarting the app. The current call, its notifications, and any connection recovery keep their original voice. Configuration-file edits still require an app restart.
+
+Custom IDs must belong to the model and service region where they were created. Qwen3.8 Omni Flash Realtime and Qwen3.5 Omni Flash/Plus Realtime support cloned voices. Unknown deployments allow custom IDs and creation attempts, subject to provider support. Individual IDs are checked by the provider when a call starts. An accepted preset list does not verify account or regional availability. The app preserves unknown configured IDs and reports known incompatible selections without silently replacing them.
+
+`QWEN_LIVE_HARNESS_VOICE` takes precedence over `config.json` and makes this control read-only. Remove the override and restart to edit the setting in the app. If no voice is configured, the model default is used: `Tina` for Qwen3.8/3.5, `Cherry` for Qwen3 Omni Flash, and `Chelsie` for Omni Turbo. Unknown deployments retain `Tina` as the fallback.
+
+See the provider's [preset voice list](https://docs.qwencloud.com/developer-guides/speech/omni-voice-list) and [voice cloning guide](https://docs.qwencloud.com/developer-guides/speech/voice-cloning). If a call rejects a voice ID, select a supported preset or check the custom voice's model, region, and API-key access.
 
 ## Theme palette
 

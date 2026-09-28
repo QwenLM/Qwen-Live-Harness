@@ -5,12 +5,17 @@ import type {
   MemoryAction,
   MemoryState,
   PermissionModeState,
+  VoiceState,
   VisualInput,
   VisualMode,
   VisualSource,
 } from './protocol.ts';
 import type { OverlayLayout } from './overlay-geometry.ts';
 import type { LiveLanguage } from 'qwen-live-harness/i18n';
+import type {
+  VoiceSampleInfo,
+  VoiceCloneOutcome,
+} from 'qwen-live-harness/voice-sample';
 import type { SubagentsSnapshot } from 'qwen-live-harness/subagents';
 import type { LiveTheme, LiveThemeColor, ResolvedTheme } from './theme.ts';
 
@@ -54,6 +59,7 @@ export type HostPublicState = {
   visualSettingsError?: string;
   memory?: MemoryState;
   permissionModeV1?: PermissionModeState;
+  voiceSettingsV1?: VoiceState;
   subagentsV1?: SubagentsSnapshot;
   live: LiveStatus;
   permissions: HostPublicPermissions;
@@ -74,6 +80,12 @@ export type LiveHostApi = {
   setScreenDisplay: (id: string) => Promise<void>;
   memoryAction: (action: MemoryAction) => Promise<MemoryState>;
   setLanguage: (language: LiveLanguage) => Promise<void>;
+  setVoice?: (voice: string) => Promise<void>;
+  chooseVoiceSample?: () => Promise<VoiceSampleInfo | undefined>;
+  recordVoiceSample?: () => Promise<VoiceSampleInfo>;
+  stopVoiceRecording?: () => void;
+  discardVoiceSample?: () => void;
+  createVoice?: () => Promise<VoiceCloneOutcome>;
   setPermissionMode?: (mode: PermissionModeState['mode']) => Promise<void>;
   setTheme: (theme: LiveTheme) => Promise<void>;
   setThemeColor: (color: LiveThemeColor) => Promise<void>;
