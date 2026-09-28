@@ -104,6 +104,23 @@ function fixture(
 }
 afterEach(() => vi.useRealTimers());
 
+describe('notification voice selection', () => {
+  it.each(['qwen3.8-omni-flash-realtime', 'qwen3.5-omni-flash-realtime'])(
+    'uses the configured voice for %s',
+    async (model) => {
+      const { socket, promise } = fixture({ model, voice: 'custom voice-123' });
+      socket.ready();
+      expect(socket.sent[0]!['session']).toHaveProperty(
+        model.startsWith('qwen3.8-') ? 'audio.output.voice' : 'voice',
+        'custom voice-123',
+      );
+      socket.audio();
+      socket.done();
+      await promise;
+    },
+  );
+});
+
 describe('isolated no-tools notification speech', () => {
   it.each([
     ['zh-CN', '刚才没有开启屏幕解说，请明确说要开始解说。'],

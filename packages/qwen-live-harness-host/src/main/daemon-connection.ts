@@ -45,6 +45,8 @@ import {
   type VisualSource,
   type UiLanguageState,
   type PermissionModeState,
+  type VoiceState,
+  isVoiceId,
   isPermissionMode,
 } from '../shared/protocol.ts';
 import {
@@ -74,6 +76,7 @@ export type ConnectionSnapshot = {
   memory?: MemoryState;
   uiLanguageV1?: UiLanguageState;
   permissionModeV1?: PermissionModeState;
+  voiceSettingsV1?: VoiceState;
   subagentsV1?: SubagentsSnapshot;
   subagentsControlV1?: true;
   displayCaptureV1?: true;
@@ -223,6 +226,16 @@ export class LiveDaemonConnection {
     mode: PermissionModeState['mode'];
     timer: NodeJS.Timeout;
     resolve: (mode: PermissionModeState['mode']) => void;
+    reject: (error: Error) => void;
+  };
+  private voiceSettingsV1: VoiceState | undefined;
+  private pendingVoiceRequest?: {
+    requestId: string;
+    epoch: number;
+    daemonInstanceNonce: string;
+    voice: string;
+    timer: NodeJS.Timeout;
+    resolve: (voice: string) => void;
     reject: (error: Error) => void;
   };
   private subagentsV1: SubagentsSnapshot | undefined;
@@ -696,6 +709,52 @@ export class LiveDaemonConnection {
     });
   }
 
+  requestVoice(voice: string): Promise<string> {
+    if (!isVoiceId(voice))
+      return Promise.reject(new Error(liveMessage('voice.invalid')));
+    const nonce = this.currentRecord?.instanceNonce;
+    if (
+      !this.welcomed ||
+      this.snapshot.phase !== 'ready' ||
+      !this.voiceSettingsV1 ||
+      !nonce
+    )
+      return Promise.reject(new Error(liveMessage('voice.unavailable')));
+    if (this.pendingVoiceRequest)
+      return Promise.reject(new Error(liveMessage('voice.busy')));
+    const requestId = randomBytes(16).toString('hex');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => this.rejectVoiceRequest(new Error(liveMessage('voice.timeout'))),
+        30_000,
+      );
+      timer.unref();
+      this.pendingVoiceRequest = {
+        requestId,
+        epoch: this.epoch,
+        daemonInstanceNonce: nonce,
+        voice,
+        timer,
+        resolve,
+        reject,
+      };
+      try {
+        if (
+          !this.sendControl({
+            type: 'host.voice_action',
+            requestId,
+            epoch: this.epoch,
+            daemonInstanceNonce: nonce,
+            voice,
+          })
+        )
+          this.rejectVoiceRequest(new Error(liveMessage('voice.saveFailed')));
+      } catch {
+        this.rejectVoiceRequest(new Error(liveMessage('voice.saveFailed')));
+      }
+    });
+  }
+
   sendAudio(frame: Uint8Array, epoch: number): boolean {
     const socket = this.socket;
     const encoded = encodeInputAudioFrame(epoch, frame);
@@ -971,6 +1030,7 @@ export class LiveDaemonConnection {
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
           this.permissionModeV1 = message.permissionModeV1;
+          this.voiceSettingsV1 = message.voiceSettingsV1;
           this.subagentsV1 = message.subagentsV1;
           this.subagentsControlV1 = message.subagentsControlV1;
           this.displayCaptureV1 = message.displayCaptureV1;
@@ -993,6 +1053,9 @@ export class LiveDaemonConnection {
             ...(this.permissionModeV1
               ? { permissionModeV1: this.permissionModeV1 }
               : {}),
+            ...(this.voiceSettingsV1
+              ? { voiceSettingsV1: this.voiceSettingsV1 }
+              : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
             ...(this.displayCaptureV1 ? { displayCaptureV1: true } : {}),
@@ -1011,6 +1074,17 @@ export class LiveDaemonConnection {
           )
             this.rejectPermissionModeRequest(
               new Error(liveMessage('permissionMode.callChanged')),
+            );
+          if (this.pendingVoiceRequest && !message.voiceSettingsV1)
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.unavailable')),
+            );
+          if (
+            this.pendingVoiceRequest &&
+            this.pendingVoiceRequest.epoch !== message.epoch
+          )
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.callChanged')),
             );
           if (
             this.pendingLanguageRequest &&
@@ -1032,6 +1106,7 @@ export class LiveDaemonConnection {
           this.memory = message.memory;
           this.uiLanguageV1 = message.uiLanguageV1;
           this.permissionModeV1 = message.permissionModeV1;
+          this.voiceSettingsV1 = message.voiceSettingsV1;
           if (
             message.subagentsV1 &&
             (!this.subagentsV1 ||
@@ -1073,6 +1148,9 @@ export class LiveDaemonConnection {
             ...(this.uiLanguageV1 ? { uiLanguageV1: this.uiLanguageV1 } : {}),
             ...(this.permissionModeV1
               ? { permissionModeV1: this.permissionModeV1 }
+              : {}),
+            ...(this.voiceSettingsV1
+              ? { voiceSettingsV1: this.voiceSettingsV1 }
               : {}),
             ...(this.subagentsV1 ? { subagentsV1: this.subagentsV1 } : {}),
             ...(this.subagentsControlV1 ? { subagentsControlV1: true } : {}),
@@ -1158,6 +1236,43 @@ export class LiveDaemonConnection {
             });
           }
           if (message.ok) pending.resolve(message.permissionModeV1.mode);
+          else pending.reject(new Error(message.error));
+          break;
+        }
+        case 'host.voice_result': {
+          const pending = this.pendingVoiceRequest;
+          if (!pending || pending.requestId !== message.requestId) break;
+          if (
+            message.epoch !== pending.epoch ||
+            message.epoch !== this.epoch ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              pending.daemonInstanceNonce,
+            ) ||
+            !this.nonceMatches(
+              message.daemonInstanceNonce,
+              record.instanceNonce,
+            )
+          ) {
+            this.rejectVoiceRequest(
+              new Error(liveMessage('voice.callChanged')),
+            );
+            break;
+          }
+          if (message.ok && message.voiceSettingsV1.voice !== pending.voice) {
+            this.rejectVoiceRequest(new Error(liveMessage('voice.invalid')));
+            break;
+          }
+          clearTimeout(pending.timer);
+          this.pendingVoiceRequest = undefined;
+          if (message.voiceSettingsV1) {
+            this.voiceSettingsV1 = message.voiceSettingsV1;
+            this.publish({
+              ...this.snapshot,
+              voiceSettingsV1: this.voiceSettingsV1,
+            });
+          }
+          if (message.ok) pending.resolve(message.voiceSettingsV1.voice);
           else pending.reject(new Error(message.error));
           break;
         }
@@ -1438,6 +1553,8 @@ export class LiveDaemonConnection {
       new Error(liveMessage('permissionMode.callChanged')),
     );
     this.permissionModeV1 = undefined;
+    this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+    this.voiceSettingsV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1466,6 +1583,8 @@ export class LiveDaemonConnection {
       new Error(liveMessage('permissionMode.callChanged')),
     );
     this.permissionModeV1 = undefined;
+    this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+    this.voiceSettingsV1 = undefined;
     this.displayCaptureV1 = undefined;
     this.subagentsV1 = undefined;
     this.subagentsControlV1 = undefined;
@@ -1526,6 +1645,8 @@ export class LiveDaemonConnection {
         new Error(liveMessage('permissionMode.callChanged')),
       );
       this.permissionModeV1 = undefined;
+      this.rejectVoiceRequest(new Error(liveMessage('voice.callChanged')));
+      this.voiceSettingsV1 = undefined;
       this.rejectLanguageRequest(
         new Error(liveMessage('host.language.disconnected')),
       );
@@ -1559,6 +1680,13 @@ export class LiveDaemonConnection {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingPermissionModeRequest = undefined;
+    pending.reject(error);
+  }
+  private rejectVoiceRequest(error: Error): void {
+    const pending = this.pendingVoiceRequest;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingVoiceRequest = undefined;
     pending.reject(error);
   }
 }

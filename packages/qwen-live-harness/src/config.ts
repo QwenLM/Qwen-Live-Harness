@@ -10,6 +10,7 @@
  * a schema library would be the package's only heavy dependency.
  */
 
+import { voiceCatalog } from './voice-catalog.js';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -122,6 +123,7 @@ export interface LiveConfig {
     apiKey: string;
     model: string;
     voice?: string;
+    voiceOverridden?: boolean;
   };
   /** Explicit [] disables delegation; otherwise exactly one backend is the default. */
   backends: BackendConfig[];
@@ -1103,8 +1105,13 @@ export function loadConfig(
     { section: 'backends' },
   );
 
+  const model =
+    str(env['QWEN_LIVE_HARNESS_REALTIME_MODEL']) ??
+    str(file['realtimeModel']) ??
+    DEFAULT_REALTIME_MODEL;
+  const environmentVoice = str(env['QWEN_LIVE_HARNESS_VOICE']);
   const voice =
-    str(env['QWEN_LIVE_HARNESS_VOICE']) ?? str(file['voice']) ?? 'Tina';
+    environmentVoice ?? str(file['voice']) ?? voiceCatalog(model).defaultVoice;
   const defaultCwd =
     pathStr(env['QWEN_LIVE_HARNESS_CWD']) ?? pathStr(file['defaultCwd']);
   const shortcut =
@@ -1119,10 +1126,8 @@ export function loadConfig(
         str(file['realtimeEndpoint']) ??
         DEFAULT_REALTIME_ENDPOINT,
       apiKey,
-      model:
-        str(env['QWEN_LIVE_HARNESS_REALTIME_MODEL']) ??
-        str(file['realtimeModel']) ??
-        DEFAULT_REALTIME_MODEL,
+      model,
+      ...(environmentVoice ? { voiceOverridden: true } : {}),
       ...(voice ? { voice } : {}),
     },
     backends,

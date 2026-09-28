@@ -679,6 +679,26 @@ button[aria-pressed='true'] {
 .settings-row > .settings-hint {
   grid-column: 1 / -1;
 }
+.settings-voice > .settings-options {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.settings-voice select {
+  flex-basis: 100%;
+}
+.settings-voice input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--live-control-border);
+  border-radius: var(--live-control-radius);
+  background: var(--live-control-bg);
+  color: var(--live-text);
+  font-size: var(--live-type-body);
+}
+.settings-voice > .settings-options > button {
+  border-color: var(--live-control-border);
+}
 .settings-permission-mode {
   grid-template-columns: minmax(0, 1fr);
 }

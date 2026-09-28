@@ -14,6 +14,8 @@
  * when another Qwen Live Harness daemon already owns it.
  */
 
+import { getVoiceState, isVoiceId } from './voice-catalog.js';
+import { persistVoicePreference } from './voice-preferences.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -346,6 +348,25 @@ export class LiveDaemon {
       daemonShutdownV1: true,
       getUiLanguage: () => ({ language: this.config.language ?? 'en' }),
       getPermissionMode: () => ({ mode: this.config.permissionMode ?? 'ask' }),
+      getVoice: () =>
+        getVoiceState(
+          this.config.realtime.model,
+          this.config.realtime.voice ?? 'Tina',
+          this.config.realtime.voiceOverridden,
+        ),
+      onVoiceAction: (voice) => {
+        if (this.config.realtime.voiceOverridden)
+          throw new Error(liveMessage('voice.overridden'));
+        if (!isVoiceId(voice)) throw new Error(liveMessage('voice.invalid'));
+        const state = getVoiceState(this.config.realtime.model, voice);
+        if (state.availability === 'unsupported')
+          throw new Error(liveMessage('voice.unsupported'));
+        this.config.realtime.voice = persistVoicePreference(
+          this.config.dataDir,
+          voice,
+        );
+        return state;
+      },
       onPermissionModeAction: (mode) => {
         this.config.permissionMode = persistPermissionModePreference(
           this.config.dataDir,
@@ -455,6 +476,7 @@ export class LiveDaemon {
 
     const session = new LiveSession({
       getLanguage: () => this.config.language ?? 'en',
+      getVoice: () => this.config.realtime.voice,
       getPermissionMode: () =>
         this.stopping ? 'ask' : (this.config.permissionMode ?? 'ask'),
       onFailure: (failure) => this.recordFailure(failure, false),

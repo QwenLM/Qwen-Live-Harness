@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { getVoiceState } from '../voice-catalog.js';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
@@ -762,6 +763,118 @@ describe('LiveHostCoordinator', () => {
       oldSocket
         .messages()
         .find((message) => message.type === 'host.permission_mode_result'),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('persists voice only for the current nonce/epoch and caches identical requests without replaying changed parameters', () => {
+    let voice: string = 'Tina';
+    const save = vi.fn((next: string) =>
+      getVoiceState('qwen3.8-omni-flash-realtime', (voice = next)),
+    );
+    const value = coordinator({
+      getVoice: () => getVoiceState('qwen3.8-omni-flash-realtime', voice),
+      onVoiceAction: save,
+    });
+    const socket = connectReady(value);
+    expect(
+      socket.messages().find((message) => message.type === 'host.welcome'),
+    ).toMatchObject({ voiceSettingsV1: { voice: 'Tina' } });
+    const action = {
+      type: 'host.voice_action',
+      requestId: 'voice-1',
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      voice: 'Ryan',
+    };
+    socket.receive(action);
+    socket.receive(action);
+    expect(save).toHaveBeenCalledTimes(1);
+    const results = () =>
+      socket
+        .messages()
+        .filter((message) => message.type === 'host.voice_result');
+    expect(results()).toHaveLength(2);
+    expect(results()[0]).toMatchObject({
+      ok: true,
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      voiceSettingsV1: { voice: 'Ryan' },
+    });
+    expect(
+      socket
+        .messages()
+        .filter((message) => message.type === 'host.state')
+        .at(-1),
+    ).toMatchObject({ voiceSettingsV1: { voice: 'Ryan' } });
+    socket.receive({ ...action, voice: 'Tina' });
+    socket.receive({
+      ...action,
+      requestId: 'wrong-nonce',
+      daemonInstanceNonce: 'different-daemon',
+    });
+    const call = value.start('resume');
+    socket.receive({ ...action, requestId: 'stale-call' });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(
+      results()
+        .slice(-3)
+        .every((result) => result.ok === false),
+    ).toBe(true);
+    socket.receive({
+      ...action,
+      requestId: 'current-call',
+      epoch: call.epoch,
+      voice: 'Tina',
+    });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(voice).toBe('Tina');
+  });
+
+  it('sends safe voice save failures and rejects malformed or unsupported settings', () => {
+    const save = vi.fn(() => {
+      throw new Error('PRIVATE disk failure');
+    });
+    const value = coordinator({
+      getVoice: () => getVoiceState('qwen3.8-omni-flash-realtime', 'Tina'),
+      onVoiceAction: save,
+    });
+    const socket = connectReady(value);
+    const action = {
+      type: 'host.voice_action',
+      requestId: 'voice-failed',
+      epoch: 0,
+      daemonInstanceNonce: value.daemonInstanceNonce,
+      voice: 'Ryan',
+    };
+    socket.receive(action);
+    const failure = socket
+      .messages()
+      .find((message) => message.type === 'host.voice_result');
+    expect(failure).toMatchObject({
+      ok: false,
+      voiceSettingsV1: { voice: 'Tina' },
+    });
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE');
+    socket.receive({
+      ...action,
+      requestId: 'malformed',
+      voice: 'invalid\nvoice',
+    });
+    expect(socket.closeCode).toBe(1002);
+    expect(save).toHaveBeenCalledTimes(1);
+    const legacy = coordinator();
+    const oldSocket = connectReady(legacy);
+    expect(
+      oldSocket.messages().find((message) => message.type === 'host.welcome'),
+    ).not.toHaveProperty('voiceSettingsV1');
+    oldSocket.receive({
+      ...action,
+      daemonInstanceNonce: legacy.daemonInstanceNonce,
+    });
+    expect(
+      oldSocket
+        .messages()
+        .find((message) => message.type === 'host.voice_result'),
     ).toMatchObject({ ok: false });
   });
 

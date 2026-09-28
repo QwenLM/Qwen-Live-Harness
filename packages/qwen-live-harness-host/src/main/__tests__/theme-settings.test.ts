@@ -133,6 +133,112 @@ function host(overrides: Partial<LiveHostApi> = {}) {
   return { dom, app, get, update, themes, colors, previews: () => previews };
 }
 
+describe('voice settings UI', () => {
+  const state = (
+    voice = 'Tina',
+  ): NonNullable<HostPublicState['voiceSettingsV1']> => ({
+    model: 'qwen3.8-omni-flash-realtime',
+    voice,
+    presets: ['Tina', 'Liora Mira'],
+    custom: 'unverified',
+    availability: 'supported',
+    overridden: false,
+  });
+  it('saves presets only after acknowledgement and preserves custom drafts through state updates', async () => {
+    const calls: string[] = [];
+    let finish: () => void = () => {};
+    const h = host({
+      setVoice: async (voice) => {
+        calls.push(voice);
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    h.update({ voiceSettingsV1: state() });
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const select = h.get<HTMLSelectElement>(
+      'select[data-live-label="voice.label"]',
+    );
+    select.value = 'Liora Mira';
+    select.dispatchEvent(new h.dom.window.Event('change'));
+    assert.equal(select.value, 'Tina');
+    assert.equal(select.disabled, true);
+    h.update({ voiceSettingsV1: state('Liora Mira') });
+    finish();
+    await settled();
+    assert.equal(select.value, 'Liora Mira');
+    select.value = '__custom__';
+    select.dispatchEvent(new h.dom.window.Event('change'));
+    const input = h.get<HTMLInputElement>(
+      'input[data-live-label="voice.customId"]',
+    );
+    input.value = 'qwen-existing-id';
+    input.dispatchEvent(new h.dom.window.Event('input'));
+    h.update({ voiceSettingsV1: state('Liora Mira'), language: 'zh-CN' });
+    assert.equal(select.value, '__custom__');
+    assert.equal(input.value, 'qwen-existing-id');
+    assert(
+      h
+        .get('#voice-settings-hint')
+        .textContent?.includes(liveText('zh-CN', 'voice.unverified')),
+    );
+    h.get<HTMLButtonElement>('button[data-live-text="voice.save"]').click();
+    assert.deepEqual(calls, ['Liora Mira', 'qwen-existing-id']);
+    h.update({
+      voiceSettingsV1: {
+        ...state('qwen-existing-id'),
+        availability: 'unverified',
+      },
+    });
+    finish();
+    await settled();
+    assert.equal(input.value, 'qwen-existing-id');
+  });
+  it('identifies a saved incompatible preset even when shown in the custom ID editor', () => {
+    const h = host({ setVoice: async () => {} });
+    h.update({
+      voiceSettingsV1: { ...state('Ethan'), availability: 'unsupported' },
+    });
+    assert(
+      h
+        .get('#voice-settings-hint')
+        .textContent?.includes(liveText('en', 'voice.unsupported')),
+    );
+  });
+
+  it('keeps the previous preset after failure and respects environment overrides and legacy daemons', async () => {
+    const h = host({
+      setVoice: async () => {
+        throw new Error(liveMessage('voice.saveFailed'));
+      },
+    });
+    const row = h.get('.settings-voice');
+    assert.equal(row.hidden, true);
+    h.update({ voiceSettingsV1: state() });
+    h.get<HTMLButtonElement>('.settings-control').click();
+    await settled();
+    const select = h.get<HTMLSelectElement>(
+      'select[data-live-label="voice.label"]',
+    );
+    select.value = 'Liora Mira';
+    select.dispatchEvent(new h.dom.window.Event('change'));
+    await settled();
+    assert.equal(select.value, 'Tina');
+    assert(h.app.textContent?.includes(liveText('en', 'voice.saveFailed')));
+    h.update({ voiceSettingsV1: { ...state(), overridden: true } });
+    assert.equal(select.disabled, true);
+    assert(
+      h
+        .get('#voice-settings-hint')
+        .textContent?.includes('QWEN_LIVE_HARNESS_VOICE'),
+    );
+    h.update({ voiceSettingsV1: undefined });
+    assert.equal(row.hidden, true);
+  });
+});
+
 describe('Qwen Live Harness Host theme settings', () => {
   it('offers global ask/allow-all modes but changes the selection only after a confirmed save', async () => {
     let finish: () => void = () => {};

@@ -60,6 +60,7 @@ import {
 } from './daemon-connection.ts';
 import { LiveGlobalShortcut } from './global-shortcut.ts';
 import {
+  isVoiceId,
   isValidInputAudioFrame,
   isValidInputImageFrame,
   isValidCameraSnapshotAsset,
@@ -601,6 +602,9 @@ function publicState(): HostPublicState {
     ...(connection.memory ? { memory: connection.memory } : {}),
     ...(connection.permissionModeV1
       ? { permissionModeV1: connection.permissionModeV1 }
+      : {}),
+    ...(connection.voiceSettingsV1
+      ? { voiceSettingsV1: connection.voiceSettingsV1 }
       : {}),
     ...(connection.subagentsV1 ? { subagentsV1: connection.subagentsV1 } : {}),
     live: startupMessage ? { ...status, message: startupMessage } : status,
@@ -2111,6 +2115,17 @@ function registerIpc(): void {
     )
       throw new Error(liveMessage('permissionMode.unavailable'));
     await daemon.requestPermissionMode(value);
+  });
+  ipcMain.handle('live:set-voice', async (event, value: unknown) => {
+    if (!isTrustedSender(event) || !rendererEventsEnabled || !isVoiceId(value))
+      throw new Error(liveMessage('voice.invalid'));
+    if (
+      quitState ||
+      connection.phase !== 'ready' ||
+      !connection.voiceSettingsV1
+    )
+      throw new Error(liveMessage('voice.unavailable'));
+    await daemon.requestVoice(value);
   });
   ipcMain.on('live:overlay-layout', (event, layout: unknown) => {
     if (

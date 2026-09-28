@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { isVoiceId } from '../voice-catalog.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocket, type RawData } from 'ws';
 import {
@@ -29,6 +30,9 @@ import {
   type LiveLanguageResult,
   type LiveLanguageState,
   type LivePermissionModeState,
+  type LiveVoiceState,
+  type LiveHostVoiceAction,
+  type LiveVoiceResult,
   type LiveHostPermissionModeAction,
   type LivePermissionModeResult,
   type LiveMemoryAction,
@@ -125,6 +129,10 @@ interface HostLease {
     string,
     { request: LiveHostPermissionModeAction; result: LivePermissionModeResult }
   >;
+  voiceResults?: Map<
+    string,
+    { request: LiveHostVoiceAction; result: LiveVoiceResult }
+  >;
   expectedClose?: boolean;
   failureReported?: boolean;
 }
@@ -172,6 +180,8 @@ export interface LiveHostCoordinatorOptions {
   onPermissionModeAction?: (
     mode: LivePermissionModeState['mode'],
   ) => LivePermissionModeState;
+  getVoice?: () => LiveVoiceState;
+  onVoiceAction?: (voice: LiveVoiceState['voice']) => LiveVoiceState;
   getSubagents?: () => SubagentsSnapshot | undefined;
   subagentsControlV1?: boolean;
   onScreenDisplayChange?: (screenDisplayId: string) => void;
@@ -584,6 +594,7 @@ function parseHostMessage(
   | LiveHostMessage
   | LiveHostLanguageAction
   | LiveHostPermissionModeAction
+  | LiveHostVoiceAction
   | undefined {
   let value: unknown;
   try {
@@ -611,6 +622,24 @@ function parseHostMessage(
       epoch: value['epoch'],
       daemonInstanceNonce: String(value['daemonInstanceNonce']),
       mode: value['mode'],
+    };
+  }
+  if (value['type'] === 'host.voice_action') {
+    if (
+      !isBoundedString(value['requestId']) ||
+      String(value['requestId']).length > 128 ||
+      !isNonNegativeSafeInteger(value['epoch']) ||
+      !isBoundedString(value['daemonInstanceNonce']) ||
+      String(value['daemonInstanceNonce']).length > 256 ||
+      !isVoiceId(value['voice'])
+    )
+      return undefined;
+    return {
+      type: 'host.voice_action',
+      requestId: String(value['requestId']),
+      epoch: value['epoch'],
+      daemonInstanceNonce: String(value['daemonInstanceNonce']),
+      voice: value['voice'],
     };
   }
   if (value['type'] === 'host.language_action') {
@@ -1756,6 +1785,10 @@ export class LiveHostCoordinator {
       this.handlePermissionModeAction(lease, message);
       return;
     }
+    if (message.type === 'host.voice_action') {
+      this.handleVoiceAction(lease, message);
+      return;
+    }
     this.handleAction(message);
   }
 
@@ -1823,6 +1856,68 @@ export class LiveHostCoordinator {
         lease.permissionModeResults.delete(
           lease.permissionModeResults.keys().next().value!,
         );
+    }
+    this.sendHost(result);
+    this.broadcastState();
+  }
+
+  private handleVoiceAction(
+    lease: HostLease,
+    message: LiveHostVoiceAction,
+  ): void {
+    if (this.host !== lease) return;
+    lease.voiceResults ??= new Map();
+    const cached = lease.voiceResults.get(message.requestId);
+    let result: LiveVoiceResult;
+    const identity = {
+      type: 'host.voice_result' as const,
+      requestId: message.requestId,
+      epoch: message.epoch,
+      daemonInstanceNonce: this.daemonInstanceNonce,
+    };
+    try {
+      if (
+        message.epoch !== this.nextEpoch ||
+        message.daemonInstanceNonce !== this.daemonInstanceNonce
+      )
+        throw new Error(liveMessage('voice.callChanged'));
+      if (cached) {
+        if (
+          cached.request.voice !== message.voice ||
+          cached.request.epoch !== message.epoch ||
+          cached.request.daemonInstanceNonce !== message.daemonInstanceNonce
+        )
+          throw new Error(liveMessage('voice.invalid'));
+        this.sendHost(cached.result);
+        return;
+      }
+      if (!this.options.onVoiceAction || !this.options.getVoice)
+        throw new Error(liveMessage('voice.unavailable'));
+      const voiceSettingsV1 = this.options.onVoiceAction(message.voice);
+      if (voiceSettingsV1.voice !== message.voice)
+        throw new Error(liveMessage('voice.saveFailed'));
+      result = { ...identity, ok: true, voiceSettingsV1 };
+    } catch (error) {
+      result = {
+        ...identity,
+        ok: false,
+        error:
+          error instanceof Error &&
+          error.message.startsWith('qwen-live-harness-ui:')
+            ? error.message
+            : liveMessage('voice.saveFailed'),
+        ...(this.options.getVoice
+          ? { voiceSettingsV1: this.options.getVoice() }
+          : {}),
+      };
+    }
+    if (!cached) {
+      lease.voiceResults.set(message.requestId, {
+        request: message,
+        result,
+      });
+      if (lease.voiceResults.size > 64)
+        lease.voiceResults.delete(lease.voiceResults.keys().next().value!);
     }
     this.sendHost(result);
     this.broadcastState();
@@ -2194,6 +2289,9 @@ export class LiveHostCoordinator {
       daemonInstanceNonce: this.daemonInstanceNonce,
       ...(this.options.getPermissionMode
         ? { permissionModeV1: this.options.getPermissionMode() }
+        : {}),
+      ...(this.options.getVoice
+        ? { voiceSettingsV1: this.options.getVoice() }
         : {}),
       ...(this.options.getUiLanguage
         ? { uiLanguageV1: this.options.getUiLanguage() }
@@ -2750,6 +2848,9 @@ export class LiveHostCoordinator {
       type: 'host.state',
       ...(this.options.getPermissionMode
         ? { permissionModeV1: this.options.getPermissionMode() }
+        : {}),
+      ...(this.options.getVoice
+        ? { voiceSettingsV1: this.options.getVoice() }
         : {}),
       ...(this.host?.hello?.subagentsV1 && this.options.getSubagents
         ? { subagentsV1: this.options.getSubagents() }

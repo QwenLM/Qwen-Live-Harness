@@ -31,6 +31,51 @@ export const MAX_VISUAL_HEIGHT = 4320;
 export type VisualSource = 'screen' | 'camera';
 export type VisualMode = 'on-demand' | 'live-feed';
 export type UiLanguageState = { language: LiveLanguage };
+export interface VoiceState {
+  model: string;
+  voice: string;
+  presets: string[];
+  custom: 'supported' | 'unsupported' | 'unverified';
+  availability: 'supported' | 'unsupported' | 'unverified';
+  overridden: boolean;
+}
+
+export function isVoiceId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    value.trim() === value &&
+    !/\p{Cc}/u.test(value)
+  );
+}
+function parseVoiceState(value: unknown): VoiceState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return undefined;
+  const v = value as Record<string, unknown>;
+  const support = (s: unknown) =>
+    s === 'supported' || s === 'unsupported' || s === 'unverified';
+  if (
+    !boundedString(v.model, 256) ||
+    !isVoiceId(v.voice) ||
+    !Array.isArray(v.presets) ||
+    v.presets.length > 128 ||
+    !v.presets.every(isVoiceId) ||
+    !support(v.custom) ||
+    !support(v.availability) ||
+    typeof v.overridden !== 'boolean'
+  )
+    return undefined;
+  return {
+    model: v.model as string,
+    voice: v.voice,
+    presets: v.presets as string[],
+    custom: v.custom as VoiceState['custom'],
+    availability: v.availability as VoiceState['availability'],
+    overridden: v.overridden,
+  };
+}
+
 export type PermissionModeState = { mode: 'ask' | 'allow-all' };
 export const isPermissionMode = (
   value: unknown,
@@ -244,6 +289,13 @@ export type HostControlMessage =
       mode: PermissionModeState['mode'];
     }
   | {
+      type: 'host.voice_action';
+      requestId: string;
+      epoch: number;
+      daemonInstanceNonce: string;
+      voice: string;
+    }
+  | {
       type: 'host.language_action';
       requestId: string;
       epoch: number;
@@ -330,6 +382,7 @@ export type DaemonControlMessage =
       memory?: MemoryState;
       uiLanguageV1?: UiLanguageState;
       permissionModeV1?: PermissionModeState;
+      voiceSettingsV1?: VoiceState;
       subagentsV1?: SubagentsSnapshot;
       subagentsControlV1?: true;
       status: LiveStatus;
@@ -341,6 +394,7 @@ export type DaemonControlMessage =
       memory?: MemoryState;
       uiLanguageV1?: UiLanguageState;
       permissionModeV1?: PermissionModeState;
+      voiceSettingsV1?: VoiceState;
       subagentsV1?: SubagentsSnapshot;
       status: LiveStatus;
     }
@@ -367,6 +421,15 @@ export type DaemonControlMessage =
     } & (
       | { ok: true; permissionModeV1: PermissionModeState }
       | { ok: false; error: string; permissionModeV1?: PermissionModeState }
+    ))
+  | ({
+      type: 'host.voice_result';
+      requestId: string;
+      epoch: number;
+      daemonInstanceNonce: string;
+    } & (
+      | { ok: true; voiceSettingsV1: VoiceState }
+      | { ok: false; error: string; voiceSettingsV1?: VoiceState }
     ))
   | { type: 'host.ping'; pingId: string }
   | { type: 'host.clear_output'; epoch: number }
@@ -696,6 +759,7 @@ export function parseDaemonControlMessage(
   if (value.type === 'host.welcome') {
     const uiLanguageV1 = parseUiLanguageState(value.uiLanguageV1);
     const permissionModeV1 = parsePermissionModeState(value.permissionModeV1);
+    const voiceSettingsV1 = parseVoiceState(value.voiceSettingsV1);
     const subagentsV1 = parseSubagentsSnapshot(value.subagentsV1);
     const status = parseLiveStatus(value.status);
     const daemonInstanceNonce = boundedString(value.daemonInstanceNonce, 256);
@@ -724,6 +788,7 @@ export function parseDaemonControlMessage(
       (value.memory !== undefined && !memory) ||
       (value.uiLanguageV1 !== undefined && !uiLanguageV1) ||
       (value.permissionModeV1 !== undefined && !permissionModeV1) ||
+      (value.voiceSettingsV1 !== undefined && !voiceSettingsV1) ||
       (value.subagentsV1 !== undefined && !subagentsV1) ||
       (value.subagentsControlV1 !== undefined &&
         value.subagentsControlV1 !== true) ||
@@ -751,6 +816,7 @@ export function parseDaemonControlMessage(
       ...(memory ? { memory } : {}),
       ...(uiLanguageV1 ? { uiLanguageV1 } : {}),
       ...(permissionModeV1 ? { permissionModeV1 } : {}),
+      ...(voiceSettingsV1 ? { voiceSettingsV1 } : {}),
       ...(subagentsV1 ? { subagentsV1 } : {}),
       ...(value.subagentsControlV1 === true
         ? { subagentsControlV1: true as const }
@@ -762,6 +828,7 @@ export function parseDaemonControlMessage(
   if (value.type === 'host.state') {
     const uiLanguageV1 = parseUiLanguageState(value.uiLanguageV1);
     const permissionModeV1 = parsePermissionModeState(value.permissionModeV1);
+    const voiceSettingsV1 = parseVoiceState(value.voiceSettingsV1);
     const subagentsV1 = parseSubagentsSnapshot(value.subagentsV1);
     const status = parseLiveStatus(value.status);
     const visualInput =
@@ -777,6 +844,7 @@ export function parseDaemonControlMessage(
       (value.memory === undefined || memory) &&
       (value.uiLanguageV1 === undefined || uiLanguageV1) &&
       (value.permissionModeV1 === undefined || permissionModeV1) &&
+      (value.voiceSettingsV1 === undefined || voiceSettingsV1) &&
       (value.subagentsV1 === undefined || subagentsV1)
       ? {
           type: 'host.state',
@@ -785,6 +853,7 @@ export function parseDaemonControlMessage(
           ...(memory ? { memory } : {}),
           ...(uiLanguageV1 ? { uiLanguageV1 } : {}),
           ...(permissionModeV1 ? { permissionModeV1 } : {}),
+          ...(voiceSettingsV1 ? { voiceSettingsV1 } : {}),
           ...(subagentsV1 ? { subagentsV1 } : {}),
           status,
         }
@@ -847,6 +916,37 @@ export function parseDaemonControlMessage(
           ok: false,
           error,
           ...(permissionModeV1 ? { permissionModeV1 } : {}),
+        }
+      : undefined;
+  }
+
+  if (value.type === 'host.voice_result') {
+    const requestId = boundedString(value.requestId, 128);
+    const daemonInstanceNonce = boundedString(value.daemonInstanceNonce, 256);
+    const voiceSettingsV1 = parseVoiceState(value.voiceSettingsV1);
+    if (
+      !requestId ||
+      !daemonInstanceNonce ||
+      !Number.isSafeInteger(value.epoch) ||
+      Number(value.epoch) < 0 ||
+      (value.voiceSettingsV1 !== undefined && !voiceSettingsV1)
+    )
+      return undefined;
+    const identity = {
+      type: 'host.voice_result' as const,
+      requestId,
+      daemonInstanceNonce,
+      epoch: Number(value.epoch),
+    };
+    if (value.ok === true && voiceSettingsV1)
+      return { ...identity, ok: true, voiceSettingsV1 };
+    const error = boundedString(value.error, 1024);
+    return value.ok === false && error
+      ? {
+          ...identity,
+          ok: false,
+          error,
+          ...(voiceSettingsV1 ? { voiceSettingsV1 } : {}),
         }
       : undefined;
   }
@@ -968,6 +1068,15 @@ export function encodeHostControlMessage(message: HostControlMessage): string {
       message.epoch < 0)
   )
     throw new Error('Invalid permission mode action');
+  if (
+    message.type === 'host.voice_action' &&
+    (!isVoiceId(message.voice) ||
+      !boundedString(message.requestId, 128) ||
+      !boundedString(message.daemonInstanceNonce, 256) ||
+      !Number.isSafeInteger(message.epoch) ||
+      message.epoch < 0)
+  )
+    throw new Error('Invalid voice action');
   if (
     message.type === 'host.hello' &&
     message.displayCaptureV1 !== undefined &&

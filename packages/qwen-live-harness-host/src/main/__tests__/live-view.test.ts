@@ -882,6 +882,7 @@ describe('persistent Live orb and Settings', () => {
       ).map((element) => element.textContent),
       [
         'Microphone',
+        'Voice',
         'Video Source',
         'Display',
         'Capture Mode',

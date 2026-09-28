@@ -8,6 +8,64 @@ export type LiveLanguage = 'en' | 'zh-CN';
 
 // Edit all fixed Qwen Live Harness display text here. Keep placeholders in sync.
 export const LIVE_MESSAGES = {
+  'voice.label': { en: 'Voice', 'zh-CN': '音色' },
+  'voice.custom': { en: 'Custom voice…', 'zh-CN': '自定义音色…' },
+  'voice.customId': { en: 'Custom voice ID', 'zh-CN': '自定义音色 ID' },
+  'voice.save': { en: 'Save voice', 'zh-CN': '保存音色' },
+  'voice.nextCall': {
+    en: 'Saved selections apply to the next call.',
+    'zh-CN': '保存后从下一次通话开始生效。',
+  },
+  'voice.customHint': {
+    en: 'Enter an existing voice ID created for this model and service region. Applies to the next call.',
+    'zh-CN':
+      '输入为当前模型和服务区域创建的已有音色 ID，从下一次通话开始生效。',
+  },
+  'voice.unverified': {
+    en: 'Custom voice compatibility is unverified for this model. The provider validates the ID on the next call.',
+    'zh-CN': '此模型的自定义音色兼容性尚未确认，将在下一次通话时由服务端校验。',
+  },
+  'voice.overridden': {
+    en: 'Voice is controlled by QWEN_LIVE_HARNESS_VOICE. Remove the override and restart to edit it here.',
+    'zh-CN':
+      '音色由 QWEN_LIVE_HARNESS_VOICE 控制。移除覆盖并重启后可在此修改。',
+  },
+  'voice.unsupported': {
+    en: 'This voice is unavailable for the selected model. Choose a supported preset or a matching custom ID.',
+    'zh-CN': '当前模型不支持此音色，请选择支持的预设或匹配的自定义 ID。',
+  },
+  'voice.invalid': {
+    en: 'Enter a valid voice ID (1–256 characters, without control characters).',
+    'zh-CN': '请输入有效音色 ID（1–256 个字符，不含控制字符）。',
+  },
+  'voice.configInvalid': {
+    en: 'The configuration file is missing or invalid. Voice was not changed.',
+    'zh-CN': '配置文件不存在或无效，音色未更改。',
+  },
+  'voice.concurrentEdit': {
+    en: 'The configuration changed while saving. Try again.',
+    'zh-CN': '保存时配置文件已被修改，请重试。',
+  },
+  'voice.saveFailed': {
+    en: 'Could not save the voice. The selection has not changed.',
+    'zh-CN': '音色保存失败，仍使用当前音色。',
+  },
+  'voice.unavailable': {
+    en: 'Connect to a daemon that supports this setting to change the voice.',
+    'zh-CN': '连接到支持此设置的 daemon 后可修改音色。',
+  },
+  'voice.busy': {
+    en: 'The voice is still being saved.',
+    'zh-CN': '音色正在保存中。',
+  },
+  'voice.callChanged': {
+    en: 'The connection or call changed. Check the saved voice and try again.',
+    'zh-CN': '连接或通话已变化，请检查已保存的音色后重试。',
+  },
+  'voice.timeout': {
+    en: 'Saving the voice timed out. Reconnect to check the saved selection.',
+    'zh-CN': '音色保存超时，请重新连接以确认已保存的选择。',
+  },
   'language.choose': {
     en: 'Language / 语言 (← 简体中文 · English →, Enter / 回车)',
     'zh-CN': 'Language / 语言 (← 简体中文 · English →, Enter / 回车)',

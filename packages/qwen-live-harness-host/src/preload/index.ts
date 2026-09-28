@@ -65,6 +65,7 @@ const api: LiveHostApi = {
   setScreenDisplay: (id) => invoke('live:set-screen-display', id),
   memoryAction: (action) =>
     ipcRenderer.invoke('live:memory-action', action) as Promise<MemoryState>,
+  setVoice: (voice) => invoke('live:set-voice', voice),
   setLanguage: (language) => invoke('live:set-language', language),
   setPermissionMode: (mode) => invoke('live:set-permission-mode', mode),
   setTheme: (theme) => invoke('live:set-theme', theme),
