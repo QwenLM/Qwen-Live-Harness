@@ -745,7 +745,7 @@ export class SettingsPanel {
           : custom
             ? 'voice.customHint'
             : 'voice.nextCall';
-    this.voiceHint.textContent = `${value.model} · ${liveText(language, hint)}`;
+    this.voiceHint.textContent = liveText(language, hint);
   }
 
   private async loadDevices(): Promise<void> {
