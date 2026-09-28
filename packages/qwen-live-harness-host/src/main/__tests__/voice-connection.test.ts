@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { encodeVoiceSample } from 'qwen-live-harness/voice-sample';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -118,7 +119,8 @@ function voiceState(voice: string) {
     model: 'qwen3.8-omni-flash-realtime',
     voice,
     presets: ['Tina', 'Ryan'],
-    custom: 'unverified',
+    custom: 'supported',
+    cloningV1: true,
     availability: 'supported',
     overridden: false,
   };
@@ -264,5 +266,79 @@ describe('Host voice protocol', () => {
     );
     peer.close();
     await disconnected;
+  });
+});
+
+describe('Host voice creation transport', () => {
+  const audio = encodeVoiceSample(new Float32Array(72_000));
+  it('uses authenticated HTTP with current identity and blocks concurrent mutations', async (t) => {
+    const { connection } = await fixture();
+    let complete!: (response: Response) => void;
+    const request = t.mock.method(
+      globalThis,
+      'fetch',
+      async (url: URL, options: RequestInit) => {
+        assert.equal(url.pathname, '/live/voice-clone');
+        assert.equal(url.hostname, '127.0.0.1');
+        assert.equal(options.method, 'POST');
+        assert.equal(options.redirect, 'error');
+        assert.deepEqual(options.headers, {
+          authorization: 'Bearer fixture',
+          'x-qwen-live-harness-nonce': nonce,
+          'content-type': 'application/json',
+        });
+        const body = JSON.parse(options.body as string);
+        assert.equal(body.epoch, 3);
+        assert.match(body.requestId, /^[a-f0-9]{32}$/);
+        assert.deepEqual(Buffer.from(body.audio, 'base64'), Buffer.from(audio));
+        return new Promise<Response>((resolve) => {
+          complete = resolve;
+        });
+      },
+    );
+    const pending = connection.requestVoiceClone(audio);
+    await assert.rejects(
+      connection.requestVoiceClone(audio),
+      localized(/creat/i),
+    );
+    await assert.rejects(connection.requestVoice('Ryan'), localized(/creat/i));
+    complete(Response.json({ ok: true, voice: 'qwen-created' }));
+    assert.deepEqual(await pending, { ok: true, voice: 'qwen-created' });
+    assert.equal(request.mock.callCount(), 1);
+  });
+  it('preserves the created ID without claiming selection after a connection change', async (t) => {
+    const { connection } = await fixture();
+    let complete!: (response: Response) => void;
+    t.mock.method(
+      globalThis,
+      'fetch',
+      () =>
+        new Promise<Response>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const pending = connection.requestVoiceClone(audio);
+    connection.stop();
+    complete(Response.json({ ok: true, voice: 'qwen-created' }));
+    const result = await pending;
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.createdVoice, 'qwen-created');
+  });
+  it('does not retry an ambiguous upload and refuses legacy or malformed requests before fetch', async (t) => {
+    const request = t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('private transport details');
+    });
+    const { connection } = await fixture();
+    const result = await connection.requestVoiceClone(audio);
+    assert.equal(result.ok, false);
+    assert.match(
+      !result.ok ? displayLiveMessage('en', result.error) : '',
+      /could not be confirmed/,
+    );
+    assert.equal(request.mock.callCount(), 1);
+    await assert.rejects(connection.requestVoiceClone(new Uint8Array([1])));
+    const legacy = await fixture(false);
+    await assert.rejects(legacy.connection.requestVoiceClone(audio));
+    assert.equal(request.mock.callCount(), 1);
   });
 });

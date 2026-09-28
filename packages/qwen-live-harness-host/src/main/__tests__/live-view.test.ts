@@ -1382,3 +1382,25 @@ describe('persistent Live orb and Settings', () => {
     assert.equal(select.disabled, false);
   });
 });
+
+it('blocks the start control during voice creation and restores it afterwards', async () => {
+  const h = setup();
+  const voice = {
+    model: 'qwen3.8-omni-flash-realtime',
+    voice: 'Tina',
+    presets: ['Tina'],
+    custom: 'supported' as const,
+    availability: 'supported' as const,
+    overridden: false,
+    cloningV1: true as const,
+    creating: true,
+  };
+  h.update({ ...h.state(), voiceSettingsV1: voice });
+  h.click('Start call');
+  await settled();
+  assert.equal(h.calls.filter(([name]) => name === 'toggle').length, 0);
+  h.update({ ...h.state(), voiceSettingsV1: { ...voice, creating: false } });
+  h.click('Start call');
+  await settled();
+  assert.equal(h.calls.filter(([name]) => name === 'toggle').length, 1);
+});

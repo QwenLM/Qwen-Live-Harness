@@ -277,6 +277,8 @@ export type LiveHostVisualCaptureResult =
 
 export type LiveLanguageState = { language: 'en' | 'zh-CN' };
 export interface LiveVoiceState {
+  cloningV1?: true;
+  creating?: boolean;
   model: string;
   voice: string;
   presets: string[];

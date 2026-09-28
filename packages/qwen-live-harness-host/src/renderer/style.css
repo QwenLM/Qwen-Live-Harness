@@ -683,6 +683,29 @@ button[aria-pressed='true'] {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.voice-creation {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding-top: 12px;
+  border-top: 1px solid var(--live-control-border);
+}
+.settings-voice > button {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+.voice-creation[hidden] {
+  display: none;
+}
+.voice-creation audio {
+  width: 100%;
+  height: 36px;
+}
+.voice-creation input {
+  width: 100%;
+}
 .settings-voice select {
   flex-basis: 100%;
 }

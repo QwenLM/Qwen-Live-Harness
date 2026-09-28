@@ -1075,6 +1075,8 @@ export class LiveHostCoordinator {
     callId: string;
     status: LiveStatus;
   } {
+    if (this.options.getVoice?.().creating)
+      throw new Error(liveMessage('voice.creating'));
     const status = this.getStatus();
     if (!status.available) throw new LiveUnavailableError(status);
     if (mode === 'resume' && this.call) {
@@ -1858,6 +1860,26 @@ export class LiveHostCoordinator {
         );
     }
     this.sendHost(result);
+    this.broadcastState();
+  }
+
+  voiceCreationGuard(epoch: number): () => boolean {
+    const lease = this.host;
+    const current = () =>
+      Boolean(
+        lease &&
+        this.host === lease &&
+        lease.hello &&
+        this.isLeaseHealthy(lease) &&
+        !this.call &&
+        !this.deactivating &&
+        this.nextEpoch === epoch,
+      );
+    if (!current()) throw new Error(liveMessage('voice.cloneIdle'));
+    return current;
+  }
+
+  refreshVoiceSettings(): void {
     this.broadcastState();
   }
 

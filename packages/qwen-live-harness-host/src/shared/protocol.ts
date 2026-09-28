@@ -32,6 +32,8 @@ export type VisualSource = 'screen' | 'camera';
 export type VisualMode = 'on-demand' | 'live-feed';
 export type UiLanguageState = { language: LiveLanguage };
 export interface VoiceState {
+  cloningV1?: true;
+  creating?: boolean;
   model: string;
   voice: string;
   presets: string[];
@@ -63,7 +65,9 @@ function parseVoiceState(value: unknown): VoiceState | undefined {
     !v.presets.every(isVoiceId) ||
     !support(v.custom) ||
     !support(v.availability) ||
-    typeof v.overridden !== 'boolean'
+    typeof v.overridden !== 'boolean' ||
+    (v.cloningV1 !== undefined && v.cloningV1 !== true) ||
+    (v.creating !== undefined && typeof v.creating !== 'boolean')
   )
     return undefined;
   return {
@@ -73,6 +77,8 @@ function parseVoiceState(value: unknown): VoiceState | undefined {
     custom: v.custom as VoiceState['custom'],
     availability: v.availability as VoiceState['availability'],
     overridden: v.overridden,
+    ...(v.cloningV1 === true ? { cloningV1: true } : {}),
+    ...(typeof v.creating === 'boolean' ? { creating: v.creating } : {}),
   };
 }
 

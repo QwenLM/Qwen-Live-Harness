@@ -215,9 +215,7 @@ export function voiceCatalog(model: string): {
   custom: LiveVoiceState['custom'];
 } {
   if (/^qwen3\.8-omni-flash-realtime(?:-\d{4}-\d{2}-\d{2})?$/u.test(model))
-    // The 3.8 voice page links cloning, but enrollment's target-model list
-    // currently only names 3.5. Allow manual IDs with an explicit warning.
-    return { presets: OMNI_38, defaultVoice: 'Tina', custom: 'unverified' };
+    return { presets: OMNI_38, defaultVoice: 'Tina', custom: 'supported' };
   if (
     /^qwen3\.5-omni-(?:plus|flash)-realtime(?:-\d{4}-\d{2}-\d{2})?$/u.test(
       model,

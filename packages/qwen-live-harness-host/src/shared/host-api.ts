@@ -12,6 +12,10 @@ import type {
 } from './protocol.ts';
 import type { OverlayLayout } from './overlay-geometry.ts';
 import type { LiveLanguage } from 'qwen-live-harness/i18n';
+import type {
+  VoiceSampleInfo,
+  VoiceCloneOutcome,
+} from 'qwen-live-harness/voice-sample';
 import type { SubagentsSnapshot } from 'qwen-live-harness/subagents';
 import type { LiveTheme, LiveThemeColor, ResolvedTheme } from './theme.ts';
 
@@ -77,6 +81,11 @@ export type LiveHostApi = {
   memoryAction: (action: MemoryAction) => Promise<MemoryState>;
   setLanguage: (language: LiveLanguage) => Promise<void>;
   setVoice?: (voice: string) => Promise<void>;
+  chooseVoiceSample?: () => Promise<VoiceSampleInfo | undefined>;
+  recordVoiceSample?: () => Promise<VoiceSampleInfo>;
+  stopVoiceRecording?: () => void;
+  discardVoiceSample?: () => void;
+  createVoice?: () => Promise<VoiceCloneOutcome>;
   setPermissionMode?: (mode: PermissionModeState['mode']) => Promise<void>;
   setTheme: (theme: LiveTheme) => Promise<void>;
   setThemeColor: (color: LiveThemeColor) => Promise<void>;

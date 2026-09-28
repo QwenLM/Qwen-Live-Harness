@@ -7,6 +7,9 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
+      "qwen-live-harness/voice-sample": [
+        "../qwen-live-harness/src/voice-sample.ts"
+      ],
       "qwen-live-harness/startup": ["../qwen-live-harness/src/startup.ts"],
       "qwen-live-harness/lifecycle": ["../qwen-live-harness/src/lifecycle.ts"],
       "qwen-live-harness/i18n": ["../qwen-live-harness/src/i18n/messages.ts"],

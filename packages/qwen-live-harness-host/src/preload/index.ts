@@ -8,6 +8,8 @@ import type {
 import { isLiveHostDiagnosticsEnabled } from '../shared/diagnostics.ts';
 import type { MemoryState } from '../shared/protocol.ts';
 import { HostAudioEngine } from './audio-engine.ts';
+import { VoiceSampleCapture } from './voice-sample.ts';
+import type { VoiceCloneOutcome } from 'qwen-live-harness/voice-sample';
 import {
   describeAudioCaptureFailure,
   isAudioOperationCancelled,
@@ -15,6 +17,13 @@ import {
 import { HostCameraEngine } from './camera-engine.ts';
 
 const inputLevelListeners = new Set<(level: number) => void>();
+const voiceSample = new VoiceSampleCapture();
+let voiceSampleOperation = 0;
+const discardVoiceSample = () => {
+  voiceSampleOperation++;
+  voiceSample.clear();
+};
+window.addEventListener('beforeunload', discardVoiceSample);
 const diagnosticsEnabled = isLiveHostDiagnosticsEnabled(
   process.argv,
   process.env,
@@ -66,6 +75,35 @@ const api: LiveHostApi = {
   memoryAction: (action) =>
     ipcRenderer.invoke('live:memory-action', action) as Promise<MemoryState>,
   setVoice: (voice) => invoke('live:set-voice', voice),
+  chooseVoiceSample: () => {
+    voiceSampleOperation++;
+    return voiceSample.select(() =>
+      ipcRenderer.invoke('live:choose-voice-sample'),
+    );
+  },
+  recordVoiceSample: async () => {
+    const operation = ++voiceSampleOperation;
+    await invoke('live:voice-recording-ready');
+    const devices = await audio.listInputDevices();
+    if (operation !== voiceSampleOperation)
+      throw new DOMException('Cancelled', 'AbortError');
+    return voiceSample.record(
+      devices.find((device) => device.selected)?.deviceId,
+    );
+  },
+  stopVoiceRecording: () => {
+    voiceSampleOperation++;
+    voiceSample.stopRecording();
+  },
+  discardVoiceSample,
+  createVoice: async () => {
+    const result = (await ipcRenderer.invoke(
+      'live:create-voice',
+      voiceSample.bytes(),
+    )) as VoiceCloneOutcome;
+    if (result.ok || result.createdVoice) voiceSample.clear();
+    return result;
+  },
   setLanguage: (language) => invoke('live:set-language', language),
   setPermissionMode: (mode) => invoke('live:set-permission-mode', mode),
   setTheme: (theme) => invoke('live:set-theme', theme),
@@ -146,6 +184,7 @@ ipcRenderer.on(
   },
 );
 ipcRenderer.on('live:audio:deactivate', () => {
+  discardVoiceSample();
   void audio.dispose();
 });
 ipcRenderer.on('live:audio:recheck', (_event, reason: string) => {

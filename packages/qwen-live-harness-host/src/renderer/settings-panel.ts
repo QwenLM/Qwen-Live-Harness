@@ -3,6 +3,7 @@ import type { HostPublicState, LiveHostApi } from '../shared/host-api.ts';
 import { OVERLAY_GEOMETRY } from '../shared/overlay-geometry.ts';
 import { uiIcon, setIcon } from './ui-icons.ts';
 import { MemoryPanel } from './memory-panel.ts';
+import { VoiceCreationPanel } from './voice-creation.ts';
 import {
   liveText,
   displayLiveMessage,
@@ -92,6 +93,10 @@ export class SettingsPanel {
     void this.run(() => this.api.setVoice!(value));
   });
   private readonly voiceHint = document.createElement('p');
+  private readonly createVoice = button('voice.cloneTitle', () =>
+    this.voiceCreation.show(),
+  );
+  private readonly voiceCreation: VoiceCreationPanel;
   private readonly voiceField = field(
     'voice.label',
     this.voice,
@@ -156,6 +161,7 @@ export class SettingsPanel {
     private readonly visibilityChanged: (open: boolean) => void,
     private readonly reportError: (error: unknown) => void = () => {},
   ) {
+    this.voiceCreation = new VoiceCreationPanel(api);
     this.element.className = 'settings-layer';
     this.element.hidden = true;
     this.panel.dataset.liveInteractive = '';
@@ -206,7 +212,11 @@ export class SettingsPanel {
     this.voiceHint.id = 'voice-settings-hint';
     this.voice.setAttribute('aria-describedby', this.voiceHint.id);
     this.customVoice.setAttribute('aria-describedby', this.voiceHint.id);
-    this.voiceField.append(this.voiceHint);
+    this.voiceField.append(
+      this.voiceHint,
+      this.createVoice,
+      this.voiceCreation.element,
+    );
     this.customVoice.addEventListener('input', () => this.render());
     this.voice.addEventListener('change', () => {
       if (this.voice.value === '__custom__') {
@@ -446,6 +456,7 @@ export class SettingsPanel {
 
   hide(): void {
     if (!this.isOpen) return;
+    this.voiceCreation.dismiss();
     const generation = ++this.openingGeneration;
     this.opening = false;
     this.element.hidden = true;
@@ -458,6 +469,7 @@ export class SettingsPanel {
   }
 
   dispose(): void {
+    this.voiceCreation.dispose();
     this.removeDrag();
     this.hide();
     this.disposed = true;
@@ -492,6 +504,7 @@ export class SettingsPanel {
     const language = state.language ?? 'en';
     localizeUi(this.element, language);
     this.renderVoice(state);
+    this.voiceCreation.update(state);
     this.permissionMode.value = state.permissionModeV1?.mode ?? 'ask';
     this.permissionMode.disabled =
       this.busy ||
@@ -728,8 +741,14 @@ export class SettingsPanel {
       this.busy ||
       state.connection !== 'ready' ||
       Boolean(state.quitState) ||
+      Boolean(value.creating) ||
       value.overridden;
     this.voice.disabled = disabled;
+    this.createVoice.hidden =
+      !value.cloningV1 ||
+      !this.api.createVoice ||
+      value.custom === 'unsupported';
+    this.createVoice.disabled = disabled;
     this.customVoice.hidden = this.saveVoice.hidden = !custom;
     this.customVoice.disabled = disabled;
     this.saveVoice.disabled =

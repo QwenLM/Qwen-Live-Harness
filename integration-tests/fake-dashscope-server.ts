@@ -32,7 +32,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 
@@ -360,12 +360,16 @@ export async function startFakeDashScopeServer(
     /** Opt-in for tests of manual media workers; existing scripted commits stay manual. */
     autoAckAudioCommits?: boolean;
     visualAnalysisReply?: string;
+    httpHandler?: RequestListener;
   } = {},
 ): Promise<FakeDashScopeServer> {
-  const httpServer = createServer((_req, res) => {
-    res.statusCode = 404;
-    res.end();
-  });
+  const httpServer = createServer(
+    options.httpHandler ??
+      ((_req, res) => {
+        res.statusCode = 404;
+        res.end();
+      }),
+  );
   const wss = new WebSocketServer({ server: httpServer });
   const emitter = new EventEmitter();
   emitter.setMaxListeners(0);

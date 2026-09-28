@@ -1,5 +1,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  voiceSampleSeconds,
+  parseVoiceCloneOutcome,
+  VOICE_CLONE_TIMEOUT_MS,
+  type VoiceCloneOutcome,
+} from 'qwen-live-harness/voice-sample';
+import {
   isLiveLanguage,
   liveMessage,
   displayLiveMessage,
@@ -201,6 +207,7 @@ function rawDataToBuffer(data: RawData): Buffer {
 }
 
 export class LiveDaemonConnection {
+  private cloningVoice = false;
   private readonly hostInstanceNonce = randomBytes(24).toString('base64url');
   private readonly reconnectPolicy: BoundedReconnectPolicy;
   private readonly discovery: DiscoveryMonitor;
@@ -709,7 +716,85 @@ export class LiveDaemonConnection {
     });
   }
 
+  async requestVoiceClone(audio: Uint8Array): Promise<VoiceCloneOutcome> {
+    const target = this.currentRecord;
+    const epoch = this.epoch;
+    const socket = this.socket;
+    const current = () =>
+      this.currentRecord === target &&
+      this.socket === socket &&
+      this.epoch === epoch &&
+      socket?.readyState === WebSocket.OPEN &&
+      this.welcomed &&
+      this.snapshot.phase === 'ready' &&
+      !this.quitRequested;
+    if (voiceSampleSeconds(audio) === undefined)
+      throw new Error(liveMessage('voice.sampleInvalid'));
+    if (!target?.token || !current() || !this.voiceSettingsV1?.cloningV1)
+      throw new Error(liveMessage('voice.unavailable'));
+    if (this.cloningVoice || this.voiceSettingsV1.creating)
+      throw new Error(liveMessage('voice.creating'));
+    if (this.voiceSettingsV1.overridden)
+      throw new Error(liveMessage('voice.overridden'));
+    const url = new URL(buildHostWebSocketUrl(target.url));
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = '/live/voice-clone';
+    this.cloningVoice = true;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          authorization: `Bearer ${target.token}`,
+          'x-qwen-live-harness-nonce': target.instanceNonce,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          requestId: randomBytes(16).toString('hex'),
+          epoch,
+          audio: Buffer.from(audio).toString('base64'),
+        }),
+        signal: AbortSignal.timeout(VOICE_CLONE_TIMEOUT_MS + 20_000),
+      });
+      if (!response.body) throw new Error();
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        bytes += part.value.byteLength;
+        if (bytes > 4096) {
+          await reader.cancel();
+          throw new Error();
+        }
+        chunks.push(part.value);
+      }
+      const result = parseVoiceCloneOutcome(
+        JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      );
+      if (!result) throw new Error();
+      if (!current())
+        return {
+          ok: false,
+          error: liveMessage('voice.callChanged'),
+          ...(result.ok
+            ? { createdVoice: result.voice }
+            : result.createdVoice
+              ? { createdVoice: result.createdVoice }
+              : {}),
+        };
+      return result;
+    } catch {
+      return { ok: false, error: liveMessage('voice.cloneUncertain') };
+    } finally {
+      this.cloningVoice = false;
+    }
+  }
+
   requestVoice(voice: string): Promise<string> {
+    if (this.cloningVoice || this.voiceSettingsV1?.creating)
+      return Promise.reject(new Error(liveMessage('voice.creating')));
     if (!isVoiceId(voice))
       return Promise.reject(new Error(liveMessage('voice.invalid')));
     const nonce = this.currentRecord?.instanceNonce;

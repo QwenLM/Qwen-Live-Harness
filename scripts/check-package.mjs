@@ -183,7 +183,7 @@ function checkPackage() {
       [
         '--input-type=module',
         '-e',
-        'const m = await import("qwen-live-harness"); if (!m.LiveDaemon || !m.loadConfig) throw new Error("missing public API");',
+        'const m = await import("qwen-live-harness"); if (!m.LiveDaemon || !m.loadConfig) throw new Error("missing public API"); const v = await import("qwen-live-harness/voice-sample"); if (v.voiceSampleSeconds(v.encodeVoiceSample(new Float32Array(72000))) !== 3) throw new Error("missing voice sample API");',
       ],
       { cwd: temporary, env: cliEnv },
     );
