@@ -54,6 +54,7 @@ import { LiveSession } from './orchestrator/live-session.js';
 import { MemoryService } from './memory/service.js';
 import { MemoryStoreError } from './memory/store.js';
 import { deriveMemoryBaseUrl } from './memory/config.js';
+import { conversationSummarizer } from './realtime/context-compaction.js';
 import { persistLanguagePreference } from './language-preferences.js';
 import { persistPermissionModePreference } from './permission-preferences.js';
 import { persistScreenDisplayPreference } from './visual-preferences.js';
@@ -508,6 +509,21 @@ export class LiveDaemon {
       monitorDebug: this.monitorDebug,
       debugArchive: this.debugArchive,
       memory: this.memory,
+      ...(this.config.contextCompaction?.enabled
+        ? {
+            contextCompaction: {
+              ...this.config.contextCompaction,
+              summarize: (input, signal) =>
+                conversationSummarizer(
+                  {
+                    baseUrl: memoryBaseUrl,
+                    apiKey: this.config.realtime.apiKey,
+                  },
+                  this.memory?.settings.updater ?? this.config.memory.updater,
+                )(input, signal),
+            },
+          }
+        : {}),
       log,
       logger: this.logger,
       onSubagentsChanged: () => coordinator.refreshSubagentsState(),

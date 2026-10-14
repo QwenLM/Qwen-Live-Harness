@@ -45,6 +45,7 @@ export async function complete(
   timeoutMs: number,
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
+  requireComplete = false,
 ): Promise<string> {
   const timeout = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -100,6 +101,17 @@ export async function complete(
     throw new MemoryCompletionError();
   const first: unknown = decoded['choices'][0];
   const message = isRecord(first) ? first['message'] : undefined;
+  if (
+    requireComplete &&
+    (!isRecord(first) ||
+      first['finish_reason'] !== 'stop' ||
+      !isRecord(message) ||
+      (message['tool_calls'] != null &&
+        (!Array.isArray(message['tool_calls']) ||
+          message['tool_calls'].length > 0)) ||
+      message['function_call'] != null)
+  )
+    throw new MemoryCompletionError();
   return isRecord(message) && typeof message['content'] === 'string'
     ? message['content']
     : '';

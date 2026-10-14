@@ -11,6 +11,7 @@
  */
 
 import { voiceCatalog } from './voice-catalog.js';
+import type { ContextCompactionConfig } from './realtime/context-compaction.js';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -140,6 +141,7 @@ export interface LiveConfig {
   /** Background perception and timer monitoring. */
   proactive: ProactiveConfig;
   memory: MemoryConfig;
+  contextCompaction?: ContextCompactionConfig;
   /** Fixed listen port; 0 (default) lets the kernel pick. */
   port: number;
 }
@@ -1109,6 +1111,47 @@ export function loadConfig(
     str(env['QWEN_LIVE_HARNESS_REALTIME_MODEL']) ??
     str(file['realtimeModel']) ??
     DEFAULT_REALTIME_MODEL;
+  const contextCompaction = readConfigurationValue(
+    'config.sectionInvalid',
+    () => {
+      const raw = file['contextCompaction'];
+      if (
+        raw !== undefined &&
+        (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+      )
+        throw new Error('contextCompaction must be an object');
+      const values = (raw ?? {}) as Record<string, unknown>;
+      if (
+        Object.keys(values).some(
+          (key) =>
+            !['enabled', 'inputTokenLimit', 'triggerRatio'].includes(key),
+        )
+      )
+        throw new Error('Unknown contextCompaction setting');
+      const known = model.startsWith('qwen3.8-omni-flash-realtime');
+      const enabled =
+        values['enabled'] ?? (known || values['inputTokenLimit'] !== undefined);
+      const inputTokenLimit = values['inputTokenLimit'] ?? 196608;
+      const triggerRatio = values['triggerRatio'] ?? 0.9;
+      if (
+        typeof enabled !== 'boolean' ||
+        typeof inputTokenLimit !== 'number' ||
+        !Number.isSafeInteger(inputTokenLimit) ||
+        inputTokenLimit < 16_384 ||
+        inputTokenLimit > 10_000_000 ||
+        typeof triggerRatio !== 'number' ||
+        !Number.isFinite(triggerRatio) ||
+        triggerRatio < 0.5 ||
+        triggerRatio > 0.95 ||
+        (enabled && !known && values['inputTokenLimit'] === undefined)
+      )
+        throw new Error(
+          'Invalid contextCompaction settings; other models need an explicit inputTokenLimit',
+        );
+      return { enabled, inputTokenLimit, triggerRatio };
+    },
+    { section: 'contextCompaction' },
+  );
   const environmentVoice = str(env['QWEN_LIVE_HARNESS_VOICE']);
   const voice =
     environmentVoice ?? str(file['voice']) ?? voiceCatalog(model).defaultVoice;
@@ -1138,6 +1181,7 @@ export function loadConfig(
     visualInput,
     proactive,
     memory,
+    contextCompaction,
     port,
   };
 }

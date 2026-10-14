@@ -19,6 +19,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { SocketLike } from './socket.js';
+import type { ContextCompactionOptions } from './context-compaction.js';
 import type { DebugArchive } from '../log/debug-archive.js';
 import { createDebugSocket } from '../log/debug-socket.js';
 import { deriveWebSocketBase } from './socket.js';
@@ -135,6 +136,7 @@ export interface QwenRealtimeConfig {
   voice?: string;
   instructions: string;
   tools: readonly RealtimeToolDefinition[];
+  contextCompaction?: ContextCompactionOptions;
   debugArchive?: DebugArchive;
   debugContext?: Record<string, unknown>;
 }
@@ -334,6 +336,10 @@ export interface QwenRealtimeCallbacks {
   ) => void;
   onResponseCreated?: (event: RealtimeResponseCreatedEvent) => void;
   onResponseDone?: (event: RealtimeResponseDoneEvent) => void;
+  onContextUsage?: (
+    event: RealtimeEventContext & { inputTokens: number },
+  ) => void;
+  onContextCompacted?: (event: RealtimeEventContext) => void;
   onDirectTranscript?: (event: RealtimeDirectTranscriptEvent) => void;
   onBargeIn?: (event: RealtimeResponseEvent) => void;
   onIgnoredEvent?: (event: RealtimeIgnoredEvent) => void;
@@ -388,6 +394,8 @@ export interface QwenRealtimeSession {
     options?: RealtimeFunctionOutputOptions,
   ) => boolean;
   sendBackendContext: (text: string) => boolean;
+  /** Silent restoration must be acknowledged before a prepared socket takes over. */
+  primeContext?: (texts: readonly string[]) => Promise<boolean>;
   speakToUser: (message: string) => boolean;
   /** Ask about an untrusted pending action in the user's conversation language. */
   askPermission?: (
@@ -859,6 +867,13 @@ export function openQwenRealtimeSession(
     }
 
     let ready = false;
+    const contextAcknowledgements = new Map<
+      string,
+      {
+        finish: (accepted: boolean) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    >();
     let settled = false;
     let terminal = false;
     let closedByClient = false;
@@ -1189,6 +1204,11 @@ export function openQwenRealtimeSession(
     };
 
     const clearResponseTimers = () => {
+      for (const pending of contextAcknowledgements.values()) {
+        clearTimeout(pending.timer);
+        pending.finish(false);
+      }
+      contextAcknowledgements.clear();
       clearResponseCreatedTimer();
       clearResponseDoneTimer();
       if (cancellationTimer !== undefined) clearTimeout(cancellationTimer);
@@ -3048,6 +3068,7 @@ export function openQwenRealtimeSession(
       !activeResponseId &&
       !configurationDirty &&
       configurationUpdatesPending === 0 &&
+      contextAcknowledgements.size === 0 &&
       pendingCalls.size === 0 &&
       pendingFunctionOutputs.size === 0 &&
       toolContinuationStates.size === 0 &&
@@ -3248,6 +3269,37 @@ export function openQwenRealtimeSession(
         }
         if (terminal || closedByClient) return false;
         return sendBackendConversationItem(text);
+      },
+      primeContext: async (texts) => {
+        for (const text of texts) {
+          if (
+            terminal ||
+            closedByClient ||
+            !ready ||
+            !text.trim() ||
+            text.length > QWEN_REALTIME_LIMITS.maxContextChars
+          )
+            return false;
+          const quoted = `${REALTIME_BACKEND_TEXT_PREFIX}${text}`;
+          const accepted = await new Promise<boolean>((resolve) => {
+            const finish = (value: boolean) => {
+              const pending = contextAcknowledgements.get(quoted);
+              if (!pending) return;
+              clearTimeout(pending.timer);
+              contextAcknowledgements.delete(quoted);
+              resolve(value);
+            };
+            const timer = setTimeout(
+              () => finish(false),
+              deps.notificationItemAckTimeoutMs ??
+                NOTIFICATION_ITEM_ACK_TIMEOUT_MS,
+            );
+            contextAcknowledgements.set(quoted, { finish, timer });
+            if (!sendBackendConversationItem(text)) finish(false);
+          });
+          if (!accepted) return false;
+        }
+        return true;
       },
       speakToUser: (message) => {
         if (
@@ -3910,6 +3962,21 @@ export function openQwenRealtimeSession(
         }
         case 'conversation.item.created': {
           const item = isRecord(message['item']) ? message['item'] : undefined;
+          if (
+            item?.['type'] === 'message' &&
+            item['role'] === 'user' &&
+            item['status'] === 'completed' &&
+            Array.isArray(item['content'])
+          ) {
+            const content = item['content'];
+            if (
+              content.length === 1 &&
+              isRecord(content[0]) &&
+              content[0]['type'] === 'input_text' &&
+              typeof content[0]['text'] === 'string'
+            )
+              contextAcknowledgements.get(content[0]['text'])?.finish(true);
+          }
           if (item) acknowledgeNotificationItem(item);
           if (item?.['type'] === 'function_call_output') {
             const callId = optionalString(item['call_id']);
@@ -4790,6 +4857,23 @@ export function openQwenRealtimeSession(
           if (providerStatus === 'failed') {
             notifyError(responseFailureError(response, config.apiKey));
           }
+          const usage = response?.['usage'];
+          const inputTokens = isRecord(usage)
+            ? usage['input_tokens']
+            : undefined;
+          if (
+            status === 'completed' &&
+            Number.isSafeInteger(inputTokens) &&
+            typeof inputTokens === 'number' &&
+            inputTokens >= 0 &&
+            inputTokens <= 1_000_000_000
+          )
+            callback(() =>
+              callbacks.onContextUsage?.({
+                ...eventContext(message),
+                inputTokens,
+              }),
+            );
           queueMicrotask(flushResponseCreate);
           break;
         }
