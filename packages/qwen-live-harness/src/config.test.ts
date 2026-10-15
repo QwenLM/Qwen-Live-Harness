@@ -1072,3 +1072,47 @@ describe('Qwen peer discovery configuration', () => {
     );
   });
 });
+
+it('enables compaction only for a known window or an explicit model limit', async () => {
+  const dataDir = await dataDirWithConfig({
+    realtimeApiKey: 'fixture-key',
+    backends: [],
+  });
+  const env = { QWEN_LIVE_HARNESS_DATA_DIR: dataDir };
+  expect(loadConfig(env).contextCompaction).toEqual({
+    enabled: true,
+    inputTokenLimit: 196608,
+    triggerRatio: 0.9,
+  });
+  expect(
+    loadConfig({ ...env, QWEN_LIVE_HARNESS_REALTIME_MODEL: 'invitation-only' })
+      .contextCompaction?.enabled,
+  ).toBe(false);
+  await writeFile(
+    join(dataDir, 'config.json'),
+    JSON.stringify({
+      realtimeApiKey: 'fixture-key',
+      realtimeModel: 'invitation-only',
+      contextCompaction: { inputTokenLimit: 65536 },
+    }),
+  );
+  expect(loadConfig(env).contextCompaction).toEqual({
+    enabled: true,
+    inputTokenLimit: 65536,
+    triggerRatio: 0.9,
+  });
+});
+
+it.each([
+  null,
+  { enabled: 'true' },
+  { triggerRatio: 1 },
+  { inputTokenLimit: 1 },
+  { unknown: true },
+])('rejects invalid context compaction %j', async (contextCompaction) => {
+  const dataDir = await dataDirWithConfig({
+    realtimeApiKey: 'fixture-key',
+    contextCompaction,
+  });
+  expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow();
+});

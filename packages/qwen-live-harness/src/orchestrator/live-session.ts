@@ -66,6 +66,10 @@ import {
 } from '../realtime/notification-speech.js';
 import { analyzeQwenRealtimeImage } from '../realtime/visual-analysis.js';
 import { openRecoveringQwenRealtimeSession } from '../realtime/recovering-session.js';
+import type {
+  ContextCompactionConfig,
+  ContextCompactionOptions,
+} from '../realtime/context-compaction.js';
 import {
   openQwenRealtimeSession,
   MAX_REALTIME_INSTRUCTIONS_CHARS,
@@ -402,6 +406,8 @@ export interface LiveSessionOptions {
   monitorDebug?: MonitorDebugStore;
   debugArchive?: DebugArchive;
   memory?: MemoryService;
+  contextCompaction?: ContextCompactionConfig &
+    Pick<ContextCompactionOptions, 'summarize'>;
   createProactiveScheduler?: (
     options: ProactiveSchedulerOptions,
   ) => ProactiveSchedulerControl;
@@ -1043,6 +1049,29 @@ export class LiveSession {
           ...(context.voice ? { voice: context.voice } : {}),
           instructions: this.instructions(context),
           tools: this.sessionTools(context),
+          ...(this.options.contextCompaction
+            ? {
+                contextCompaction: {
+                  ...this.options.contextCompaction,
+                  canRotate: () =>
+                    this.active === context &&
+                    !context.stopping &&
+                    !context.transportRecovering &&
+                    !context.speechInProgress &&
+                    !context.responseInFlight &&
+                    !context.resultSpeech &&
+                    context.pendingToolCalls.size === 0 &&
+                    context.injector.canCompactContext(),
+                  runtimeContext: () => [
+                    memoryContextMessage(
+                      context.memoryContextRevision ?? 0,
+                      context.memory?.promptBlocks(),
+                    ),
+                    ...this.transportContextMessages(context),
+                  ],
+                },
+              }
+            : {}),
         },
         this.callbacksFor(context),
       );
@@ -2952,6 +2981,17 @@ export class LiveSession {
         this.log.write('session.start', {
           phase: 'realtime_ready',
           ...details,
+        });
+      },
+      onContextCompacted: (event: RealtimeEventContext) => {
+        if (!current() || context.stopping || event.callEpoch !== context.epoch)
+          return;
+        context.realtimeGeneration++;
+        context.publishedPermissionState = undefined;
+        this.log.write('realtime.protocol', {
+          type: 'compaction.completed',
+          epoch: context.epoch,
+          ...correlation(event),
         });
       },
       onTransportRecovery: (event: RealtimeTransportRecoveryEvent) => {
@@ -6186,6 +6226,25 @@ export class LiveSession {
   private restoreTransportContext(context: CallContext): void {
     if (this.options.memory && !this.publishMemoryContext(context, true))
       throw new Error('Current Memory context could not be restored.');
+    const messages = this.transportContextMessages(context);
+    for (const message of messages) {
+      if (!context.realtime?.sendBackendContext(message))
+        throw new Error(
+          'Current task and permission state could not be restored.',
+        );
+    }
+    const snapshot = this.subagents.snapshot();
+    this.log.write('realtime.protocol', {
+      type: 'transport.context_restored',
+      epoch: context.epoch,
+      permissions: this.broker.pendingUserRequests.length,
+      tasks: snapshot.tasks.length,
+      omittedTasks: snapshot.omitted,
+      messages: messages.length,
+    });
+  }
+
+  private transportContextMessages(context: CallContext): string[] {
     const pending = this.broker.pendingUserRequests;
     const snapshot = this.subagents.snapshot();
     const messages = [
@@ -6240,20 +6299,7 @@ export class LiveSession {
       throw new Error(
         'Current task and permission state exceeds the safe recovery context limit.',
       );
-    for (const message of messages) {
-      if (!context.realtime?.sendBackendContext(message))
-        throw new Error(
-          'Current task and permission state could not be restored.',
-        );
-    }
-    this.log.write('realtime.protocol', {
-      type: 'transport.context_restored',
-      epoch: context.epoch,
-      permissions: pending.length,
-      tasks: snapshot.tasks.length,
-      omittedTasks: snapshot.omitted,
-      messages: messages.length,
-    });
+    return messages;
   }
 
   private requeueProactiveAfterTransportRecovery(context: CallContext): void {

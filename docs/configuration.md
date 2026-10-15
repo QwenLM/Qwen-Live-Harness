@@ -93,6 +93,24 @@ The default main model is `qwen3.8-omni-flash-realtime`. For another model or an
 
 Memory and Proactive also use the selected region by default. Separate endpoints are usually unnecessary.
 
+## Long conversation context
+
+The default `qwen3.8-omni-flash-realtime` conversation summarizes older text in the background and prepares a new foreground connection when reported input usage exceeds 90% of its 196,608-token limit. The switch waits for user speech, tool receipts and confirmed device playback to finish. Background tasks continue; historical permissions and completed tools are not replayed.
+
+```json
+{
+  "contextCompaction": {
+    "enabled": true,
+    "inputTokenLimit": 196608,
+    "triggerRatio": 0.9
+  }
+}
+```
+
+Set `enabled:false` to disable it. Other model IDs, including invitation aliases with unknown limits, need an explicit `inputTokenLimit` before enabling compaction. The permitted input limit is 16,384–10,000,000 tokens; the ratio is 0.5–0.95. Restart after changing these settings.
+
+The summary reuses `memory.updater` settings (default `qwen3.7-plus`) and sends conversation text/results to that model, independently of the Memory toggle. Summary calls have their own model usage. Raw media is not summarized, and older details may be omitted. Summary or connection failure keeps the existing call running. For restoration budgets and boundaries, see [Long conversations](../packages/qwen-live-harness/README.md#model-tools-and-mcp).
+
 ## Voice
 
 Choose a voice under **Settings → Sound → Voice**. The list follows the currently configured Realtime model. Presets save when selected; choose **Custom voice…**, enter an existing voice ID, then select **Save voice** for a custom voice. To create a voice, end the current call and select **Create a voice**. **Record** a sample and stop, or **Choose audio** (WAV, MP3 or M4A, up to 10 MB). Use 3–60 seconds of clear speech; 10–20 seconds is recommended. Listen to the local preview, then select **Create and use**. The app uploads the sample to the configured speech service, creates a voice for the current model, and automatically saves and selects its ID. The next call uses that voice.

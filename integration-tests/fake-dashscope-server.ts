@@ -86,11 +86,19 @@ export interface FakeDashScopeConnection {
    * response.audio.delta (base64) → response.audio.done → response.done.
    * Returns the response id.
    */
-  respondWithAudio(pcm16: Uint8Array, transcript?: string): string;
+  respondWithAudio(
+    pcm16: Uint8Array,
+    transcript?: string,
+    inputTokens?: number,
+  ): string;
   /** Open a response and leave it in flight. Returns the response id. */
   beginResponse(): string;
   /** Settle a response previously opened with beginResponse(). */
-  finishResponse(responseId: string, status?: string): void;
+  finishResponse(
+    responseId: string,
+    status?: string,
+    inputTokens?: number,
+  ): void;
 }
 
 export interface WaitForMessageOptions {
@@ -543,13 +551,20 @@ export async function startFakeDashScopeServer(
       });
       return responseId;
     };
-    const finishResponse = (responseId: string, status = 'completed') => {
+    const finishResponse = (
+      responseId: string,
+      status = 'completed',
+      inputTokens?: number,
+    ) => {
       if (!responseOutputs.get(responseId)?.size) announceMessage(responseId);
       sendJson({
         type: 'response.done',
         response: {
           id: responseId,
           status,
+          ...(inputTokens === undefined
+            ? {}
+            : { usage: { input_tokens: inputTokens } }),
           output: [...(responseOutputs.get(responseId)?.values() ?? [])],
         },
       });
@@ -679,10 +694,10 @@ export async function startFakeDashScopeServer(
           throw new Error('A function call is already queued');
         queuedFunctionCall = call;
       },
-      respondWithAudio: (pcm16, transcript) => {
+      respondWithAudio: (pcm16, transcript, inputTokens) => {
         const responseId = beginResponse();
         sendAudio(responseId, pcm16, transcript);
-        finishResponse(responseId);
+        finishResponse(responseId, 'completed', inputTokens);
         return responseId;
       },
       beginResponse,

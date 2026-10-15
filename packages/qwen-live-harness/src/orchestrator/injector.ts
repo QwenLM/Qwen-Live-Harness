@@ -515,6 +515,18 @@ export class Injector {
     return this.queue.length;
   }
 
+  /** A socket replacement must also wait for optimistic Host playback and FIFO. */
+  canCompactContext(): boolean {
+    return (
+      !this.disposed &&
+      !this.flushing &&
+      this.queue.length === 0 &&
+      !this.directResponsePending &&
+      !this.responseRequestPending &&
+      this.windowClosedForMs() === 0
+    );
+  }
+
   /** A user mute consumes queued reports without blocking ordinary context. */
   dropPeerReports(): string[] {
     const ids = this.queue.flatMap((item) =>

@@ -7,12 +7,14 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openRecoveringQwenRealtimeSession } from './recovering-session.js';
 import { RecoveryInputBuffer } from './recovery-input.js';
+import type { ContextCompactionOptions } from './context-compaction.js';
 import type {
   QwenRealtimeCallbacks,
   QwenRealtimeSession,
 } from './realtime-session.js';
 
 class Socket extends EventEmitter {
+  acknowledgeContexts = true;
   readonly OPEN = 1;
   readyState = 1;
   readonly sent: Record<string, unknown>[] = [];
@@ -27,6 +29,7 @@ class Socket extends EventEmitter {
   }
   /** Real providers echo user context and assign the item ID before inference. */
   private acknowledgeContext(event: Record<string, unknown>): void {
+    if (!this.acknowledgeContexts) return;
     if (event['type'] === 'response.create')
       this.responseParents.push(this.latestContextItemId);
     const item = event['item'] as Record<string, unknown> | undefined;
@@ -93,10 +96,17 @@ class Socket extends EventEmitter {
   response(id: string): void {
     this.message({ type: 'response.created', response: { id } });
   }
-  done(id: string, status = 'completed'): void {
+  done(id: string, status = 'completed', inputTokens?: number): void {
     this.message({
       type: 'response.done',
-      response: { id, status, output: this.tools.get(id) ?? [] },
+      response: {
+        id,
+        status,
+        output: this.tools.get(id) ?? [],
+        ...(inputTokens === undefined
+          ? {}
+          : { usage: { input_tokens: inputTokens } }),
+      },
     });
   }
   tool(responseId: string, callId: string, name = 'handoff'): void {
@@ -142,7 +152,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function rig(callbacks: QwenRealtimeCallbacks = {}, apiKey?: string) {
+async function rig(
+  callbacks: QwenRealtimeCallbacks = {},
+  apiKey?: string,
+  contextCompaction?: ContextCompactionOptions,
+) {
   vi.useFakeTimers();
   const sockets: Socket[] = [];
   const onError = vi.fn();
@@ -156,6 +170,7 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}, apiKey?: string) {
       apiKey,
       callEpoch: 1,
       instructions: 'Synthetic test only',
+      ...(contextCompaction ? { contextCompaction } : {}),
       tools: [
         {
           type: 'function',
@@ -181,6 +196,7 @@ async function rig(callbacks: QwenRealtimeCallbacks = {}, apiKey?: string) {
       responseCreatedTimeoutMs: 100,
       cancellationGraceMs: 20,
       connectTimeoutMs: 100,
+      notificationItemAckTimeoutMs: 20,
       createWebSocket: () => {
         const socket = new Socket();
         sockets.push(socket);
@@ -955,4 +971,141 @@ describe('bounded recovery input', () => {
       text: '不要删除',
     });
   });
+});
+
+describe('foreground context compaction', () => {
+  const options = (canRotate = () => true): ContextCompactionOptions => ({
+    enabled: true,
+    inputTokenLimit: 196608,
+    triggerRatio: 0.9,
+    summarize: async () => 'Historical constraints and unresolved questions.',
+    canRotate,
+    runtimeContext: () => [
+      '[MEMORY_CONTEXT] latest',
+      '[TRANSPORT_RECOVERY_STATE] current task and permission IDs',
+    ],
+  });
+  const highUsage = (socket: Socket, id = 'usage') => {
+    socket.user(id + '-input', 'Latest real user request');
+    socket.response(id);
+    socket.done(id, 'completed', 180000);
+  };
+
+  it('switches only after every context ACK, preserves instructions and fences old events', async () => {
+    const onContextCompacted = vi.fn();
+    const r = await rig({ onContextCompacted }, undefined, options());
+    const first = r.sockets[0]!;
+    highUsage(first);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(r.sockets).toHaveLength(2);
+    expect(first.readyState).toBe(1);
+    r.sockets[1]!.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.readyState).toBe(3);
+    expect(onContextCompacted).toHaveBeenCalledTimes(1);
+    expect(
+      r.sockets[1]!.sent.filter((e) => e['type'] === 'response.create'),
+    ).toHaveLength(0);
+    const update = r.sockets[1]!.sent.find(
+      (e) => e['type'] === 'session.update',
+    )!;
+    expect((update['session'] as Record<string, unknown>)['instructions']).toBe(
+      'Synthetic test only',
+    );
+    first.user('stale-input', 'Repeat the previous mutation');
+    first.response('stale-response');
+    first.tool('stale-response', 'stale-tool');
+    first.done('stale-response', 'completed', 180000);
+    expect(r.onFunctionCall).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(r.sockets).toHaveLength(2);
+  });
+
+  it('defers while playback is busy and leaves the old socket active on restore timeout', async () => {
+    let idle = false;
+    const r = await rig(
+      {},
+      undefined,
+      options(() => idle),
+    );
+    highUsage(r.sockets[0]!);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.sockets).toHaveLength(1);
+    idle = true;
+    await vi.advanceTimersByTimeAsync(500);
+    r.sockets[1]!.acknowledgeContexts = false;
+    r.sockets[1]!.ready();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(r.sockets[0]!.readyState).toBe(1);
+    expect(r.sockets[1]!.readyState).toBe(3);
+    expect(r.onError).not.toHaveBeenCalled();
+    expect(r.onProtocolDebug).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'compaction.failed' }),
+    );
+  });
+
+  it('abandons a prepared socket if new speech changes the history before takeover', async () => {
+    const r = await rig({}, undefined, options());
+    highUsage(r.sockets[0]!);
+    await vi.advanceTimersByTimeAsync(500);
+    r.sockets[0]!.user('new-input', 'Cancel the previous request');
+    r.sockets[1]!.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sockets[0]!.readyState).toBe(1);
+    expect(r.sockets[1]!.readyState).toBe(3);
+    r.session.close({ discardPendingInput: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.sockets).toHaveLength(2);
+  });
+});
+
+it('retains the rolling summary through two fault recoveries after compaction', async () => {
+  const r = await rig({}, undefined, {
+    enabled: true,
+    inputTokenLimit: 196608,
+    triggerRatio: 0.9,
+    summarize: async () => 'Verified historical constraints.',
+    canRotate: () => true,
+    runtimeContext: () => [],
+  });
+  for (let i = 0; i < 16; i++)
+    r.session.sendBackendContext(`Synthetic fact ${i}`);
+  await vi.advanceTimersByTimeAsync(0);
+  const first = r.sockets[0]!;
+  first.user('threshold-input', 'Continue naturally');
+  first.response('threshold-response');
+  first.done('threshold-response', 'completed', 180000);
+  await vi.advanceTimersByTimeAsync(500);
+  r.sockets[1]!.ready();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(first.readyState).toBe(3);
+  for (let i = 1; i <= 2; i++) {
+    const socket = r.sockets[i]!;
+    socket.user(`fresh-${i}`, 'A new real user request');
+    socket.response(`fault-${i}`);
+    socket.message({
+      type: 'error',
+      error: {
+        code: 'COMMON_ERROR',
+        message:
+          '<50002> InternalError.Algo.ModelServingError: Internal Error calling model processing.',
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sockets).toHaveLength(i + 2);
+    const replacement = r.sockets[i + 1]!;
+    replacement.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(JSON.stringify(replacement.sent)).toContain(
+      'Verified historical constraints.',
+    );
+    replacement.response(`resumed-${i}`);
+    replacement.done(`resumed-${i}`);
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  expect(
+    r.onError.mock.calls.some(
+      ([error]) => error.code === 'realtime_recovery_exhausted',
+    ),
+  ).toBe(false);
 });
