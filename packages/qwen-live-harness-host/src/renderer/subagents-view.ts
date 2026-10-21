@@ -79,6 +79,7 @@ const REPORT_ANNOUNCEMENT_KEYS = {
   interrupted: 'subagents.reportInterrupted',
   unspoken: 'subagents.reportUnspoken',
   suppressed: 'subagents.reportSuppressed',
+  unconfirmed: 'subagents.notificationUnconfirmed',
 } as const satisfies Record<SessionReport['announcement'], LiveMessageKey>;
 
 const NOTIFICATION_KEYS = {
@@ -87,6 +88,7 @@ const NOTIFICATION_KEYS = {
   speaking: 'subagents.notificationSpeaking',
   delivered: 'subagents.notificationDelivered',
   undelivered: 'subagents.notificationUndelivered',
+  unconfirmed: 'subagents.notificationUnconfirmed',
 } as const satisfies Record<
   NonNullable<SubagentTask['notification']>,
   LiveMessageKey

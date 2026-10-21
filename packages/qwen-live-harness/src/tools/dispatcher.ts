@@ -32,6 +32,8 @@ const INVALID_ARGUMENTS_NOTE =
 
 /** Per-call context threaded through from the realtime function-call event. */
 export interface ToolContext {
+  /** Optional per-operation lease, rechecked immediately before side effects. */
+  isCurrent?: () => boolean;
   /** Transcript tail captured at call time (capturesTranscript tools). */
   activeTranscript: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>;
   /** Current real user's request, not a synthetic notification or earlier turn. */

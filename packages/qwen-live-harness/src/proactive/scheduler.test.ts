@@ -431,6 +431,33 @@ afterEach(() => {
 });
 
 describe('ProactiveScheduler', () => {
+  it('retires accepted continuous-voice notifications without claiming they were heard', () => {
+    const changed = vi.fn();
+    const h = createHarness(config(), { onTaskChanged: changed });
+    const task = h.scheduler.createTimer({
+      title: 'Reminder',
+      durationSec: 1,
+      reminderText: 'Time is up.',
+    });
+    vi.advanceTimersByTime(1000);
+    const delivery = h.deliveries[0]!;
+    h.scheduler.acceptUnconfirmedDelivery({ ...delivery, taskGeneration: 999 });
+    expect(h.scheduler.listTasks()[0]?.pendingDeliveryCount).toBe(1);
+    h.scheduler.acceptUnconfirmedDelivery(delivery);
+    expect(changed).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        taskId: task.taskId,
+        status: 'completed',
+        pendingDeliveryCount: 0,
+      }),
+      'unconfirmed',
+    );
+    h.scheduler.playbackStarted(delivery);
+    h.scheduler.acknowledgeDelivery(delivery);
+    expect(changed).toHaveBeenLastCalledWith(expect.anything(), 'unconfirmed');
+    expect(h.failures).toHaveLength(0);
+  });
+
   it('preserves bound narration preferences through Monitor initialization, style updates and foreground events', () => {
     const { scheduler, monitors, deliveries } = createHarness();
     const sourceRequest = '请用英语持续描述画面，给初学者讲解。';

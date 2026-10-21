@@ -1116,3 +1116,79 @@ it.each([
   });
   expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow();
 });
+
+describe('FD configuration', () => {
+  it.each([
+    { endpoint: 123 },
+    { apiKey: true },
+    { model: [] },
+    { voice: {} },
+    { voice: '   ' },
+  ])(
+    'rejects malformed FD settings without silently applying defaults: %j',
+    async (fd) => {
+      const dataDir = await dataDirWithConfig({ mode: 'fd', fd });
+      expect(() =>
+        loadConfig({
+          QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+          OPENAI_API_KEY: 'openai-fixture',
+        }),
+      ).toThrow('fd');
+    },
+  );
+
+  it('uses separate OpenAI credentials and keeps Qwen model roles unchanged', async () => {
+    const dataDir = await dataDirWithConfig({ mode: 'fd', backends: [] });
+    const config = loadConfig({
+      QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+      OPENAI_API_KEY: 'openai-fixture',
+    });
+    expect(config.mode).toBe('fd');
+    expect(config.fd).toEqual({
+      endpoint: 'https://api.openai.com',
+      apiKey: 'openai-fixture',
+      model: 'gpt-live-1',
+      voice: 'marin',
+      responsesModel: 'gpt-6-luna',
+    });
+    expect(config.realtime.model).toBe(DEFAULT_REALTIME_MODEL);
+    expect(config.realtime.apiKey).toBe('');
+    expect(config.memory.enabled).toBe(false);
+    expect(config.proactive.enabled).toBe(false);
+  });
+
+  it('does not infer FD from the model name or borrow a DashScope key', async () => {
+    const dataDir = await dataDirWithConfig({
+      mode: 'fd',
+      realtimeApiKey: 'qwen-fixture',
+    });
+    expect(() => loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dataDir })).toThrow(
+      'OPENAI_API_KEY',
+    );
+    const oldDataDir = await dataDirWithConfig({
+      realtimeApiKey: 'qwen-fixture',
+    });
+    const config = loadConfig({
+      QWEN_LIVE_HARNESS_DATA_DIR: oldDataDir,
+      OPENAI_API_KEY: 'openai-fixture',
+    });
+    expect(config.fd).toBeUndefined();
+    expect(config.realtime.apiKey).toBe('qwen-fixture');
+  });
+
+  it('honors FD overrides without writing over Qwen settings', async () => {
+    const dataDir = await dataDirWithConfig({
+      mode: 'fd',
+      realtimeApiKey: 'qwen-fixture',
+      fd: { apiKey: 'file-fixture', voice: 'quartz' },
+    });
+    const config = loadConfig({
+      QWEN_LIVE_HARNESS_DATA_DIR: dataDir,
+      OPENAI_API_KEY: 'env-fixture',
+      QWEN_LIVE_HARNESS_FD_ENDPOINT: 'https://example.com',
+    });
+    expect(config.fd?.apiKey).toBe('env-fixture');
+    expect(config.fd?.voice).toBe('quartz');
+    expect(config.realtime.apiKey).toBe('qwen-fixture');
+  });
+});

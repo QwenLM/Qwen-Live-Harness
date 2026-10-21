@@ -13543,3 +13543,471 @@ describe('persisted realtime protocol diagnostics', () => {
     },
   );
 });
+
+describe('LiveSession FD Responses integration', () => {
+  async function fdRig(options: Partial<LiveSessionOptionsForTest> = {}) {
+    const adaptor = new FakeAdaptor();
+    const host = createFakeHost({
+      source: 'screen',
+      image: TEST_JPEG,
+      width: 100,
+      height: 100,
+    });
+    let callbacks!: import('../realtime/gpt-live-session.js').GptLiveCallbacks;
+    let config!: import('../realtime/gpt-live-session.js').GptLiveConfig;
+    const append = vi.fn(() => true),
+      close = vi.fn(async () => true),
+      outputs = vi.fn(() => true),
+      configureResponses = vi.fn(() => true);
+    const openRealtime = vi.fn<typeof openQwenRealtimeSession>();
+    const session = new LiveSession({
+      host,
+      registry: new BackendRegistry([{ adaptor, isDefault: true }]),
+      realtime: {
+        endpoint: 'https://qwen.example',
+        apiKey: 'qwen-fixture',
+        model: DEFAULT_REALTIME_MODEL,
+      },
+      fd: {
+        endpoint: 'https://openai.example',
+        apiKey: 'openai-fixture',
+        model: 'gpt-live-1',
+        voice: 'marin',
+        responsesModel: 'gpt-6-luna',
+      },
+      openRealtime,
+      openFd: async (cfg, cbs) => {
+        config = cfg;
+        callbacks = cbs;
+        return {
+          sessionId: 'fd-provider',
+          pushAudio: () => true,
+          append,
+          setInputMuted: vi.fn(),
+          close,
+          submitToolOutputs: outputs,
+          configureResponses,
+        };
+      },
+      log: { write: vi.fn() } as unknown as SessionLog,
+      ...options,
+    });
+    await session.start({
+      epoch: 1,
+      callId: 'fd-call',
+      mode: 'new',
+      visualInput: DEFAULT_VISUAL_INPUT,
+    });
+    let seq = 0;
+    function speech(text: string, startMs = 1000, endMs = 1300) {
+      callbacks.onTranscript({ role: 'user', text, startMs, endMs });
+    }
+    async function tool(
+      name: string,
+      args: Record<string, unknown>,
+      offsetMs = 1300,
+      delegationId?: string,
+    ) {
+      const n = ++seq,
+        did = delegationId ?? `d${n}`,
+        rid = `r${n}`;
+      if (!delegationId) callbacks.onDelegation({ id: did, offsetMs });
+      callbacks.onResponse({
+        delegationId: did,
+        event: { type: 'response.created', response: { id: rid } },
+      });
+      callbacks.onResponse({
+        delegationId: did,
+        event: {
+          type: 'response.output_item.done',
+          item: {
+            type: 'function_call',
+            call_id: `c${n}`,
+            name,
+            arguments: JSON.stringify(args),
+          },
+        },
+      });
+      const before = outputs.mock.calls.length;
+      callbacks.onResponse({
+        delegationId: did,
+        event: {
+          type: 'response.completed',
+          response: { id: rid, output: [] },
+        },
+      });
+      await vi.waitFor(
+        () => expect(outputs.mock.calls.length).toBeGreaterThan(before),
+        { timeout: 2000 },
+      );
+      const output = outputs.mock.calls.at(-1) as unknown as [
+        Array<{ output: string }>,
+      ];
+      try {
+        return JSON.parse(output[0][0]!.output);
+      } catch {
+        return output[0][0]!.output;
+      }
+    }
+    return {
+      session,
+      host,
+      adaptor,
+      callbacks,
+      append,
+      close,
+      outputs,
+      openRealtime,
+      config,
+      configureResponses,
+      speech,
+      tool,
+    };
+  }
+  type LiveSessionOptionsForTest = ConstructorParameters<typeof LiveSession>[0];
+
+  it('preserves the complete enabled tool surface and injects job results during playback', async () => {
+    const f = await fdRig();
+    try {
+      expect(f.openRealtime).not.toHaveBeenCalled();
+      expect(f.config.responses.tools.map((t) => t.function.name)).toEqual(
+        buildLiveSessionTools(false, true, true).map((t) => t.function.name),
+      );
+      f.speech('Analyze the repository.');
+      expect(
+        await f.tool('handoff', { task: 'Analyze the repository.' }),
+      ).toMatchObject({ status: 'accepted' });
+      expect(f.adaptor.prompt).toHaveBeenCalledOnce();
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      f.session.playbackStarted({ epoch: 1 });
+      f.adaptor.queue('s1').push({
+        type: 'turn_complete',
+        jobRef: 'p1',
+        summary: 'The build failed.',
+      });
+      await vi.waitFor(() =>
+        expect(f.append).toHaveBeenCalledWith(
+          'commentary',
+          expect.stringContaining('The build failed.'),
+        ),
+      );
+      expect(f.session.getSubagentsSnapshot().tasks[0]?.notification).toBe(
+        'unconfirmed',
+      );
+      f.session.playbackCompleted({ epoch: 1 });
+      expect(f.session.getSubagentsSnapshot().tasks[0]?.notification).toBe(
+        'unconfirmed',
+      );
+      expect(f.adaptor.cancel).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('uses independent sessions for explicit parallel work and preserves duplicate admission receipts', async () => {
+    const f = await fdRig();
+    try {
+      f.speech('Create two separate tasks.');
+      const a = await f.tool('session_create', { label: 'First' });
+      const b = await f.tool('session_create', { label: 'Second' }, 1300, 'd1');
+      expect(a.handle).not.toBe(b.handle);
+      expect(f.adaptor.createSession).toHaveBeenCalledTimes(2);
+      await f.tool(
+        'handoff',
+        { task: 'First task.', session: a.handle },
+        1300,
+        'd1',
+      );
+      await f.tool(
+        'handoff',
+        { task: 'First task.', session: a.handle },
+        1300,
+        'd1',
+      );
+      expect(f.adaptor.prompt).toHaveBeenCalledOnce();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('allows only a new user vote for an already pending permission', async () => {
+    const f = await fdRig();
+    try {
+      f.speech('Run checks.');
+      await f.tool('handoff', { task: 'Run checks.' });
+      f.adaptor.queue('s1').push({
+        type: 'permission_request',
+        jobRef: 'p1',
+        requestId: 'pending',
+        title: 'Run command',
+        options: PERMISSION_OPTIONS,
+      });
+      await vi.waitFor(() =>
+        expect(
+          f.session
+            .getSubagentsSnapshot()
+            .tasks.some((t) => t.status === 'waiting'),
+        ).toBe(true),
+      );
+      const page = await f.session.handleSubagentsRequest({
+        action: 'list',
+        selectedId: 'harness:job_1',
+      });
+      if (page.type !== 'page') throw new Error('No permission page');
+      const pending = page.page.selected!.permissions![0]!.requestHandle;
+      expect(
+        await f.tool(
+          'respond_permission',
+          { request_id: pending, decision: 'allow' },
+          1300,
+          'd1',
+        ),
+      ).toMatchObject({ status: 'clarification_required' });
+      expect(f.adaptor.respondPermission).not.toHaveBeenCalled();
+      f.speech('Yes, allow it.', 4000, 4300);
+      expect(
+        await f.tool(
+          'respond_permission',
+          { request_id: pending, decision: 'allow' },
+          4300,
+        ),
+      ).toMatchObject({ status: 'delivered' });
+      expect(f.adaptor.respondPermission).toHaveBeenCalledOnce();
+      f.callbacks.onError(new Error('Append rejected'), false);
+      expect(f.host.failCall).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('does not rebind a stale backend response to newer user input or stop an ambiguous target', async () => {
+    const f = await fdRig();
+    try {
+      f.speech('Run checks.');
+      await f.tool('handoff', { task: 'Run checks.' });
+      f.speech('Just keep talking.', 4000, 4300);
+      expect(
+        await f.tool('session_stop', { session: 'session_1' }, 1300, 'd1'),
+      ).toMatchObject({ reason: 'missing_or_stale_user_input' });
+      expect(
+        await f.tool('session_stop', { session: 'unknown' }, 4300),
+      ).toMatchObject({ reason: 'task_target_ambiguous_or_mismatched' });
+      expect(f.adaptor.cancel).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('executes read-only search and appshot with results injected while speech continues', async () => {
+    const search = vi.fn<typeof searchQwenRealtime>(async () => ({
+      answer: 'Rain tomorrow.',
+      searchStatus: 'performed',
+    }));
+    const vision = vi.fn<typeof analyzeQwenRealtimeImage>(async () => ({
+      answer: 'An editor window.',
+    }));
+    const f = await fdRig({
+      searchRealtime: search,
+      analyzeRealtimeImage: vision,
+    });
+    try {
+      f.speech('What is on my screen?');
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      expect(
+        await f.tool('appshot', { query: 'What is on my screen?' }),
+      ).toMatchObject({ status: 'accepted' });
+      expect(f.host.captureVisualContext).toHaveBeenCalledOnce();
+      expect(vision).toHaveBeenCalledOnce();
+      expect(f.append).toHaveBeenCalledWith(
+        'commentary',
+        expect.stringContaining('An editor window.'),
+      );
+      f.speech('Weather tomorrow?', 4000, 4300);
+      expect(
+        await f.tool('web_search', { query: 'Weather tomorrow?' }, 4300),
+      ).toMatchObject({ status: 'accepted' });
+      expect(search).toHaveBeenCalledOnce();
+      expect(f.append).toHaveBeenCalledWith(
+        'commentary',
+        expect.stringContaining('Rain tomorrow.'),
+      );
+      expect(f.adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('starts Proactive tools in FD and never mistakes context acceptance for heard delivery', async () => {
+    let schedulerOptions!: ProactiveSchedulerOptions;
+    const scheduler = new FakeProactiveScheduler();
+    const acceptUnconfirmedDelivery = vi.fn();
+    const f = await fdRig({
+      proactive: DEFAULT_PROACTIVE_CONFIG,
+      createProactiveScheduler: (options) => {
+        schedulerOptions = options;
+        return { ...scheduler, acceptUnconfirmedDelivery };
+      },
+    });
+    try {
+      f.speech('Remind me in ten seconds.');
+      expect(
+        await f.tool('create_proactive_timer', {
+          title: 'Reminder',
+          duration_sec: 10,
+          reminder_text: 'Time is up.',
+        }),
+      ).toEqual(expect.any(String));
+      expect(scheduler.createTimer).toHaveBeenCalledOnce();
+      const delivery = {
+        taskId: TIMER_TASK.taskId,
+        taskGeneration: 1,
+        deliveryId: 'notice',
+        event: 'Time is up.',
+      };
+      expect(schedulerOptions.onEvent(delivery)).toBe(true);
+      expect(f.append).toHaveBeenCalledWith('commentary', 'Time is up.');
+      expect(acceptUnconfirmedDelivery).toHaveBeenCalledWith(delivery);
+      f.session.playbackStarted({ epoch: 1 });
+      f.session.playbackCompleted({ epoch: 1 });
+      expect(scheduler.acknowledgeDelivery).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('persists continuous dialogue as local text segments and dispatches enabled Memory tools', async () => {
+    const dataDir = await mkdtemp(join(tempDir, 'fd-memory-'));
+    const configPath = join(dataDir, 'config.json');
+    const raw = {
+      enabled: true,
+      retrieve: { useVector: false },
+      updater: { enabled: false },
+    };
+    await writeFile(configPath, JSON.stringify({ memory: raw }));
+    const memory = new MemoryService({
+      config: resolveMemoryConfig(raw, dataDir, configPath),
+      dataDir,
+      connection: { baseUrl: 'https://memory.test/v1' },
+    });
+    const f = await fdRig({ memory });
+    try {
+      expect(f.config.responses.tools.map((t) => t.function.name)).toContain(
+        'omnibio',
+      );
+      f.speech('My favorite ', 1000, 1100);
+      f.speech('language is TypeScript.', 1100, 1300);
+      f.callbacks.onTranscript({
+        role: 'assistant',
+        text: 'I will remember ',
+        startMs: 1300,
+        endMs: 1400,
+      });
+      f.callbacks.onTranscript({
+        role: 'assistant',
+        text: 'your preference.',
+        startMs: 1400,
+        endMs: 1500,
+      });
+      await f.tool('omnibio', {
+        operations: { add: ['The user prefers TypeScript.'] },
+      });
+      expect(f.append).toHaveBeenCalledWith(
+        'thinking',
+        expect.stringContaining('The user prefers TypeScript.'),
+      );
+      expect(f.configureResponses).toHaveBeenCalledWith(
+        expect.objectContaining({
+          instructions: expect.stringContaining('The user prefers TypeScript.'),
+        }),
+      );
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      const store = new MemoryStore({
+        directory: memory.settings.dir,
+        defaultId: 'default',
+      });
+      try {
+        const turns = store
+          .database(memory.state().libraryId)
+          .prepare('SELECT user_text, asst_text FROM turns ORDER BY turn_idx')
+          .all();
+        expect(turns).toContainEqual(
+          expect.objectContaining({
+            user_text: 'My favorite language is TypeScript.',
+            asst_text: 'I will remember your preference.',
+          }),
+        );
+      } finally {
+        store.close();
+      }
+    } finally {
+      f.session.dispose();
+      await memory.close();
+    }
+  });
+
+  it('never submits a task after newer speech arrives during asynchronous target preparation', async () => {
+    const f = await fdRig();
+    try {
+      let release!: (backend: BackendHandle) => void;
+      f.adaptor.createSession.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      f.speech('Run checks.');
+      const operation = f.tool('handoff', { task: 'Run checks.' });
+      await vi.waitFor(() =>
+        expect(f.adaptor.createSession).toHaveBeenCalled(),
+      );
+      f.speech('Never mind.', 4000, 4300);
+      release({ id: 's1', adaptor: f.adaptor.name });
+      expect(await operation).toMatchObject({ status: 'cancelled' });
+      expect(f.adaptor.prompt).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('clears buffered speech and drops late audio until a new user utterance after an explicit stop-speaking request', async () => {
+    const f = await fdRig();
+    try {
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      f.speech('Stop speaking.', 1000, 1300);
+      expect(f.host.clearOutput).toHaveBeenCalledWith(1);
+      const count = f.host.sendOutputAudio.mock.calls.length;
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      expect(f.host.sendOutputAudio).toHaveBeenCalledTimes(count);
+      f.speech('Now tell me the result.', 4000, 4300);
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      expect(f.host.sendOutputAudio).toHaveBeenCalledTimes(count + 1);
+      expect(f.adaptor.cancel).not.toHaveBeenCalled();
+    } finally {
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      f.session.dispose();
+    }
+  });
+
+  it('ends only the voice call and fences late provider audio without cancelling accepted work', async () => {
+    const f = await fdRig();
+    try {
+      f.speech('Run checks.');
+      await f.tool('handoff', { task: 'Run checks.' });
+      await f.session.stop({ epoch: 1, callId: 'fd-call' });
+      const previous = f.host.sendOutputAudio.mock.calls.length;
+      f.callbacks.onAudio(Buffer.alloc(640, 10));
+      expect(f.host.sendOutputAudio).toHaveBeenCalledTimes(previous);
+      expect(f.adaptor.cancel).not.toHaveBeenCalled();
+      expect(f.close).toHaveBeenCalled();
+    } finally {
+      f.session.dispose();
+    }
+  });
+});

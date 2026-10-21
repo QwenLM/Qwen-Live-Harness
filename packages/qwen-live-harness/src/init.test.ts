@@ -1429,3 +1429,38 @@ describe('runInit', () => {
     },
   );
 });
+
+it('writes independent GPT Live configuration through init --fd', async () => {
+  mocks.prompt.mockImplementation(async (question: { message: string }) => {
+    const answers = new Map<string, unknown>([
+      [liveText('en', 'language.choose'), true],
+      [liveText('en', 'init.defaultAgent'), 'qwen'],
+      [liveText('en', 'init.qwenMode'), 'acp'],
+      [liveText('en', 'init.addAgent', { count: 1 }), false],
+      [liveText('en', 'permissionMode.initQuestion'), 'ask'],
+      [liveText('en', 'fd.apiKey'), 'openai-fixture'],
+      [liveText('en', 'init.apiName'), 'gpt-live-1'],
+      [liveText('en', 'fd.responsesModel'), 'gpt-6-luna'],
+      [liveText('en', 'init.cwd'), '/tmp/fd-fixture'],
+      [liveText('en', 'init.hostInstall'), false],
+    ]);
+    if (!answers.has(question.message))
+      throw new Error(`Unexpected FD prompt: ${question.message}`);
+    return { value: answers.get(question.message) };
+  });
+  vi.stubEnv('OPENAI_API_KEY', '');
+  vi.stubEnv('QWEN_LIVE_HARNESS_FD_API_KEY', '');
+  try {
+    await runInit({ fd: true });
+    const saved = JSON.parse(String(mocks.writeFileSync.mock.calls[0]?.[1]));
+    expect(saved).toMatchObject({
+      mode: 'fd',
+      fd: { model: 'gpt-live-1', apiKey: 'openai-fixture', voice: 'marin' },
+      proactive: { enabled: false },
+      memory: { enabled: false },
+    });
+    expect(saved.realtimeApiKey).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

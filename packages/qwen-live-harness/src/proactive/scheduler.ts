@@ -85,7 +85,12 @@ interface DeliveryRecord {
 }
 
 export type ProactiveNotificationState =
-  'queued' | 'preparing' | 'speaking' | 'delivered' | 'undelivered';
+  | 'queued'
+  | 'preparing'
+  | 'speaking'
+  | 'delivered'
+  | 'undelivered'
+  | 'unconfirmed';
 
 export interface ProactiveSchedulerRealtimeConfig {
   endpoint: string;
@@ -135,6 +140,7 @@ export interface ProactiveSchedulerControl {
   playbackStarted?(delivery: ProactiveDelivery): void;
   deferDelivery(delivery: ProactiveDelivery): boolean;
   acknowledgeDelivery(delivery: ProactiveDelivery): void;
+  acceptUnconfirmedDelivery?(delivery: ProactiveDelivery): void;
   failDelivery(delivery: ProactiveDelivery, error: string): void;
   /** Retire only this announcement; a repeating monitor remains active. */
   undeliverDelivery?(delivery: ProactiveDelivery, error: string): void;
@@ -152,7 +158,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
   private readonly deliveries = new Map<string, DeliveryRecord>();
   private readonly deliveryOutcomes = new Map<
     string,
-    'delivered' | 'undelivered'
+    'delivered' | 'undelivered' | 'unconfirmed'
   >();
   private readonly deliveryTimers = new Map<
     string,
@@ -438,6 +444,27 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
     const current = this.deliveries.get(delivery.deliveryId);
     if (!current || !this.sameDelivery(current.delivery, delivery)) return;
     this.failTask(delivery.taskId, delivery.taskGeneration, error);
+  }
+
+  /** Continuous voice accepts context without identifying a spoken message. */
+  acceptUnconfirmedDelivery(delivery: ProactiveDelivery): void {
+    const current = this.deliveries.get(delivery.deliveryId);
+    const task = this.manager.get(delivery.taskId);
+    if (
+      !current ||
+      !this.sameDelivery(current.delivery, delivery) ||
+      !task ||
+      task.generation !== delivery.taskGeneration
+    )
+      return;
+    this.clearDeliveryTimer(delivery.deliveryId);
+    this.deliveries.delete(delivery.deliveryId);
+    this.deliveryOutcomes.set(task.taskId, 'unconfirmed');
+    if (!task.repeat) {
+      this.manager.completeDelivery(task.taskId, task.generation);
+      this.cleanupTask(task.taskId);
+    }
+    this.notifyTaskId(task.taskId, 'unconfirmed');
   }
 
   undeliverDelivery(delivery: ProactiveDelivery, error: string): void {
@@ -1047,7 +1074,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
 
   private notifyTaskId(
     taskId: string,
-    notification?: 'delivered' | 'undelivered',
+    notification?: 'delivered' | 'undelivered' | 'unconfirmed',
   ): void {
     const task = this.manager.get(taskId);
     if (task) this.notifyTask(task, notification);
@@ -1055,7 +1082,7 @@ export class ProactiveScheduler implements ProactiveSchedulerControl {
 
   private notifyTask(
     task: ProactiveTask,
-    notification?: 'delivered' | 'undelivered',
+    notification?: 'delivered' | 'undelivered' | 'unconfirmed',
   ): void {
     const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
     const pending = terminal

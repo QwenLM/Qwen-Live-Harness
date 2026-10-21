@@ -182,7 +182,7 @@ function runCli(args: LiveCliArgs): void {
     void (
       args.peers
         ? runPeerSetup(preferredLanguage())
-        : runInit({ source: args.source })
+        : runInit({ source: args.source, fd: args.fd })
     ).catch((error: unknown) => {
       process.stderr.write(
         `${displayLiveMessage(preferredLanguage(), error instanceof Error ? error.message : String(error))}\n`,

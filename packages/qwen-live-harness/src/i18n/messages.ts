@@ -1050,10 +1050,45 @@ export const LIVE_MESSAGES = {
     'zh-CN':
       '本次最多检查 16 个编程助手连接、8 个本机配置目录、每目录 128 条终端记录和 32 个 socket。每个 HTTP 响应限制为 2 秒、64 KiB。跳过或超时的项目均视为尚未验证。',
   },
-  'cli.usage': {
-    en: 'Usage: qwen-live-harness [init | doctor --peers] [options]\n\nStart or reuse the background service and open the desktop app.\n\nCommands:\n  init           Set up models, API access and a coding agent\n  init --peers   Configure local Qwen terminals without replacing other settings\n  doctor --peers Check terminal connections without sending messages or starting a call\n\nOptions:\n  --debug, -d    Save detailed diagnostics, which may include recordings and conversation content\n  --daemon-only Run only the background service (development)\n  --help, -h     Show this help',
+  'fd.keyRequired': {
+    en: 'Add an OpenAI API key: set OPENAI_API_KEY or fd.apiKey in config.json.',
     'zh-CN':
-      '用法：qwen-live-harness [init | doctor --peers] [选项]\n\n启动或复用后台服务，并打开桌面应用。\n\n命令：\n  init           设置模型、API 连接和编程助手\n  init --peers   配置本机 Qwen 终端，保留其他设置\n  doctor --peers 检查终端连接，不发送消息或开启通话\n\n选项：\n  --debug, -d    保存详细诊断信息，可能包含录音和对话内容\n  --daemon-only 仅运行后台服务（开发调试）\n  --help, -h     显示帮助',
+      '请配置 OpenAI API key：设置环境变量 OPENAI_API_KEY，或填写 config.json 中的 fd.apiKey。',
+  },
+  'fd.finalizationFailed': {
+    en: 'GPT Live session finalization was not confirmed.',
+    'zh-CN': '未能确认 GPT Live 会话已结束。',
+  },
+  'fd.sessionClosed': {
+    en: 'GPT Live session closed.',
+    'zh-CN': 'GPT Live 会话已关闭。',
+  },
+  'fd.apiKey': {
+    en: 'OpenAI API key for GPT Live',
+    'zh-CN': 'GPT Live 使用的 OpenAI API key',
+  },
+  'fd.responsesModel': {
+    en: 'Responses tool-routing model (billed separately from voice)',
+    'zh-CN': 'Responses 工具调度模型（独立于语音计费）',
+  },
+  'fd.memoryKeyRequired': {
+    en: 'Memory and Proactive helpers need a separate DashScope API key in realtimeApiKey.',
+    'zh-CN':
+      'Memory 和 Proactive 辅助模型需要在 realtimeApiKey 中单独配置 DashScope API key。',
+  },
+  'subagents.notificationUnconfirmed': {
+    en: 'Sent to voice; hearing unconfirmed',
+    'zh-CN': '已送入语音，是否听到未确认',
+  },
+  'cli.fdRequiresInit': {
+    en: 'Use --fd with init to configure full-duplex voice. Set mode to fd in config.json to run it.',
+    'zh-CN':
+      '请使用 init --fd 配置全双工语音，运行时通过 config.json 中的 mode: fd 启用。',
+  },
+  'cli.usage': {
+    en: 'Usage: qwen-live-harness [init | doctor --peers] [options]\n\nStart or reuse the background service and open the desktop app.\n\nCommands:\n  init           Set up models, API access and a coding agent\n  init --fd      Configure GPT Live full-duplex voice\n  init --peers   Configure local Qwen terminals without replacing other settings\n  doctor --peers Check terminal connections without sending messages or starting a call\n\nOptions:\n  --debug, -d    Save detailed diagnostics, which may include recordings and conversation content\n  --daemon-only Run only the background service (development)\n  --help, -h     Show this help',
+    'zh-CN':
+      '用法：qwen-live-harness [init | doctor --peers] [选项]\n\n启动或复用后台服务，并打开桌面应用。\n\n命令：\n  init           设置模型、API 连接和编程助手\n  init --fd      配置 GPT Live 全双工语音\n  init --peers   配置本机 Qwen 终端，保留其他设置\n  doctor --peers 检查终端连接，不发送消息或开启通话\n\n选项：\n  --debug, -d    保存详细诊断信息，可能包含录音和对话内容\n  --daemon-only 仅运行后台服务（开发调试）\n  --help, -h     显示帮助',
   },
   'cli.reused': {
     en: 'Using the Qwen Live Harness service that is already running.',

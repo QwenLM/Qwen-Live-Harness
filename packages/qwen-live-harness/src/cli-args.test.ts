@@ -113,3 +113,12 @@ describe('parseLiveCliArgs', () => {
     },
   );
 });
+
+it('initializes FD explicitly without silently changing a running daemon', () => {
+  expect(parseLiveCliArgs(['init', '--fd'])).toMatchObject({
+    command: 'init',
+    fd: true,
+  });
+  expect(() => parseLiveCliArgs(['--fd'])).toThrow();
+  expect(() => parseLiveCliArgs(['init', '--fd', '--peers'])).toThrow();
+});

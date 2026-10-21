@@ -25,6 +25,7 @@ import { isVoiceId } from './voice-catalog.js';
 export function persistVoicePreference(
   dataDir: string,
   value: unknown,
+  mode: 'turn' | 'fd' = 'turn',
 ): string {
   if (!isVoiceId(value)) throw new Error(liveMessage('voice.invalid'));
   const path = join(dataDir, 'config.json');
@@ -68,7 +69,23 @@ export function persistVoicePreference(
     try {
       writeFileSync(
         fd,
-        JSON.stringify({ ...config, voice: value }, null, 2) + '\n',
+        JSON.stringify(
+          mode === 'fd'
+            ? {
+                ...config,
+                fd: {
+                  ...(config['fd'] &&
+                  typeof config['fd'] === 'object' &&
+                  !Array.isArray(config['fd'])
+                    ? config['fd']
+                    : {}),
+                  voice: value,
+                },
+              }
+            : { ...config, voice: value },
+          null,
+          2,
+        ) + '\n',
       );
       fsyncSync(fd);
     } finally {

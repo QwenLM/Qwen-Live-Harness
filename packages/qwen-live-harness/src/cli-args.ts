@@ -14,6 +14,7 @@ export interface LiveCliArgs {
   daemonOnly: boolean;
   peers?: true;
   source?: boolean;
+  fd?: true;
 }
 
 export const LIVE_CLI_USAGE = liveText('en', 'cli.usage');
@@ -24,6 +25,7 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
   let daemonOnly = false;
   let peers = false;
   let source = false;
+  let fd = false;
   for (const argument of args) {
     if (argument === '--debug' || argument === '-d') {
       debug = true;
@@ -31,6 +33,10 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
     }
     if (argument === '--daemon-only') {
       daemonOnly = true;
+      continue;
+    }
+    if (argument === '--fd') {
+      fd = true;
       continue;
     }
     if (argument === '--source') {
@@ -59,6 +65,8 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
     );
   if ((peers && command === 'start') || (command === 'doctor' && !peers))
     throw new Error(liveMessage('cli.peersRequired'));
+  if (fd && (command !== 'init' || peers))
+    throw new Error(liveMessage('cli.fdRequiresInit'));
   if (source && command !== 'init')
     throw new Error(liveMessage('cli.sourceRequiresInit'));
   return {
@@ -66,6 +74,7 @@ export function parseLiveCliArgs(args: readonly string[]): LiveCliArgs {
     debug,
     daemonOnly,
     ...(source ? { source: true } : {}),
+    ...(fd ? { fd: true as const } : {}),
     ...(peers ? { peers: true as const } : {}),
   };
 }
