@@ -93,6 +93,43 @@ qwen-live-harness init
 
 记忆和主动提醒默认也使用所选地域的服务，通常不需要单独设置服务地址。
 
+## GPT Live 全双工模式
+
+默认仍使用 Qwen 交互（`mode: "turn"`）。首次配置 GPT Live 时运行：
+
+```sh
+qwen-live-harness init --fd
+```
+
+源码运行使用 `npm run init -- --fd`。向导会设置 `mode: "fd"`，询问 OpenAI key 和独立的 Responses 工具调度模型，并保留原有编程助手选择。重新初始化在确认覆盖后会替换配置；若要保留 Qwen 设置，直接合并以下片段：
+
+```json
+{
+  "mode": "fd",
+  "fd": {
+    "endpoint": "https://api.openai.com",
+    "apiKey": "your-openai-api-key",
+    "model": "gpt-live-1",
+    "voice": "marin",
+    "responsesModel": "gpt-6-luna"
+  },
+  "memory": { "enabled": false },
+  "proactive": { "enabled": false }
+}
+```
+
+完全退出应用和 daemon 后重新启动。模式只切换前台语音交互，现有 `backends` 仍决定使用哪些编程 Agent。`fd` 配置独立于 `realtimeModel`、`realtimeEndpoint`、`realtimeApiKey` 和 Qwen 的 `voice`；切回 `mode: "turn"` 时这些字段仍可使用。
+
+OpenAI key 也可从 `QWEN_LIVE_HARNESS_FD_API_KEY` 或 `OPENAI_API_KEY` 读取，优先级依次高于 `fd.apiKey`。`QWEN_LIVE_HARNESS_MODE` 覆盖 `mode`；`QWEN_LIVE_HARNESS_FD_ENDPOINT`、`_MODEL`、`_VOICE`、`_RESPONSES_MODEL` 覆盖对应 `fd` 字段。设置 `_VOICE` 后声音选择只读。声音设置提供 GPT 预设；fd 不支持 Qwen 声音克隆或自定义声音 ID。声音修改从下一次通话生效。
+
+GPT Live 持续收发用户与助手音频。任务结果和进度即使在播报中也会送入语音模型，无需等待语音回复结束。Responses 选择现有 Harness 的任务创建、提交、查询、停止和权限答复工具；Harness 负责执行，并保留任务身份和单次批准边界。实际编码仍由配置的 Agent 完成。结束通话会关闭语音、取消本通话的搜索和 Proactive 工作；已受理的编码任务可以独立继续。
+
+只读 `web_search` 和按需 `appshot` 使用独立的 OpenAI Responses 请求，模型同为 `fd.responsesModel`；辅助请求仅包含当前问题，以及 appshot 所选来源的一张图像。GPT Live 本身不直接接收图像。Live Feed 图像仅供已启用的 Memory／Proactive 使用。Memory 和 Proactive 仍为可选 Qwen 服务，fd 初始化默认关闭；启用时需要保留各自 Qwen 配置，并提供独立 DashScope key（`realtimeApiKey` 或原有环境覆盖），不会复用 OpenAI key。
+
+语音时长、Responses 调度、搜索／视觉辅助请求和编码 Agent 分别按各自服务计费。本地校验通过不代表账号已有模型访问权限或工具支持，见 [OpenAI 委派文档](https://developers.openai.com/api/docs/guides/live-delegation)。
+
+上下文追加确认不能证明模型已说出内容或用户已听到，因此 Subagents 将 fd 通知标为**已送入语音，是否听到未确认**。Host 播放回执只描述本地音频片段，不对应单条模型回复或通知。模型决定采用新信息的速度，已播放音频无法撤回。明确要求停止说话时会清理本地音频，并丢弃后续输出直到下一段用户输入，同时引导模型停止，不会取消编码任务。实际打断延迟和音频质量仍需真实模型／设备验证。
+
 ## 长对话上下文
 
 默认的 `qwen3.8-omni-flash-realtime` 对话会在后台摘要较早文字；报告的输入用量超过 196,608 token 上限的 90% 时，准备新的前台连接。切换等待用户讲话、工具回执和已确认的设备播放结束。后台任务继续运行，不重放历史授权和已经执行的工具。
@@ -276,7 +313,7 @@ Proactive 默认开启。你可以直接说：
 
 它只会在你创建观察或提醒任务后开始工作。Monitor 不会自行打开网页或定期访问某个网址，但可以监测**屏幕上已经显示的网页**。
 
-如果模型正在说话，主动通知会等待当前播报结束后依次播放。结束通话会停止这次通话中的 Proactive 观察和提醒；它与继续运行的后台 Harness 任务不同。
+turn 模式下，模型正在说话时，主动通知会等待当前播报结束后依次播放。fd 模式在播报中追加更新，每条通知的实际播放仍未确认。结束通话会停止这次通话中的 Proactive 观察和提醒；它与继续运行的后台 Harness 任务不同。
 
 ### 没有听到主动播报时
 

@@ -99,6 +99,32 @@ describe('voice selection', () => {
     ])
       expect(isVoiceId(id)).toBe(false);
   });
+  it('persists only the FD voice and retains Qwen settings and Responses configuration', () => {
+    const dir = fixture({
+      mode: 'fd',
+      fd: {
+        apiKey: 'openai-fixture',
+        voice: 'marin',
+        responsesModel: 'gpt-6-luna',
+      },
+      voice: 'Tina',
+      realtimeApiKey: 'qwen-fixture',
+      memory: { enabled: false },
+      proactive: { enabled: false },
+      backends: [],
+    });
+    persistVoicePreference(dir, 'quartz', 'fd');
+    const saved = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+    expect(saved.voice).toBe('Tina');
+    expect(saved.fd).toEqual({
+      apiKey: 'openai-fixture',
+      voice: 'quartz',
+      responsesModel: 'gpt-6-luna',
+    });
+    expect(loadConfig({ QWEN_LIVE_HARNESS_DATA_DIR: dir }).fd?.voice).toBe(
+      'quartz',
+    );
+  });
   it('persists just voice, reloads it, and keeps environment precedence explicit', () => {
     const dir = fixture();
     const path = join(dir, 'config.json');

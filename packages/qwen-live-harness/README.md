@@ -33,6 +33,18 @@ npm start -- --debug
 
 [`scripts/start-dev.mjs`](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/scripts/start-dev.mjs) implements the source entry point. Installed npm users follow the different startup flow in the [main README](https://github.com/QwenLM/Qwen-Live-Harness/blob/main/README.md#quick-start).
 
+## Full-duplex provider path
+
+Set `mode: "fd"` to use GPT Live with Responses delegation. See [configuration](../../docs/configuration.md#full-duplex-gpt-live-mode) for initialization, keys, billing and capability limits.
+
+The daemon owns one `/v1/live/sessions` WebSocket. `session.start` negotiates PCM16 at 16 kHz; input/output and timestamped transcript fragments run continuously. `realtime/gpt-live-session.ts` handles the transport and append acknowledgments; `realtime/continuous-audio.ts` converts output to the existing Host 24 kHz PCM boundary and closes local segments on silence or receive gaps. These segments are not provider response or task boundaries. Voice has no input commit, response lock or voice `response.create`.
+
+`orchestrator/fd-call.ts` collects completed function items from nested `response.event`, keyed by delegation, backend response and call IDs. It returns all known pending outputs through `response.item.create` before a backend-only `response.create`. It never infers actions from transcript wording. Application input evidence is conservatively associated by timestamps; missing, changed or superseded input refuses execution. Duplicate actions reuse receipts; unknown or failed Responses events cannot start tools. Async target preparation rechecks the operation lease before submitting a task. Permission votes must reference a request pending before the associated user input began.
+
+The same business handlers serve Qwen and fd tools, including enabled Memory and Proactive. Search and one-image analysis use isolated read-only Responses helpers. Accepted coding tasks continue through existing adapters and stable job events. Results/progress append immediately during voice output, using `delegation_id: null`; a Responses ID is not a valid client-append ID. Long updates are bounded and split into numbered data fragments. Context acceptance, backend completion and heard delivery remain distinct. fd task/report/Proactive announcements retain `unconfirmed`; local playback does not upgrade them to delivered. No automatic audio replay or tool replay occurs after errors.
+
+Raw overlapping transcript fragments are logged with their timing. Memory groups adjacent same-role text only for its local storage projection; this does not create provider turns. Memory tool/settings changes update Responses tools, and voice receives the latest replaceable Memory context. Ending voice fences late tool/audio callbacks, cancels call-owned lookups and Proactive, and waits a bounded interval for `session.closed`. A connection ending first leaves final duration unconfirmed. Config validation and Responses command errors are nonfatal diagnostics; backend model/account support and actual device audio need separate live checks.
+
 ## Code map
 
 - [CLI/configuration](https://github.com/QwenLM/Qwen-Live-Harness/tree/main/packages/qwen-live-harness/src): `index.ts`, `cli-startup.ts`, `config.ts`, `init.ts`; `peer-setup.ts` and `peer-diagnostics.ts` handle terminal setup.

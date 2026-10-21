@@ -214,6 +214,26 @@ export function voiceCatalog(model: string): {
   defaultVoice: string;
   custom: LiveVoiceState['custom'];
 } {
+  if (model === 'gpt-live-1')
+    return {
+      presets: [
+        'marin',
+        'quartz',
+        'ripple',
+        'vesper',
+        'willow',
+        'stone',
+        'gleam',
+        'meridian',
+        'bossa',
+        'tempo',
+        'beacon',
+        'delta',
+        'cinder',
+      ],
+      defaultVoice: 'marin',
+      custom: 'unsupported',
+    };
   if (/^qwen3\.8-omni-flash-realtime(?:-\d{4}-\d{2}-\d{2})?$/u.test(model))
     return { presets: OMNI_38, defaultVoice: 'Tina', custom: 'supported' };
   if (

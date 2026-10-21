@@ -25,6 +25,8 @@ export function runtimeFailureSecrets(
   return [
     ...extras,
     process.env['DASHSCOPE_API_KEY'],
+    process.env['OPENAI_API_KEY'],
+    config?.fd?.apiKey,
     config?.realtime.apiKey,
     config ? process.env[config.memory.updater.apiKeyEnv] : undefined,
     config ? process.env[config.memory.observer.apiKeyEnv] : undefined,

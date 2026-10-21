@@ -10,7 +10,8 @@
  * a schema library would be the package's only heavy dependency.
  */
 
-import { voiceCatalog } from './voice-catalog.js';
+import { voiceCatalog, isVoiceId } from './voice-catalog.js';
+import { gptLiveUrl } from './realtime/gpt-live-session.js';
 import type { ContextCompactionConfig } from './realtime/context-compaction.js';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -116,6 +117,15 @@ export interface ProactiveConfig {
 }
 
 export interface LiveConfig {
+  /** Foreground interaction protocol; absent preserves the existing turn mode. */
+  mode?: 'turn' | 'fd';
+  fd?: {
+    endpoint: string;
+    apiKey: string;
+    model: string;
+    voice: string;
+    responsesModel: string;
+  };
   language?: LiveLanguage;
   /** Missing values retain per-request confirmation. Never migrate old grants. */
   permissionMode?: PermissionMode;
@@ -1071,11 +1081,74 @@ export function loadConfig(
     { section: 'permissionMode' },
   );
 
+  const mode = env['QWEN_LIVE_HARNESS_MODE'] ?? file['mode'] ?? 'turn';
+  if (mode !== 'turn' && mode !== 'fd')
+    throw new Error('mode must be "turn" or "fd"');
+  const fdRaw = strictObject(file['fd'], 'fd', configPath, [
+    'endpoint',
+    'apiKey',
+    'model',
+    'voice',
+    'responsesModel',
+  ]);
+  readConfigurationValue(
+    'config.sectionInvalid',
+    () => {
+      for (const [key, value] of Object.entries(fdRaw))
+        if (typeof value !== 'string' || !value.trim())
+          throw new Error(`fd.${key} must be a non-empty string.`);
+    },
+    { section: 'fd' },
+  );
+  const fd =
+    mode === 'fd'
+      ? {
+          endpoint:
+            str(env['QWEN_LIVE_HARNESS_FD_ENDPOINT']) ??
+            str(fdRaw['endpoint']) ??
+            'https://api.openai.com',
+          apiKey:
+            str(env['QWEN_LIVE_HARNESS_FD_API_KEY']) ??
+            str(env['OPENAI_API_KEY']) ??
+            str(fdRaw['apiKey']) ??
+            '',
+          model:
+            str(env['QWEN_LIVE_HARNESS_FD_MODEL']) ??
+            str(fdRaw['model']) ??
+            'gpt-live-1',
+          voice:
+            str(env['QWEN_LIVE_HARNESS_FD_VOICE']) ??
+            str(fdRaw['voice']) ??
+            'marin',
+          responsesModel:
+            str(env['QWEN_LIVE_HARNESS_FD_RESPONSES_MODEL']) ??
+            str(fdRaw['responsesModel']) ??
+            'gpt-6-luna',
+        }
+      : undefined;
+  if (fd && !fd.apiKey)
+    throw new ConfigurationError(
+      'FD mode requires OPENAI_API_KEY, QWEN_LIVE_HARNESS_FD_API_KEY or fd.apiKey.',
+      'fd.keyRequired',
+    );
+  if (fd)
+    readConfigurationValue(
+      'config.sectionInvalid',
+      () => {
+        gptLiveUrl(fd.endpoint);
+        if (fd.model !== 'gpt-live-1' || !isVoiceId(fd.voice))
+          throw new Error('FD mode requires gpt-live-1 and a valid voice.');
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(fd.responsesModel))
+          throw new Error('FD Responses model must be an API model ID.');
+      },
+      { section: 'fd' },
+    );
+
   const apiKey =
     str(env['DASHSCOPE_API_KEY']) ??
     str(env['QWEN_LIVE_HARNESS_REALTIME_API_KEY']) ??
     str(file['realtimeApiKey']);
-  if (!apiKey) {
+  if (!apiKey && mode === 'turn') {
     throw new ConfigurationError(
       'A DashScope realtime API key is required: set DASHSCOPE_API_KEY ' +
         `or put "realtimeApiKey" in ${configPath}.`,
@@ -1093,14 +1166,32 @@ export function loadConfig(
   );
   const proactive = readConfigurationValue(
     'config.sectionInvalid',
-    () => resolveProactive(env, file, configPath),
+    () =>
+      resolveProactive(
+        env,
+        mode === 'fd' && file['proactive'] === undefined
+          ? { ...file, proactive: { enabled: false } }
+          : file,
+        configPath,
+      ),
     { section: 'proactive' },
   );
   const memory = readConfigurationValue(
     'config.sectionInvalid',
-    () => resolveMemoryConfig(file['memory'], dataDir, configPath),
+    () =>
+      resolveMemoryConfig(
+        mode === 'fd' && file['memory'] === undefined
+          ? { enabled: false }
+          : file['memory'],
+        dataDir,
+        configPath,
+      ),
     { section: 'memory' },
   );
+  if (mode === 'fd' && !apiKey && (proactive.enabled || memory.enabled))
+    throw new Error(
+      'FD Memory and Proactive require a separate DashScope realtime API key.',
+    );
   const backends = readConfigurationValue(
     'config.sectionInvalid',
     () => parseBackends(env, file, configPath),
@@ -1161,6 +1252,7 @@ export function loadConfig(
     str(env['QWEN_LIVE_HARNESS_SHORTCUT']) ?? str(file['shortcut']);
 
   return {
+    ...(mode === 'fd' ? { mode, fd } : {}),
     language,
     permissionMode,
     realtime: {
@@ -1168,7 +1260,7 @@ export function loadConfig(
         str(env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']) ??
         str(file['realtimeEndpoint']) ??
         DEFAULT_REALTIME_ENDPOINT,
-      apiKey,
+      apiKey: apiKey ?? '',
       model,
       ...(environmentVoice ? { voiceOverridden: true } : {}),
       ...(voice ? { voice } : {}),

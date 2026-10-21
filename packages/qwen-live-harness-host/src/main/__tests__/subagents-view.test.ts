@@ -632,6 +632,7 @@ describe('Subagents read-only surfaces', () => {
         ['preparing', 'subagents.notificationPreparing'],
         ['speaking', 'subagents.notificationSpeaking'],
         ['undelivered', 'subagents.notificationUndelivered'],
+        ['unconfirmed', 'subagents.notificationUnconfirmed'],
       ] as const) {
         h.update({
           language,

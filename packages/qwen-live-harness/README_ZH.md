@@ -33,6 +33,18 @@ npm start -- --debug
 
 源码入口由 [`scripts/start-dev.mjs`](../../scripts/start-dev.mjs) 管理。已安装 npm 包的用户启动流程不同，见[项目首页](../../README_ZH.md#快速开始)。
 
+## 全双工模型链路
+
+设置 `mode: "fd"` 使用 GPT Live 和 Responses 委派。初始化、凭据、计费及能力限制见[配置指南](../../docs/configuration_ZH.md#gpt-live-全双工模式)。
+
+Daemon 持有一个 `/v1/live/sessions` WebSocket，通过 `session.start` 协商 16 kHz PCM16。输入、输出和带时间戳的转写片段持续流动。`realtime/gpt-live-session.ts` 管理传输和追加确认；`realtime/continuous-audio.ts` 将输出转换为 Host 已有的 24 kHz PCM，并按静音或接收间隔结束本地播放片段。片段不是模型回复或任务边界，语音不需要输入 commit、回复锁或语音 `response.create`。
+
+`orchestrator/fd-call.ts` 从嵌套 `response.event` 的完成函数条目中收集调用，按委派、后台 response 和 call ID 关联。所有已知待处理函数结果先经 `response.item.create` 返回，再以 `response.create` 继续后台。运行时不会从转写措辞推断并补发操作；应用按时间戳保守关联输入证据，缺失、变化或被新输入取代时拒绝执行。重复操作复用回执，未知或失败事件不能启动工具。异步准备目标后、实际提交前再次检查操作身份。权限答复必须引用对应用户输入开始前已经存在的待决请求。
+
+Qwen 和 fd 复用业务处理入口，包含启用后的 Memory 和 Proactive。搜索和单帧视觉使用独立只读 Responses 请求。已受理编码任务继续走现有适配器和稳定 job 事件。结果／进度在播报中立即追加，使用 `delegation_id: null`，不会把 Responses ID 当成 client 追加 ID。较长更新受大小限制并拆为编号数据片段。上下文受理、后台完成和用户听到是不同状态；fd 任务、报告、Proactive 通知保留 `unconfirmed`，本地播放完成不会将其提升为已送达。错误后不会自动重放音频或工具。
+
+原始重叠转写带时间信息写入日志。Memory 只为本地存储合并相邻同角色文本，不创建模型轮次。Memory 设置变更会更新 Responses 工具，语音收到最新可替换 Memory 上下文。结束语音会拦截迟到工具／音频回调，取消通话所属搜索和 Proactive，并有限等待 `session.closed`；连接先断开则最终时长未确认。配置校验和 Responses 命令错误作为非致命诊断；后台模型／账号支持和实际设备音频需要单独验证。
+
 ## 先看哪些代码
 
 - [CLI／配置](src)：`index.ts`、`cli-startup.ts`、`config.ts`、`init.ts`；`peer-setup.ts` 和 `peer-diagnostics.ts` 负责终端设置。

@@ -68,7 +68,12 @@ export type SubagentTask = {
   triggerCount?: number;
   pendingNotifications?: number;
   notification?:
-    'queued' | 'preparing' | 'speaking' | 'delivered' | 'undelivered';
+    | 'queued'
+    | 'preparing'
+    | 'speaking'
+    | 'delivered'
+    | 'undelivered'
+    | 'unconfirmed';
   remainingSec?: number;
   canStop?: boolean;
   stopReason?: (typeof SUBAGENT_STOP_REASONS)[number];
@@ -137,6 +142,7 @@ export const SESSION_REPORT_ANNOUNCEMENTS = [
   'interrupted',
   'unspoken',
   'suppressed',
+  'unconfirmed',
 ] as const;
 export type SessionReport = {
   id: string;
@@ -433,9 +439,14 @@ function validTask(task: unknown): task is SubagentTask {
   if (
     task['notification'] !== undefined &&
     (typeof task['notification'] !== 'string' ||
-      !['queued', 'preparing', 'speaking', 'delivered', 'undelivered'].includes(
-        task['notification'],
-      ))
+      ![
+        'queued',
+        'preparing',
+        'speaking',
+        'delivered',
+        'undelivered',
+        'unconfirmed',
+      ].includes(task['notification']))
   )
     return false;
   return task['events'].every(

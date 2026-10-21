@@ -359,14 +359,29 @@ export class LiveDaemon {
       getPermissionMode: () => ({ mode: this.config.permissionMode ?? 'ask' }),
       getVoice: () => ({
         ...getVoiceState(
-          this.config.realtime.model,
-          this.config.realtime.voice ?? 'Tina',
-          this.config.realtime.voiceOverridden,
+          this.config.fd?.model ?? this.config.realtime.model,
+          this.config.fd?.voice ?? this.config.realtime.voice ?? 'Tina',
+          this.config.fd
+            ? !!process.env['QWEN_LIVE_HARNESS_FD_VOICE']
+            : this.config.realtime.voiceOverridden,
         ),
-        cloningV1: true,
+        ...(this.config.mode !== 'fd' ? { cloningV1: true as const } : {}),
         creating: this.voiceClones.busy,
       }),
       onVoiceAction: (voice) => {
+        if (this.config.fd) {
+          const state = getVoiceState(this.config.fd.model, voice);
+          if (state.availability === 'unsupported')
+            throw new Error(liveMessage('voice.unsupported'));
+          if (process.env['QWEN_LIVE_HARNESS_FD_VOICE'])
+            throw new Error(liveMessage('voice.overridden'));
+          this.config.fd.voice = persistVoicePreference(
+            this.config.dataDir,
+            voice,
+            'fd',
+          );
+          return state;
+        }
         if (this.voiceClones.busy)
           throw new Error(liveMessage('voice.creating'));
         if (this.config.realtime.voiceOverridden)
@@ -422,6 +437,14 @@ export class LiveDaemon {
       },
       getMemoryState: () => this.memory!.state(),
       onMemoryAction: (action) => {
+        if (
+          this.config.fd &&
+          !this.config.realtime.apiKey &&
+          (action.action === 'set_enabled' ||
+            action.action === 'set_visual_enabled') &&
+          action.enabled
+        )
+          throw new Error(liveMessage('fd.memoryKeyRequired'));
         this.debugArchive?.recordRuntime('host.memory_action', action);
         try {
           this.memory!.applyAction(action);
@@ -465,7 +488,11 @@ export class LiveDaemon {
       logger: this.logger,
       ...(this.config.shortcut ? { shortcut: this.config.shortcut } : {}),
       getProviderReadiness: () =>
-        this.config.realtime.apiKey
+        (
+          this.config.mode === 'fd'
+            ? this.config.fd?.apiKey
+            : this.config.realtime.apiKey
+        )
           ? { state: 'ready' }
           : {
               state: 'unavailable',
@@ -489,8 +516,9 @@ export class LiveDaemon {
     this.log = log;
 
     const session = new LiveSession({
+      ...(this.config.mode === 'fd' ? { fd: this.config.fd } : {}),
       getLanguage: () => this.config.language ?? 'en',
-      getVoice: () => this.config.realtime.voice,
+      getVoice: () => this.config.fd?.voice ?? this.config.realtime.voice,
       getPermissionMode: () =>
         this.stopping ? 'ask' : (this.config.permissionMode ?? 'ask'),
       onFailure: (failure) => this.recordFailure(failure, false),
@@ -582,7 +610,8 @@ export class LiveDaemon {
     process.stdout.write(`qwen-live-harness listening on ${url}\n`);
     this.logger.debug(
       `configuration ${JSON.stringify({
-        model: this.config.realtime.model,
+        mode: this.config.mode ?? 'turn',
+        model: this.config.fd?.model ?? this.config.realtime.model,
         visualInput: this.config.visualInput,
         proactive: this.config.proactive,
         backends: this.config.backends.map((backend) => backend.name),
@@ -679,6 +708,7 @@ export class LiveDaemon {
     const secrets = [
       this.token,
       this.config.realtime.apiKey,
+      this.config.fd?.apiKey,
       process.env[this.config.memory.updater.apiKeyEnv],
       process.env[this.config.memory.observer.apiKeyEnv],
       ...this.config.backends.flatMap((backend) =>
@@ -967,6 +997,10 @@ export class LiveDaemon {
       return;
     } finally {
       clearTimeout(timer);
+    }
+    if (this.config.mode === 'fd') {
+      reply(400, { ok: false, error: liveMessage('voice.cloneUnsupported') });
+      return;
     }
     const config = this.config.realtime;
     const result = await this.voiceClones.run(

@@ -93,6 +93,43 @@ The default main model is `qwen3.8-omni-flash-realtime`. For another model or an
 
 Memory and Proactive also use the selected region by default. Separate endpoints are usually unnecessary.
 
+## Full-duplex GPT Live mode
+
+The existing Qwen conversation remains the default (`mode: "turn"`). For GPT Live, initialize with:
+
+```sh
+qwen-live-harness init --fd
+```
+
+From source, use `npm run init -- --fd`. The wizard sets `mode: "fd"`, asks for an OpenAI key and a separate Responses tool-routing model, and preserves the usual choice of coding agent. Reinitialization replaces the configuration after the existing overwrite confirmation; to retain Qwen settings, merge this fragment into your current file instead:
+
+```json
+{
+  "mode": "fd",
+  "fd": {
+    "endpoint": "https://api.openai.com",
+    "apiKey": "your-openai-api-key",
+    "model": "gpt-live-1",
+    "voice": "marin",
+    "responsesModel": "gpt-6-luna"
+  },
+  "memory": { "enabled": false },
+  "proactive": { "enabled": false }
+}
+```
+
+Quit the app and daemon completely, then restart. Switching modes only affects the foreground conversation; existing `backends` configuration still selects the coding agents. `fd` settings are separate from `realtimeModel`, `realtimeEndpoint`, `realtimeApiKey` and Qwen `voice`, so switching back to `mode: "turn"` retains those fields.
+
+The OpenAI key can instead come from `QWEN_LIVE_HARNESS_FD_API_KEY` or `OPENAI_API_KEY`, in that precedence order before `fd.apiKey`. `QWEN_LIVE_HARNESS_MODE` overrides `mode`; `QWEN_LIVE_HARNESS_FD_ENDPOINT`, `_MODEL`, `_VOICE` and `_RESPONSES_MODEL` override the corresponding `fd` fields. `_VOICE` makes voice selection read-only. GPT presets are available in Sound settings; Qwen voice cloning and custom voice IDs are unavailable in fd mode. Voice changes apply to the next call.
+
+GPT Live streams user audio and assistant audio continuously. A task result or progress update is sent to the voice model even while it is speaking; there is no wait for a voice response to end. Responses chooses the existing Harness tools for task creation, submission, status, stopping and permission answers. Harness executes them and preserves task identities and one-time approvals. Coding work still runs in your configured agent. Ending a call closes voice and cancels that call's searches and Proactive work; accepted coding jobs can continue independently.
+
+Read-only `web_search` and On Demand `appshot` use isolated OpenAI Responses requests with the same `fd.responsesModel`; only the query and, for appshot, one selected image are sent to that helper. GPT Live itself receives no images. Live Feed images are used only by enabled Memory/Proactive helpers. Memory and Proactive remain optional Qwen services, disabled by default in fd initialization. Enabling them requires their Qwen configuration and a separate DashScope key (`realtimeApiKey` or the existing environment override); an OpenAI key is not reused for those services.
+
+Voice duration, Responses routing, search/vision helpers, and coding-agent usage are billed separately by their providers. A model ID passing local validation does not verify account access or tool support. See [OpenAI delegation](https://developers.openai.com/api/docs/guides/live-delegation).
+
+A context append acknowledgment does not prove that the words were spoken or heard. Subagents therefore labels fd announcements **Sent to voice; hearing unconfirmed**. Host playback receipts describe local audio segments, not individual model responses or notifications. The model controls how soon it adopts an update; already played audio cannot be withdrawn. Explicit stop-speaking requests clear local audio, drop further output until the next user utterance, and redirect the model without cancelling coding jobs. Exact interruption latency and real audio quality require provider/device validation.
+
 ## Long conversation context
 
 The default `qwen3.8-omni-flash-realtime` conversation summarizes older text in the background and prepares a new foreground connection when reported input usage exceeds 90% of its 196,608-token limit. The switch waits for user speech, tool receipts and confirmed device playback to finish. Background tasks continue; historical permissions and completed tools are not replayed.
@@ -276,7 +313,7 @@ Proactive is enabled by default. For example, ask:
 
 Observation starts only after you create a monitor or reminder task. A Monitor does not open websites or periodically fetch a URL; it can observe a page **already visible on the screen**.
 
-If the model is speaking, proactive notifications wait and play in order after it finishes. Ending the call stops that call's Proactive monitors and reminders, unlike background Harness tasks that may continue.
+In turn mode, if the model is speaking, proactive notifications wait and play in order after it finishes. In fd mode, updates are appended during speech; their individual playback remains unconfirmed. Ending the call stops that call's Proactive monitors and reminders, unlike background Harness tasks that may continue.
 
 ### When an announcement is not heard
 

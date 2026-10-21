@@ -61,6 +61,14 @@ interface RawBackend extends Record<string, unknown> {
 }
 
 interface RawConfig {
+  mode?: 'fd';
+  fd?: {
+    endpoint: string;
+    apiKey: string;
+    model: string;
+    voice: string;
+    responsesModel: string;
+  };
   themeColor?: string;
   language?: LiveLanguage;
   permissionMode?: PermissionMode;
@@ -116,7 +124,7 @@ function knownEndpointRegion(
 }
 
 export async function runInit(
-  options: { source?: boolean } = {},
+  options: { source?: boolean; fd?: boolean } = {},
 ): Promise<void> {
   const configDirectory = resolveLiveDataDirectory();
   const configPath = join(configDirectory, 'config.json');
@@ -390,11 +398,17 @@ export async function runInit(
   }
 
   // 5. API key
-  const envKeyName = process.env['DASHSCOPE_API_KEY']
-    ? 'DASHSCOPE_API_KEY'
-    : process.env['QWEN_LIVE_HARNESS_REALTIME_API_KEY']
-      ? 'QWEN_LIVE_HARNESS_REALTIME_API_KEY'
-      : undefined;
+  const envKeyName = options.fd
+    ? process.env['QWEN_LIVE_HARNESS_FD_API_KEY']
+      ? 'QWEN_LIVE_HARNESS_FD_API_KEY'
+      : process.env['OPENAI_API_KEY']
+        ? 'OPENAI_API_KEY'
+        : undefined
+    : process.env['DASHSCOPE_API_KEY']
+      ? 'DASHSCOPE_API_KEY'
+      : process.env['QWEN_LIVE_HARNESS_REALTIME_API_KEY']
+        ? 'QWEN_LIVE_HARNESS_REALTIME_API_KEY'
+        : undefined;
   const envKey = envKeyName ? process.env[envKeyName] : undefined;
   let apiKey: string | undefined;
   if (envKey) {
@@ -419,7 +433,7 @@ export async function runInit(
     const keyPrompt = await prompts({
       type: 'password',
       name: 'value',
-      message: t('init.apiKey'),
+      message: t(options.fd ? 'fd.apiKey' : 'init.apiKey'),
       validate: (val: string) =>
         val.trim().length > 0 || t('init.apiKeyRequired'),
     });
@@ -435,7 +449,7 @@ export async function runInit(
     type: 'text',
     name: 'value',
     message: t('init.apiName'),
-    initial: DEFAULT_REALTIME_MODEL,
+    initial: options.fd ? 'gpt-live-1' : DEFAULT_REALTIME_MODEL,
     validate: (value: string) =>
       value.trim().length > 0 || t('init.apiNameRequired'),
   });
@@ -448,62 +462,84 @@ export async function runInit(
     return;
   }
 
-  // 7. Select the service region for the API key and model just configured.
-  const previousRegion = knownEndpointRegion(previousEndpoint);
-  if (previousEndpoint && !previousRegion)
-    console.log(`\n  ${t('init.customEndpointHint')}\n`);
-  const endpointPrompt = await prompts({
-    type: 'toggle',
-    name: 'value',
-    message: t('init.endpoint'),
-    inactive: t('init.endpointBeijing'),
-    active: t('init.endpointSingapore'),
-    initial: previousRegion === 'singapore',
-  });
-  if (typeof endpointPrompt.value !== 'boolean') {
-    console.log(`\n  ${t('init.cancelled')}\n`);
-    return;
-  }
-  const realtimeEndpoint = endpointPrompt.value
-    ? REALTIME_ENDPOINTS.singapore
-    : REALTIME_ENDPOINTS.beijing;
-  if (process.env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']?.trim())
-    console.log(`\n  ${t('init.endpointEnvOverride')}\n`);
-  console.log(`\n  ${t('init.endpointKeyHint')}\n`);
-
-  // 8. Memory
-  const memoryPrompt = await prompts({
-    type: 'toggle',
-    ...toggleLabels,
-    name: 'value',
-    message: t('init.memoryEnabled'),
-    initial: true,
-  });
-  if (typeof memoryPrompt.value !== 'boolean') {
-    console.log(`\n  ${t('init.cancelled')}\n`);
-    return;
-  }
-  let memoryModel = 'qwen3.7-plus';
-  if (memoryPrompt.value) {
-    const memoryModelPrompt = await prompts({
+  let responsesModel = 'gpt-6-luna';
+  if (options.fd) {
+    const answer = await prompts({
       type: 'text',
       name: 'value',
-      message: t('init.memoryModel'),
-      initial: memoryModel,
+      message: t('fd.responsesModel'),
+      initial: responsesModel,
       validate: (value: string) =>
-        (value.trim().length > 0 &&
-          value.trim().length <= 256 &&
-          !/\p{C}/u.test(value)) ||
-        t('init.modelRequired'),
+        /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.trim()) ||
+        t('init.apiNameRequired'),
     });
-    if (
-      typeof memoryModelPrompt.value !== 'string' ||
-      !memoryModelPrompt.value.trim()
-    ) {
+    if (typeof answer.value !== 'string' || !answer.value.trim()) {
       console.log(`\n  ${t('init.cancelled')}\n`);
       return;
     }
-    memoryModel = memoryModelPrompt.value.trim();
+    responsesModel = answer.value.trim();
+  }
+  let realtimeEndpoint = 'https://api.openai.com';
+  let memoryEnabled = false;
+  let memoryModel = 'qwen3.7-plus';
+  if (!options.fd) {
+    // 7. Select the service region for the API key and model just configured.
+    const previousRegion = knownEndpointRegion(previousEndpoint);
+    if (previousEndpoint && !previousRegion)
+      console.log(`\n  ${t('init.customEndpointHint')}\n`);
+    const endpointPrompt = await prompts({
+      type: 'toggle',
+      name: 'value',
+      message: t('init.endpoint'),
+      inactive: t('init.endpointBeijing'),
+      active: t('init.endpointSingapore'),
+      initial: previousRegion === 'singapore',
+    });
+    if (typeof endpointPrompt.value !== 'boolean') {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    realtimeEndpoint = endpointPrompt.value
+      ? REALTIME_ENDPOINTS.singapore
+      : REALTIME_ENDPOINTS.beijing;
+    if (process.env['QWEN_LIVE_HARNESS_REALTIME_ENDPOINT']?.trim())
+      console.log(`\n  ${t('init.endpointEnvOverride')}\n`);
+    console.log(`\n  ${t('init.endpointKeyHint')}\n`);
+
+    // 8. Memory
+    const memoryPrompt = await prompts({
+      type: 'toggle',
+      ...toggleLabels,
+      name: 'value',
+      message: t('init.memoryEnabled'),
+      initial: true,
+    });
+    if (typeof memoryPrompt.value !== 'boolean') {
+      console.log(`\n  ${t('init.cancelled')}\n`);
+      return;
+    }
+    memoryEnabled = memoryPrompt.value;
+    if (memoryPrompt.value) {
+      const memoryModelPrompt = await prompts({
+        type: 'text',
+        name: 'value',
+        message: t('init.memoryModel'),
+        initial: memoryModel,
+        validate: (value: string) =>
+          (value.trim().length > 0 &&
+            value.trim().length <= 256 &&
+            !/\p{C}/u.test(value)) ||
+          t('init.modelRequired'),
+      });
+      if (
+        typeof memoryModelPrompt.value !== 'string' ||
+        !memoryModelPrompt.value.trim()
+      ) {
+        console.log(`\n  ${t('init.cancelled')}\n`);
+        return;
+      }
+      memoryModel = memoryModelPrompt.value.trim();
+    }
   }
 
   // 9. A coding workspace is only needed when delegation is enabled.
@@ -590,9 +626,18 @@ export async function runInit(
     themeColor: 'iris',
     language,
     permissionMode,
-    realtimeApiKey: apiKey,
-    realtimeEndpoint,
-    realtimeModel,
+    ...(options.fd
+      ? {
+          mode: 'fd' as const,
+          fd: {
+            endpoint: realtimeEndpoint,
+            apiKey,
+            model: realtimeModel,
+            voice: 'marin',
+            responsesModel,
+          },
+        }
+      : { realtimeApiKey: apiKey, realtimeEndpoint, realtimeModel }),
     visualInput: {
       source: 'screen',
       mode: 'on-demand',
@@ -602,8 +647,10 @@ export async function runInit(
       liveResolution: { width: 1280, height: 720 },
       snapshotResolution: 'native',
     },
-    proactive: DEFAULT_PROACTIVE_CONFIG,
-    memory: initialMemoryConfig(memoryPrompt.value, memoryModel),
+    proactive: options.fd
+      ? { ...DEFAULT_PROACTIVE_CONFIG, enabled: false }
+      : DEFAULT_PROACTIVE_CONFIG,
+    memory: initialMemoryConfig(memoryEnabled, memoryModel),
     defaultCwd,
     backends,
   };
@@ -638,7 +685,7 @@ export async function runInit(
     `  ✓ ${t('init.endpointSummary', { endpoint: realtimeEndpoint })}`,
   );
   console.log(
-    `  ✓ ${t('init.memorySummary', { name: memoryPrompt.value ? memoryModel : t('init.disabled') })}`,
+    `  ✓ ${t('init.memorySummary', { name: memoryEnabled ? memoryModel : t('init.disabled') })}`,
   );
   console.log(`  ✓ ${t('init.hostSummary', { status: hostStatus })}`);
   console.log(`\n  ${t(options.source ? 'init.sourceRun' : 'init.run')}\n`);
