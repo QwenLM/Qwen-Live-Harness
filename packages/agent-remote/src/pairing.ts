@@ -22,6 +22,21 @@ export function localAddresses(): string[] {
   ];
 }
 
+export function pairingUrls(directory: string, port: number): string[] {
+  const certificate = new X509Certificate(
+    readFileSync(join(directory, 'server-cert.pem')),
+  );
+  return [
+    ...localAddresses()
+      .filter((address) => certificate.checkIP(address))
+      .map((address) => `https://${address}:${port}`),
+    ...(hostname().endsWith('.local') && certificate.checkHost(hostname())
+      ? [`https://${hostname()}:${port}`]
+      : []),
+    ...(certificate.checkIP('127.0.0.1') ? [`https://127.0.0.1:${port}`] : []),
+  ];
+}
+
 export async function pairingPage(options: {
   directory: string;
   port: number;
@@ -30,17 +45,7 @@ export async function pairingPage(options: {
   ask: boolean;
   open: boolean;
 }): Promise<string> {
-  const certificate = new X509Certificate(
-    readFileSync(join(options.directory, 'server-cert.pem')),
-  );
-  const urls = [
-    ...(hostname().endsWith('.local') && certificate.checkHost(hostname())
-      ? [`https://${hostname()}:${options.port}`]
-      : []),
-    ...[...localAddresses(), '127.0.0.1']
-      .filter((address) => certificate.checkIP(address))
-      .map((address) => `https://${address}:${options.port}`),
-  ];
+  const urls = pairingUrls(options.directory, options.port);
   const escape = (value: string) =>
     value
       .replaceAll('&', '&amp;')

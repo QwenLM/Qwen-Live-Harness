@@ -18,6 +18,7 @@ import { localRequest, type GatewayState } from './client.js';
 import { certificatePin, type GatewayOptions } from './mobile/index.js';
 import { gatewayServiceLabel, manageService } from './service.js';
 import { privateDirectory, stateDirectory } from './state.js';
+import { pairingUrls } from './pairing.js';
 
 export interface DesktopConfig {
   version: 1;
@@ -257,19 +258,11 @@ export async function desktopCommand(args: string[]): Promise<unknown> {
       readFileSync(join(directory, 'runtime.json'), 'utf8'),
     ) as { port: number };
     const pin = certificatePin(directory);
-    const addresses = Object.entries(networkInterfaces())
-      .filter(([name]) => /^(en|eth|wlan)/u.test(name))
-      .flatMap(([, values]) => values ?? [])
-      .filter(
-        (entry) =>
-          entry.family === 'IPv4' &&
-          !entry.internal &&
-          !entry.address.startsWith('169.254.'),
-      )
-      .map((entry) => entry.address);
-    const url = hostname().endsWith('.local')
-      ? `https://${hostname()}:${runtime.port}`
-      : `https://${addresses[0] ?? '127.0.0.1'}:${runtime.port}`;
+    const url = pairingUrls(directory, runtime.port)[0];
+    if (!url)
+      throw new Error(
+        'No network address matches the service certificate. Restart the service.',
+      );
     const link = `qwenliveharness://pair?data=${Buffer.from(JSON.stringify({ version: 1, url, pin, code, name: hostname() })).toString('base64url')}`;
     return {
       link,

@@ -7,6 +7,7 @@
 "taskCounts" = "%d running · %d tasks this session";
 "pairingQR" = "iPhone pairing QR code";
 "scanInPhone" = "Scan in Agent Remote on your iPhone";
+"pairingNetworkHint" = "Use the same local network, or a VPN that can reach this address and port. If connecting times out, check VPN routing and firewall access.";
 "expiresMinutes" = "Single-use code · expires in %d min";
 "pairingExpired" = "Code expired. Generate a new one below.";
 "copied" = "Copied";

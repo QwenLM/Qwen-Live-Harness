@@ -43,6 +43,7 @@ struct DashboardView: View {
                                     if let image = qr(pairing.link) { Image(nsImage: image).interpolation(.none).resizable().frame(width: 190, height: 190).accessibilityLabel(tr("pairingQR")) }
                                     Text(tr("scanInPhone")).font(.subheadline)
                                     Text(pairing.url).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                                    Text(tr("pairingNetworkHint")).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                                     Text(String(format: tr("expiresMinutes"), max(1, Int(ceil(pairing.expiry.timeIntervalSince(context.date) / 60))))).font(.caption).foregroundStyle(.secondary)
                                 } else { Label(tr("pairingExpired"), systemImage: "clock").foregroundStyle(.secondary).padding() }
                             }

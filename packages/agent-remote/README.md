@@ -98,6 +98,8 @@ agent-remote pair --no-open
 
 Codes are valid for fifteen minutes and are single-use. `pair` renews the code without restarting the service, interrupting work or revoking existing phone credentials.
 
+Pairing prefers a certificate-covered IPv4 address; `.local` names are a fallback because they may not resolve over a VPN. A VPN connection only works if it permits the iPhone to reach the displayed computer address and port (47421 by default). If connecting times out, check VPN routing and firewall access; VPN membership alone does not guarantee connectivity.
+
 Fresh installs use `~/.agent-remote/`. Existing certificates or credentials in `~/.qwen-live-harness/mobile/` select the legacy directory in place. HTTPS API, pairing payloads, iOS bundle ID and Keychain identifiers remain compatible. Do not clear credentials during migration. Finish old work before stopping the previous gateway; live sessions cannot transfer between processes.
 
 ```sh
