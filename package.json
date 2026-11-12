@@ -16,7 +16,8 @@
     "typecheck": "npm run typecheck --workspace qwen-live-harness && tsc --project integration-tests/tsconfig.json --noEmit",
     "start": "node scripts/start-dev.mjs",
     "init": "node scripts/start-dev.mjs init",
-    "test": "npm run test:daemon && npm run test:scripts && npm run test:integration",
+    "mobile": "npm run build:remote && node packages/agent-remote/dist/cli.js",
+    "test": "npm run test:daemon && npm run test:scripts && npm run test:integration && npm run test:remote",
     "test:daemon": "npm run test --workspace qwen-live-harness",
     "test:host": "npm run test --prefix packages/qwen-live-harness-host",
     "test:scripts": "vitest run --config scripts/tests/vitest.config.ts",
@@ -28,11 +29,16 @@
     "check:package": "node scripts/check-package.mjs",
     "check:peer-source": "node scripts/qwen-code-peer-source.mjs --verify",
     "restore:peer-source": "node scripts/qwen-code-peer-source.mjs --restore",
-    "lint": "eslint packages/qwen-live-harness/src packages/qwen-live-harness/build.mjs integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
+    "lint": "eslint packages/qwen-live-harness/src packages/qwen-live-harness/build.mjs packages/agent-remote/src packages/agent-remote/scripts packages/agent-remote/vitest.config.ts integration-tests scripts --ignore-pattern '**/test-fixtures/**'",
     "lint:host": "eslint packages/qwen-live-harness-host/src packages/qwen-live-harness-host/scripts packages/qwen-live-harness-host/vite.config.ts packages/qwen-live-harness-host/resources/audio-input-worklet.js",
     "lint:all": "npm run lint && npm run lint:host",
     "format:check": "prettier --check .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "build:remote": "npm run build --prefix packages/agent-remote",
+    "typecheck:remote": "npm run typecheck --prefix packages/agent-remote",
+    "test:remote": "npm test --prefix packages/agent-remote",
+    "check:remote": "npm run check:package --prefix packages/agent-remote",
+    "export:remote": "npm run export --prefix packages/agent-remote"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

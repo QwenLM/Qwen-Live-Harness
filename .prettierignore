@@ -12,3 +12,13 @@ LICENSE
 packages/qwen-live-harness-host/resources
 .qwen
 packages/qwen-live-harness/src/vendor/qwen-code-peer/*.ts
+
+packages/agent-remote/ios/build/
+packages/agent-remote/ios/build-device/
+packages/agent-remote/ios/*.xcodeproj/
+packages/agent-remote/ios/UITests/Fixtures/
+packages/agent-remote/package-lock.json
+packages/agent-remote/macos/.build/
+packages/agent-remote/macos/.swiftpm/
+packages/agent-remote/macos/build/
+packages/agent-remote/macos/runtime-cache/

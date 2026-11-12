@@ -7,6 +7,21 @@ import ts from 'typescript';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = (path) => JSON.parse(readFileSync(join(root, path), 'utf8'));
 const rootPackage = json('package.json');
+const remotePackage = json('packages/agent-remote/package.json');
+assert.equal(remotePackage.name, 'agent-remote');
+assert.deepEqual(remotePackage.bin, { 'agent-remote': 'dist/cli.js' });
+for (const [name, version] of Object.entries(
+  remotePackage.dependencies ?? {},
+)) {
+  assert(
+    !/^(file:|link:|workspace:)/u.test(version),
+    `agent-remote: local runtime dependency ${name}`,
+  );
+  assert(
+    !/^qwen-live-harness(?:-host)?$/u.test(name),
+    'agent-remote must install independently',
+  );
+}
 assert.equal(rootPackage.name, 'qwen-live-harness-workspace');
 assert.deepEqual(rootPackage.workspaces, ['packages/qwen-live-harness']);
 for (const name of ['qwen-live-harness', 'qwen-live-harness-host']) {
@@ -40,7 +55,20 @@ for (const name of ['qwen-live-harness', 'qwen-live-harness-host']) {
 
 function walk(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    if (['node_modules', 'dist', 'release', '.git'].includes(entry.name))
+    if (
+      [
+        'node_modules',
+        'dist',
+        'release',
+        '.git',
+        '.build',
+        '.swiftpm',
+        'build',
+        'build-device',
+        'runtime-cache',
+        'Fixtures',
+      ].includes(entry.name)
+    )
       return [];
     const path = join(directory, entry.name);
     return entry.isDirectory() ? walk(path) : [path];
@@ -86,6 +114,18 @@ for (const directory of ['packages', 'scripts', 'integration-tests']) {
       );
       if (specifier.startsWith('.')) {
         const resolved = resolve(dirname(path), specifier);
+        if (path.startsWith(join(root, 'packages/agent-remote') + '/')) {
+          const inside = relative(
+            join(root, 'packages/agent-remote'),
+            resolved,
+          );
+          assert(
+            inside !== '..' &&
+              !inside.startsWith('../') &&
+              !inside.startsWith('..\\'),
+            `${relative(root, path)}: import leaves standalone agent-remote package`,
+          );
+        }
         const rel = relative(root, resolved);
         assert(
           rel !== '..' &&

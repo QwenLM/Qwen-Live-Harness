@@ -10,3 +10,8 @@ coverage/
 .env.*
 !.env.example
 *.log
+
+packages/agent-remote/ios/build/
+packages/agent-remote/ios/build-device/
+packages/agent-remote/ios/*.xcodeproj/
+packages/agent-remote/ios/UITests/Fixtures/

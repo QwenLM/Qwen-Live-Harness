@@ -9,6 +9,11 @@
 - `packages/qwen-live-harness-host` owns Electron UI, native permissions,
   capture, playback, and its IPC boundary. It has separate dependencies and
   checks; install them with `npm ci --prefix packages/qwen-live-harness-host`.
+- `packages/agent-remote` owns the independent iOS app and computer gateway.
+  Install with `npm ci --prefix packages/agent-remote`; it deliberately has
+  its own lockfile and is not a root workspace. Keep source imports inside
+  that package. Its build, typecheck, tests, and actual-package check are
+  exposed as `build:remote`, `typecheck:remote`, `test:remote`, `check:remote`.
 - Use the existing TypeScript, ESLint, and Prettier settings. Keep changes
   focused; avoid new abstractions, dependencies, or unrelated cleanup without
   a concrete need. Explain deliberate, narrowly scoped check exceptions.
