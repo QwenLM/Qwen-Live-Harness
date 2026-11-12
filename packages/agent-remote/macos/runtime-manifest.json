@@ -1,0 +1,8 @@
+{
+  "version": "22.22.2",
+  "source": "https://nodejs.org/dist/v22.22.2/",
+  "sha256": {
+    "arm64": "db4b275b83736df67533529a18cc55de2549a8329ace6c7bcc68f8d22d3c9000",
+    "x64": "12a6abb9c2902cf48a21120da13f87fde1ed1b71a13330712949e8db818708ba"
+  }
+}

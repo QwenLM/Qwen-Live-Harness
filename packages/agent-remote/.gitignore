@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+coverage/
+ios/build/
+ios/build-device/
+ios/*.xcodeproj/
+ios/UITests/Fixtures/
+*.tgz
+*.log

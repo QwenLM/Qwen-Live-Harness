@@ -1,0 +1,13 @@
+node_modules
+dist
+release
+coverage
+package-lock.json
+ios/build
+ios/build-device
+ios/*.xcodeproj
+ios/UITests/Fixtures
+macos/.build
+macos/.swiftpm
+macos/build
+macos/runtime-cache

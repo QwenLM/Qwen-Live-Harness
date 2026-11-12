@@ -1,0 +1,54 @@
+{
+  "name": "agent-remote",
+  "version": "0.1.0",
+  "description": "Pair an iPhone with your computer and run Qwen Code or Codex tasks remotely.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "agent-remote": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "ios",
+    "README_ZH.md",
+    "!dist/**/*.test.*",
+    "!dist/**/*.map",
+    "!ios/build*/**",
+    "!ios/*.xcodeproj/**",
+    "!ios/UITests/Fixtures/**"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "bundle": "node scripts/bundle.mjs",
+    "build:macos": "node scripts/build-macos.mjs",
+    "package:macos": "node scripts/package-macos.mjs",
+    "test:macos": "swift test --package-path macos",
+    "check:macos": "node scripts/check-macos.mjs",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --no-file-parallelism",
+    "test:ios-fixture": "node scripts/mobile-ui-fixture.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "export": "node scripts/export.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "0.14.1",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/qrcode": "1.5.5",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

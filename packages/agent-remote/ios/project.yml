@@ -1,0 +1,55 @@
+name: QwenLiveMobile
+options:
+  bundleIdPrefix: com.qwenlive
+  deploymentTarget:
+    iOS: '17.0'
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '1'
+    DEVELOPMENT_TEAM: ''
+targets:
+  QwenLiveMobile:
+    type: application
+    platform: iOS
+    sources:
+      - QwenLiveMobile
+      - path: ../dist/LICENSE
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.qwenlive.mobile.dev
+        TARGETED_DEVICE_FAMILY: '1,2'
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: QwenLiveMobile/Info.plist
+        CODE_SIGN_ENTITLEMENTS: QwenLiveMobile/QwenLiveMobile.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets:
+        - QwenLiveMobileTests
+        - QwenLiveMobileUITests
+  QwenLiveMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+      - path: UITests/Fixtures
+        optional: true
+    dependencies:
+      - target: QwenLiveMobile
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
+  QwenLiveMobileUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: QwenLiveMobile
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
