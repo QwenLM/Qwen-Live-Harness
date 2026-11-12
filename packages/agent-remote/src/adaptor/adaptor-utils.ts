@@ -265,7 +265,11 @@ export function describePermissionDetails(
   }
   const record = isRecord(input) ? input : {};
   const toolCallId = string(toolCall['toolCallId'] ?? toolCall['id'], 256);
-  const toolName = displayString(toolCall['name'] ?? toolCall['toolName'], 256);
+  const meta = isRecord(toolCall['_meta']) ? toolCall['_meta'] : undefined;
+  const toolName = displayString(
+    toolCall['name'] ?? toolCall['toolName'] ?? meta?.['toolName'],
+    256,
+  );
   const rawCommand = toolCall['command'] ?? record['command'] ?? record['cmd'];
   let command: string | undefined;
   if (Array.isArray(rawCommand)) {
@@ -369,7 +373,18 @@ export function describePermissionDetails(
     'input',
     'arguments',
     'sessionUpdate',
+    '_meta',
   ]);
+  // Qwen supplies the tool name as ACP extension metadata. Only this known
+  // display field is redundant; unknown extensions may affect the operation.
+  if (
+    toolCall['_meta'] !== undefined &&
+    (!meta ||
+      Object.keys(meta).some((key) => key !== 'toolName') ||
+      (meta['toolName'] !== undefined &&
+        typeof meta['toolName'] !== 'string'))
+  )
+    incomplete = true;
   if (Object.keys(toolCall).some((key) => !metadataKeys.has(key)))
     incomplete = true;
   if (

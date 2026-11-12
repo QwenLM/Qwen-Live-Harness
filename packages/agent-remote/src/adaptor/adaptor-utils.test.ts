@@ -35,6 +35,27 @@ function workspace(): string {
 }
 
 describe('permission operation facts', () => {
+  it('accepts Qwen ACP tool-name metadata without disabling one-time approval', () => {
+    const details = describePermissionDetails({
+      toolCallId: 'qwen-call',
+      status: 'pending',
+      title: 'Check installed CLI',
+      kind: 'execute',
+      content: [],
+      locations: [],
+      rawInput: { command: 'command -v codex', description: 'Check CLI' },
+      _meta: { toolName: 'run_shell_command' },
+    });
+    expect(details.toolName).toBe('run_shell_command');
+    expect(details.command).toBe('command -v codex');
+    expect(details.incomplete).toBeUndefined();
+    expect(
+      describePermissionDetails({
+        rawInput: { command: 'echo ok' },
+        _meta: { toolName: 'run_shell_command', unknownExecutionScope: true },
+      }).incomplete,
+    ).toBe(true);
+  });
   it('displays argv faithfully and retains the exact array including argument order and empty strings', () => {
     const argv = ['/bin/zsh', '-lc', "printf '%s'  'a  b'", ''];
     const tool = { title: 'Run command', rawInput: { command: argv } };
