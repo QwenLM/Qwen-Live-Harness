@@ -55,8 +55,10 @@ final class ComputerTests: XCTestCase {
         return storage
     }
     private func json(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
-    private func state(_ name: String, run: String = "same-run", tasks: [[String: Any]] = []) throws -> Data {
-        try json(["version": 1, "runId": run, "permissionMode": "allow-all", "backends": [["id": "qwen", "name": "Qwen Code", "status": "ready"], ["id": "codex", "name": "Codex", "status": "ready"]], "projects": [["id": "shared-project", "name": name, "path": "/fixture/\(name)"]], "tasks": tasks])
+    private func state(_ name: String, run: String = "same-run", tasks: [[String: Any]] = [], continuations: Bool? = nil) throws -> Data {
+        var value: [String: Any] = ["version": 1, "runId": run, "permissionMode": "allow-all", "backends": [["id": "qwen", "name": "Qwen Code", "status": "ready"], ["id": "codex", "name": "Codex", "status": "ready"]], "projects": [["id": "shared-project", "name": name, "path": "/fixture/\(name)"]], "tasks": tasks]
+        if let continuations { value["capabilities"] = ["conversationTurns": continuations] }
+        return try json(value)
     }
     private func task(_ text: String, id: String = "same-task") -> [String: Any] {
         ["id": id, "backend": "qwen", "project": "shared-project", "request": text, "status": "running", "createdAt": 1, "updatedAt": 1, "activity": "", "output": "", "outputTruncated": false, "permissions": [], "events": []]
@@ -164,12 +166,13 @@ final class ComputerTests: XCTestCase {
         let model = AppModel(storage: store([a, b]), defaults: defaults(), makeAPI: { $0.pin == a.connection.pin ? apiA : apiB })
         await model.refresh(); model.draft = "A task"; let contextA = model.contextID
         let sendingA = Task { await model.submit(expectedContext: contextA) }; await waitFor { gateA.waiting }
+        let pendingA = try XCTUnwrap(model.pending)
         XCTAssertTrue(model.selectComputer(b.id)); await model.refresh(); model.draft = "B task"; let contextB = model.contextID
         let sendingB = Task { await model.submit(expectedContext: contextB) }; await waitFor { gateB.waiting }
         let pendingB = try XCTUnwrap(model.pending)
-        gateA.resolve(try json(task("A task"))); await sendingA.value
+        gateA.resolve(try json(task("A task", id: pendingA.id))); _ = await sendingA.value
         XCTAssertTrue(model.busy); XCTAssertEqual(model.pending?.id, pendingB.id); XCTAssertEqual(model.draft, "B task")
-        gateB.resolve(try json(task("B task"))); await sendingB.value
+        gateB.resolve(try json(task("B task", id: pendingB.id))); _ = await sendingB.value
         XCTAssertFalse(model.busy); XCTAssertNil(model.pending)
         XCTAssertTrue(model.selectComputer(a.id)); XCTAssertNil(model.pending)
         XCTAssertEqual(apiA.calls.filter { $0.path == "v1/tasks" }.count, 1)
@@ -271,5 +274,98 @@ final class ComputerTests: XCTestCase {
         unreadable.preparePairing(link: try pairing(b))
         let unreadablePairing = await unreadable.pair(); XCTAssertFalse(unreadablePairing); XCTAssertEqual(storage.writes, 0)
         XCTAssertNotNil(unreadable.actionError)
+    }
+
+    func testFollowupsKeepTheirConversationTargetRunAndDraftAcrossRetryAndRelaunch() async throws {
+        let a = computer("a"), b = computer("b"), preferences = defaults(), storage = store([a, b])
+        var first = task("Original request", id: "conversation-a")
+        first["status"] = "completed"; first["conversationId"] = "conversation-a"; first["turnIndex"] = 1
+        let api = StubAPI { path, _, _ in
+            if path == "v1/tasks" { throw URLError(.networkConnectionLost) }
+            return try self.state("fixture", tasks: [first], continuations: true)
+        }
+        let model = AppModel(storage: storage, defaults: preferences, makeAPI: { _ in api })
+        await model.refresh(); let context = model.contextID
+        model.draft = "Unrelated new conversation"; model.backend = "codex"
+        model.setConversationDraft("Continue the original", conversationID: "conversation-a", runID: "same-run", expectedContext: context)
+        await model.submit(expectedContext: context, conversationID: "conversation-a")
+        let pending = try XCTUnwrap(model.pending)
+        XCTAssertEqual(pending.conversationId, "conversation-a"); XCTAssertEqual(pending.backend, "qwen")
+        await model.retryPending(expectedContext: context)
+        let calls = api.calls.filter { $0.path == "v1/tasks" }
+        XCTAssertEqual(calls.count, 2); XCTAssertEqual(calls[0].body, calls[1].body)
+        XCTAssertEqual(calls[0].body?["conversationId"], "conversation-a")
+        XCTAssertEqual(calls[0].body?["backend"], "qwen"); XCTAssertEqual(calls[0].runID, "same-run")
+        let reopened = AppModel(storage: storage, defaults: preferences, makeAPI: { _ in api })
+        XCTAssertEqual(reopened.pending?.id, pending.id)
+        XCTAssertEqual(reopened.conversationDraft(conversationID: "conversation-a", runID: "same-run"), "Continue the original")
+        XCTAssertEqual(reopened.draft, "Unrelated new conversation")
+        XCTAssertTrue(reopened.selectComputer(b.id))
+        XCTAssertEqual(reopened.conversationDraft(conversationID: "conversation-a", runID: "same-run"), "")
+        reopened.setConversationDraft("stale write", conversationID: "conversation-a", runID: "same-run", expectedContext: context)
+        await reopened.submit(expectedContext: context, conversationID: "conversation-a")
+        XCTAssertEqual(api.calls.filter { $0.path == "v1/tasks" }.count, 2)
+    }
+
+    func testConversationGroupingPreservesTurnOrderAndLegacySingleTasks() throws {
+        var first = task("Original", id: "first")
+        first["conversationId"] = "first"; first["turnIndex"] = 1; first["status"] = "completed"
+        var second = task("Follow up", id: "second")
+        second["conversationId"] = "first"; second["turnIndex"] = 2
+        let decoded = try JSONDecoder().decode(RemoteState.self, from: state("fixture", tasks: [second, task("Legacy", id: "legacy"), first]))
+        XCTAssertEqual(decoded.conversations.count, 2)
+        let conversation = try XCTUnwrap(decoded.conversations.first { $0.id == "first" })
+        XCTAssertEqual(conversation.turns.map(\.id), ["first", "second"])
+        XCTAssertEqual(conversation.first.request, "Original"); XCTAssertFalse(conversation.canContinue)
+    }
+
+    func testFollowupReceiptClearsOnlyItsDraftAndRestartNeverReplaysPending() async throws {
+        let a = computer("a"), storage = store([a]), preferences = defaults()
+        var first = task("Original", id: "conversation")
+        first["status"] = "completed"; first["conversationId"] = "conversation"; first["turnIndex"] = 1
+        var run = "original-run"
+        var fail = false
+        let api = StubAPI { path, body, _ in
+            if path == "v1/tasks" {
+                if fail { throw URLError(.networkConnectionLost) }
+                var receipt = self.task(body!["text"]!, id: body!["id"]!)
+                receipt["conversationId"] = body!["conversationId"]
+                return try self.json(receipt)
+            }
+            return try self.state("fixture", run: run, tasks: [first], continuations: true)
+        }
+        let model = AppModel(storage: storage, defaults: preferences, makeAPI: { _ in api })
+        await model.refresh(); let context = model.contextID
+        model.draft = "Keep the new-conversation draft"
+        model.setConversationDraft("Keep another conversation", conversationID: "other", runID: run, expectedContext: context)
+        model.setConversationDraft("Follow up", conversationID: "conversation", runID: run, expectedContext: context)
+        let result = await model.submit(expectedContext: context, conversationID: "conversation")
+        XCTAssertEqual(result, "conversation"); XCTAssertNil(model.pending)
+        XCTAssertEqual(model.conversationDraft(conversationID: "conversation", runID: run), "")
+        XCTAssertEqual(model.conversationDraft(conversationID: "other", runID: run), "Keep another conversation")
+        XCTAssertEqual(model.draft, "Keep the new-conversation draft")
+        fail = true
+        model.setConversationDraft("Unconfirmed", conversationID: "conversation", runID: run, expectedContext: context)
+        await model.submit(expectedContext: context, conversationID: "conversation")
+        let pending = try XCTUnwrap(model.pending)
+        run = "restarted-run"; await model.refresh()
+        await model.retryPending(expectedContext: context)
+        XCTAssertEqual(api.calls.filter { $0.path == "v1/tasks" }.count, 2)
+        XCTAssertEqual(model.pending?.id, pending.id)
+        XCTAssertEqual(model.conversationDraft(conversationID: "conversation", runID: run), "")
+    }
+
+    func testMismatchedReceiptCannotClearPendingAndOldGatewayCannotStartFollowup() async throws {
+        let a = computer("a"), storage = store([a]), api = StubAPI { path, _, _ in
+            if path == "v1/tasks" { return try self.json(self.task("Wrong response")) }
+            return try self.state("fixture")
+        }
+        let model = AppModel(storage: storage, defaults: defaults(), makeAPI: { _ in api })
+        await model.refresh(); model.draft = "Actual request"
+        await model.submit(expectedContext: model.contextID)
+        XCTAssertNotNil(model.pending); XCTAssertEqual(model.draft, "Actual request")
+        model.clearPending()
+        await model.submit(expectedContext: model.contextID, conversationID: "old-conversation")
+        XCTAssertEqual(api.calls.filter { $0.path == "v1/tasks" }.count, 1)
     }
 }

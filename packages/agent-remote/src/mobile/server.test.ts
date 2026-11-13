@@ -94,6 +94,63 @@ async function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
   return { tasks, server, call, headers };
 }
 
+it.each(['qwen', 'codex'])(
+  'continues %s over HTTPS in the same ACP session without mixing results',
+  async (backend) => {
+    const { tasks, call, headers } = await setup('allow-all');
+    expect(
+      (await call('/v1/state', undefined, headers)).value['capabilities'],
+    ).toEqual({ conversationTurns: true });
+    const first = {
+      id: randomUUID(),
+      backend,
+      project: 'fixture',
+      text: 'First context',
+    };
+    expect((await call('/v1/tasks', first, headers)).status).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const second = {
+      ...first,
+      id: randomUUID(),
+      conversationId: first.id,
+      text: 'permission: Continue this context',
+    };
+    expect((await call('/v1/tasks', second, headers)).status).toBe(202);
+    expect((await call('/v1/tasks', second, headers)).status).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const turns = tasks.snapshot().tasks;
+    expect(turns).toHaveLength(2);
+    expect(turns[0]!.conversationId).toBe(first.id);
+    expect(turns[0]!.turnIndex).toBe(2);
+    expect(turns[0]!.output).toContain(second.text);
+    expect(turns[1]!.output).toContain(first.text);
+    expect(turns[1]!.output).not.toContain(second.text);
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { ...second, id: randomUUID(), conversationId: 42 },
+          headers,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { ...second, id: randomUUID() },
+          { ...headers, 'x-live-run-id': 'old-run' },
+        )
+      ).status,
+    ).toBe(409);
+    expect(tasks.snapshot().tasks).toHaveLength(2);
+  },
+);
+
 it('requires pairing and run identity, rejects browsers and does not expose desktop control', async () => {
   const { tasks, server, call, headers } = await setup();
   expect((await call('/v1/state')).status).toBe(401);

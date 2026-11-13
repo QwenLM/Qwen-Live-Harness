@@ -159,7 +159,9 @@ export class MobileServer {
       if (
         !['id', 'backend', 'project', 'text'].every(
           (key) => typeof input[key] === 'string',
-        )
+        ) ||
+        (input['conversationId'] !== undefined &&
+          typeof input['conversationId'] !== 'string')
       )
         throw new MobileError(400, 'invalid_task');
       this.reply(
@@ -170,6 +172,9 @@ export class MobileServer {
           backend: input['backend'] as string,
           project: input['project'] as string,
           text: input['text'] as string,
+          ...(typeof input['conversationId'] === 'string'
+            ? { conversationId: input['conversationId'] }
+            : {}),
         }),
       );
       return;

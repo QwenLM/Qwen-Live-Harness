@@ -84,10 +84,10 @@ agent-remote --project "/path/project-a" --port 47422
 ```
 
 - The phone chooses from the computer's configured project list. A working directory is not a filesystem sandbox; the agent and OS determine execution scope.
-- Each task uses a fresh ACP session, without taking over an existing terminal chat. Qwen requests `yolo`, Codex requests `agent-full-access`. Missing modes are logged; remaining one-time requests can still be answered automatically.
+- Each new conversation creates an owned ACP session, without taking over an existing terminal chat. Follow-up messages reuse that exact session and retain its context. Each turn has its own request ID, result, approval and stop state; wait for a turn to finish or confirm its stop before continuing. Qwen requests `yolo`, Codex requests `agent-full-access`. Missing modes are logged; remaining one-time requests can still be answered automatically.
 - `--ask` enables individual review. The default automatic policy applies only to sessions owned by this gateway and does not rewrite agent global settings.
 - Request IDs deduplicate submissions; network errors do not automatically create another task. Cancellation needs backend confirmation.
-- Up to four concurrent tasks and 100 retained tasks. Public progress/output is bounded. Restarting does not restore old tasks or sessions.
+- Up to four concurrent turns and 100 retained turns across conversations. Public progress/output is bounded. Reopening the phone app reconnects to live conversations; restarting the computer service does not restore old turns or sessions. An interrupted or expired agent session is never silently replaced or replayed.
 
 ## Pairing and upgrade compatibility
 
@@ -127,6 +127,10 @@ open QwenLiveMobile.xcodeproj
 Choose your development team and iPhone for `QwenLiveMobile`, then Run. Internal project/bundle/Keychain identifiers retain their original values to preserve credentials; the display name is Agent Remote. Signing accounts, teams and device IDs are not committed.
 
 Open **Computers** at the top left and **Add computer** to scan another computer's pairing code. Credentials stay in the phone's Keychain. Tap a saved computer to switch without scanning again. Rename, pair again or forget individual entries; reopening the app restores the last selection.
+
+The native SwiftUI app opens **Workbench**, grouping conversations by project. Start a conversation with the compose button, choose a project and agent, then continue from the same conversation. Its history shows separate turns, permission requests and results; **Stop this turn** affects only that turn. Conversation drafts stay with their computer, conversation and service run. Update the computer gateway to enable follow-ups; older gateways remain usable for reviewing and starting individual tasks.
+
+**Assistant** describes the planned Personal Agent: ongoing conversation, memory and context-based proactive suggestions. Its future-experience preview is explicitly labeled, read-only sample data. It does not save memories, send push notifications or start work.
 
 Drafts, agent/project choices and unconfirmed submissions are retained separately for each computer. Switching neither stops remote work nor replays old requests on another computer. The previous single-computer credential and pending submission migrate automatically. Re-pair only when its certificate or authorization becomes invalid. Forgetting removes that computer's phone records without stopping its tasks.
 

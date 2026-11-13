@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var pending: PendingSubmission?
+    @Published private(set) var conversationDrafts: [String: String] = [:]
     var selectedComputer: SavedComputer? { computers.first { $0.id == selectedComputerID } }
     var connection: MacConnection? { selectedComputer?.connection }
 
@@ -103,6 +104,7 @@ final class AppModel: ObservableObject {
         let workspace = id.flatMap { workspaces[$0.uuidString] } ?? ComputerWorkspace()
         restoring = true
         draft = workspace.draft; backend = workspace.backend; project = workspace.project; pending = workspace.pending
+        conversationDrafts = workspace.conversationDrafts ?? [:]
         restoring = false
     }
 
@@ -189,7 +191,7 @@ final class AppModel: ObservableObject {
             if !next.backends.contains(where: { $0.id == backend }) { backend = next.backends.first?.id ?? "" }
             if !next.projects.contains(where: { $0.id == project }) { project = next.projects.first?.id ?? "" }
             if let pending, next.runId == pending.runId,
-               next.tasks.contains(where: { $0.id == pending.id && $0.backend == pending.backend && $0.project == pending.project && $0.request == pending.text }),
+               next.tasks.contains(where: { matches($0, submission: pending) }),
                let owner = selectedComputerID { acknowledge(pending, owner: owner) }
         } catch {
             if !Task.isCancelled, contextID == current, sequence > appliedSequence { connectionError = error.localizedDescription }
@@ -205,32 +207,78 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func submit(expectedContext: UUID) async {
-        guard contextID == expectedContext, !busy, let api, let state, let owner = selectedComputerID else { return }
-        let submission = pending ?? PendingSubmission(id: UUID().uuidString.lowercased(), backend: backend, project: project,
-                                                      text: draft.trimmingCharacters(in: .whitespacesAndNewlines), runId: state.runId)
-        guard !submission.text.isEmpty else { return }
+    @discardableResult
+    func submit(expectedContext: UUID, conversationID: String? = nil) async -> String? {
+        guard contextID == expectedContext, !busy, let api, let state, let owner = selectedComputerID else { return nil }
+        let submission: PendingSubmission
+        if let pending {
+            guard pending.conversationId == conversationID else { actionError = tr("pendingTitle"); return nil }
+            guard pending.runId == state.runId else { actionError = tr("server_restarted"); return nil }
+            submission = pending
+        } else if let conversationID {
+            guard state.capabilities?.conversationTurns == true else { actionError = tr("updateGateway"); return nil }
+            guard let conversation = state.conversations.first(where: { $0.id == conversationID }), conversation.canContinue else {
+                actionError = tr("conversation_unavailable"); return nil
+            }
+            submission = PendingSubmission(id: UUID().uuidString.lowercased(), backend: conversation.first.backend,
+                project: conversation.first.project, text: conversationDraft(conversationID: conversationID, runID: state.runId).trimmingCharacters(in: .whitespacesAndNewlines),
+                runId: state.runId, conversationId: conversationID)
+        } else {
+            guard state.backends.contains(where: { $0.id == backend }), state.projects.contains(where: { $0.id == project }) else { return nil }
+            submission = PendingSubmission(id: UUID().uuidString.lowercased(), backend: backend, project: project,
+                text: draft.trimmingCharacters(in: .whitespacesAndNewlines), runId: state.runId)
+        }
+        guard !submission.text.isEmpty else { return nil }
         pending = submission
-        guard saveCurrentWorkspace() else { actionError = tr("pendingSaveFailed"); return }
+        guard saveCurrentWorkspace() else { actionError = tr("pendingSaveFailed"); return nil }
         let operation = UUID(); actionOperation = operation; busy = true; actionError = nil
         defer { if actionOperation == operation { busy = false; actionOperation = nil } }
         do {
-            let _: RemoteTask = try await api.request("v1/tasks", body: ["id": submission.id, "backend": submission.backend,
-                                                                        "project": submission.project, "text": submission.text], runId: submission.runId)
+            var body = ["id": submission.id, "backend": submission.backend, "project": submission.project, "text": submission.text]
+            if let conversationID = submission.conversationId { body["conversationId"] = conversationID }
+            let receipt: RemoteTask = try await api.request("v1/tasks", body: body, runId: submission.runId)
+            guard matches(receipt, submission: submission) else { throw MobileFailure.invalidResponse }
             acknowledge(submission, owner: owner)
             if contextID == expectedContext { await refresh(expectedContext: expectedContext) }
+            return submission.conversationId ?? submission.id
         } catch {
             if contextID == expectedContext { actionError = error.localizedDescription; await refresh(expectedContext: expectedContext) }
+            return nil
         }
+    }
+
+    private func matches(_ task: RemoteTask, submission: PendingSubmission) -> Bool {
+        task.id == submission.id && task.backend == submission.backend && task.project == submission.project && task.request == submission.text &&
+        (task.conversationId ?? task.id) == (submission.conversationId ?? submission.id)
+    }
+
+    func conversationDraft(conversationID: String, runID: String) -> String {
+        conversationDrafts[runID + ":" + conversationID] ?? ""
+    }
+
+    func setConversationDraft(_ text: String, conversationID: String, runID: String, expectedContext: UUID) {
+        guard contextID == expectedContext, state?.runId == runID else { return }
+        conversationDrafts[runID + ":" + conversationID] = text
+        saveCurrentWorkspace()
+    }
+
+    func retryPending(expectedContext: UUID) async {
+        guard let pending else { return }
+        await submit(expectedContext: expectedContext, conversationID: pending.conversationId)
     }
 
     private func acknowledge(_ submission: PendingSubmission, owner: UUID) {
         guard var workspace = workspaces[owner.uuidString], workspace.pending?.id == submission.id else { return }
         workspace.pending = nil
-        if workspace.draft.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text { workspace.draft = "" }
+        if let conversationID = submission.conversationId {
+            let key = submission.runId + ":" + conversationID
+            if workspace.conversationDrafts?[key]?.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text {
+                workspace.conversationDrafts?.removeValue(forKey: key)
+            }
+        } else if workspace.draft.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text { workspace.draft = "" }
         workspaces[owner.uuidString] = workspace; persistWorkspaces()
         if owner == selectedComputerID {
-            restoring = true; pending = nil; draft = workspace.draft; restoring = false
+            restoring = true; pending = nil; draft = workspace.draft; conversationDrafts = workspace.conversationDrafts ?? [:]; restoring = false
         }
     }
 
@@ -253,7 +301,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func saveCurrentWorkspace() -> Bool {
         guard !restoring, let id = selectedComputerID else { return true }
-        workspaces[id.uuidString] = ComputerWorkspace(draft: draft, backend: backend, project: project, pending: pending)
+        workspaces[id.uuidString] = ComputerWorkspace(draft: draft, backend: backend, project: project, pending: pending, conversationDrafts: conversationDrafts)
         return persistWorkspaces()
     }
 

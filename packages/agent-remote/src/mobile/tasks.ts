@@ -57,6 +57,9 @@ export interface MobilePermission {
 
 export interface MobileTask {
   id: string;
+  conversationId: string;
+  turnIndex: number;
+  canContinue?: boolean;
   backend: string;
   project: string;
   request: string;
@@ -126,6 +129,7 @@ export class MobileTasks {
       adaptorFor: (handle) => {
         const owner = [...this.tasks.values()].find(
           (task) =>
+            !TERMINAL.has(task.view.status) &&
             task.handle?.id === handle.id &&
             task.handle.adaptor === handle.adaptor,
         );
@@ -162,6 +166,7 @@ export class MobileTasks {
       version: 1,
       runId: this.runId,
       permissionMode: this.permissionMode,
+      capabilities: { conversationTurns: true },
       backends: [...this.adaptors.keys()].map((id) => ({
         id,
         name: id === 'qwen' ? 'Qwen Code' : id === 'codex' ? 'Codex' : id,
@@ -178,6 +183,7 @@ export class MobileTasks {
     );
     return {
       ...task.view,
+      canContinue: this.canContinue(task),
       status:
         !TERMINAL.has(task.view.status) &&
         !task.cancelRequested &&
@@ -211,24 +217,38 @@ export class MobileTasks {
     };
   }
 
+  private canContinue(task: OwnedTask): boolean {
+    return (
+      !!task.handle &&
+      TERMINAL.has(task.view.status) &&
+      task.view.status !== 'interrupted' &&
+      (task.admitted || !task.attempted)
+    );
+  }
+
   submit(input: {
     id: string;
     backend: string;
     project: string;
     text: string;
+    conversationId?: string;
   }): MobileTask {
     if (this.closed) throw new MobileError(503, 'service_stopping');
     if (
       !UUID.test(input.id) ||
+      (input.conversationId !== undefined &&
+        !UUID.test(input.conversationId)) ||
       !input.text.trim() ||
       input.text.length > 16_000
     )
       throw new MobileError(400, 'invalid_task');
     const id = input.id.toLowerCase();
+    const conversationId = input.conversationId?.toLowerCase() ?? id;
     const existing = this.tasks.get(id);
     if (existing) {
       if (
         existing.view.backend !== input.backend ||
+        existing.view.conversationId !== conversationId ||
         existing.view.project !== input.project ||
         existing.view.request !== input.text.trim()
       )
@@ -238,6 +258,24 @@ export class MobileTasks {
     const adaptor = this.adaptors.get(input.backend);
     const project = this.projects.find((entry) => entry.id === input.project);
     if (!adaptor || !project) throw new MobileError(404, 'target_not_found');
+    let previous: OwnedTask | undefined;
+    if (input.conversationId !== undefined) {
+      const root = this.tasks.get(conversationId);
+      if (!root || root.view.conversationId !== root.view.id)
+        throw new MobileError(404, 'conversation_not_found');
+      if (
+        root.view.backend !== input.backend ||
+        root.view.project !== input.project
+      )
+        throw new MobileError(409, 'conversation_target_mismatch');
+      previous = [...this.tasks.values()]
+        .filter((task) => task.view.conversationId === conversationId)
+        .at(-1)!;
+      if (!TERMINAL.has(previous.view.status))
+        throw new MobileError(409, 'conversation_busy');
+      if (!this.canContinue(previous))
+        throw new MobileError(409, 'conversation_unavailable');
+    }
     if (
       this.tasks.size >= 100 ||
       [...this.tasks.values()].filter((task) => !TERMINAL.has(task.view.status))
@@ -248,6 +286,8 @@ export class MobileTasks {
     const task: OwnedTask = {
       view: {
         id,
+        conversationId,
+        turnIndex: (previous?.view.turnIndex ?? 0) + 1,
         backend: input.backend,
         project: input.project,
         request: input.text.trim(),
@@ -265,6 +305,7 @@ export class MobileTasks {
       admitted: false,
       attempted: false,
       cancelRequested: false,
+      ...(previous?.handle ? { handle: previous.handle } : {}),
     };
     this.tasks.set(id, task);
     this.event(task, 'status', 'Connecting to the agent');
@@ -309,7 +350,9 @@ export class MobileTasks {
         this.finish(task, 'cancelled', 'Stopped before submission');
         return;
       }
-      task.handle = await adaptor.createSession({
+      // Follow-ups retain the exact owned backend handle. Never replace an
+      // expired session with a fresh one or replay the earlier instructions.
+      task.handle ??= await adaptor.createSession({
         cwd: project.path,
         label: task.view.request.slice(0, 80),
       });

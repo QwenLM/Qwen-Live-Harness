@@ -38,7 +38,7 @@ class FakeAdaptor implements BackendAdaptor {
   async prompt(handle: BackendHandle, _blocks: readonly ContentBlock[]) {
     this.promptCalls++;
     for (const event of this.early) this.emit(event, handle);
-    return { status: 'accepted' as const, jobRef: 'job-1' };
+    return { status: 'accepted' as const, jobRef: `job-${this.promptCalls}` };
   }
   events(handle: BackendHandle, options?: { signal?: AbortSignal }) {
     return this.queues.get(handle.id)!.subscribe(options);
@@ -93,6 +93,175 @@ const permission: BackendEvent = {
 };
 
 describe('mobile task ownership', () => {
+  it('continues the exact owned session with independent, deduplicated turns', async () => {
+    const { service, qwen, submit } = setup();
+    const first = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'First result',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const input = {
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      conversationId: first.id,
+      text: 'Continue the work',
+    };
+    const next = service.submit(input);
+    service.submit(input);
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    expect(qwen.sessions).toHaveLength(1);
+    expect(next.conversationId).toBe(first.id);
+    expect(next.turnIndex).toBe(2);
+    expect(() => service.submit({ ...input, id: randomUUID() })).toThrow(
+      'conversation_busy',
+    );
+    expect(() =>
+      service.submit({ ...input, conversationId: undefined }),
+    ).toThrow('idempotency_conflict');
+    expect(() =>
+      service.submit({ ...input, id: randomUUID(), backend: 'codex' }),
+    ).toThrow('conversation_target_mismatch');
+    expect(() =>
+      service.submit({
+        ...input,
+        id: randomUUID(),
+        conversationId: randomUUID(),
+      }),
+    ).toThrow('conversation_not_found');
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Stale result',
+    });
+    qwen.emit({ ...permission, jobRef: 'job-1' });
+    qwen.emit({ ...permission, jobRef: 'job-2' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.permissions).toHaveLength(1),
+    );
+    const approval = service.snapshot().tasks[0]!.permissions[0]!;
+    await expect(
+      service.permission(first.id, approval.id, 'allow'),
+    ).rejects.toThrow('permission_expired');
+    await service.permission(next.id, approval.id, 'allow');
+    expect(qwen.respondPermission).toHaveBeenCalledTimes(1);
+    await service.cancel(first.id);
+    expect(qwen.cancelJob).not.toHaveBeenCalled();
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-2',
+      summary: 'Second result',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    expect(service.snapshot().tasks.map((task) => task.output)).toEqual([
+      'Second result',
+      'First result',
+    ]);
+    expect(service.snapshot().tasks[0]!.canContinue).toBe(true);
+    expect(qwen.promptCalls).toBe(2);
+  });
+
+  it('keeps the owned context when a follow-up is stopped before it is submitted', async () => {
+    const { service, qwen, submit } = setup();
+    const first = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Original result',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const input = {
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      conversationId: first.id,
+      text: 'Stop before sending',
+    };
+    const cancelled = service.submit(input);
+    await service.cancel(cancelled.id);
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('cancelled'),
+    );
+    expect(qwen.promptCalls).toBe(1);
+    expect(service.snapshot().tasks[0]!.canContinue).toBe(true);
+    const next = service.submit({
+      ...input,
+      id: randomUUID(),
+      text: 'Continue instead',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    expect(next.turnIndex).toBe(3);
+    expect(qwen.sessions).toHaveLength(1);
+  });
+
+  it('cannot continue an interrupted session or silently create a replacement', async () => {
+    const { service, qwen, submit } = setup();
+    const first = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({ type: 'session_closed' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('interrupted'),
+    );
+    expect(service.snapshot().tasks[0]!.canContinue).toBe(false);
+    expect(() =>
+      service.submit({
+        id: randomUUID(),
+        backend: 'qwen',
+        project: 'project',
+        conversationId: first.id,
+        text: 'Retry',
+      }),
+    ).toThrow('conversation_unavailable');
+    expect(qwen.sessions).toHaveLength(1);
+    expect(qwen.promptCalls).toBe(1);
+  });
+
+  it('stops only the current follow-up and waits for its own confirmation', async () => {
+    const { service, qwen, submit } = setup();
+    const first = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-1', summary: 'Done' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const next = service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      conversationId: first.id,
+      text: 'Follow up',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    await service.cancel(next.id);
+    expect(qwen.cancelJob).toHaveBeenCalledWith(qwen.sessions[0], 'job-2');
+    expect(service.snapshot().tasks[0]!.status).toBe('cancelling');
+    qwen.emit({ type: 'turn_error', jobRef: 'job-1', error: 'cancelled' });
+    qwen.emit({ type: 'turn_error', jobRef: 'job-2', error: 'cancelled' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('cancelled'),
+    );
+    const third = service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      conversationId: first.id,
+      text: 'A different approach',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(3));
+    expect(third.turnIndex).toBe(3);
+    expect(qwen.sessions).toHaveLength(1);
+    expect(service.snapshot().tasks[1]!.output).not.toBe('Done');
+  });
   it('automatically grants only the real current request in allow-all mode without claiming task completion', async () => {
     const { service, qwen, submit } = setup('allow-all');
     submit();

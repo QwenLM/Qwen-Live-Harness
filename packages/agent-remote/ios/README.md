@@ -12,6 +12,8 @@ open QwenLiveMobile.xcodeproj
 
 Select your development team and trusted iPhone, then Run. The display name is Agent Remote. Bundle ID, registered pairing schemes and Keychain identifiers intentionally retain the original values so upgrading preserves paired credentials. Do not rename them when installing over the original app.
 
+The app uses native SwiftUI tabs, navigation, lists and forms. Workbench groups conversations by project; follow-ups retain the same owned agent session, with separate per-turn results, approvals and cancellation. Drafts are isolated by computer, service run and conversation. Assistant is a planned feature with a read-only, clearly labeled concept preview; persistent personal memory and proactive push remain unimplemented. Upgrade the gateway together with the app for multi-turn support. Computer-service restarts do not restore old sessions.
+
 Simulator example:
 
 ```sh

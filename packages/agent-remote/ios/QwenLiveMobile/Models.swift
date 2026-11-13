@@ -75,11 +75,12 @@ struct ComputerWorkspace: Codable {
     var backend = ""
     var project = ""
     var pending: PendingSubmission?
+    var conversationDrafts: [String: String]?
 }
 
-struct TaskRoute: Hashable {
+struct ConversationRoute: Hashable {
     let contextID: UUID
-    let taskID: String
+    let conversationID: String
 }
 
 struct RemoteState: Decodable {
@@ -89,6 +90,29 @@ struct RemoteState: Decodable {
     let backends: [RemoteBackend]
     let projects: [RemoteProject]
     let tasks: [RemoteTask]
+    let capabilities: RemoteCapabilities?
+
+    var conversations: [RemoteConversation] {
+        Dictionary(grouping: tasks, by: { $0.conversationId ?? $0.id }).map { id, turns in
+            RemoteConversation(id: id, turns: turns.sorted {
+                if $0.turnIndex != $1.turnIndex { return ($0.turnIndex ?? 1) < ($1.turnIndex ?? 1) }
+                return $0.createdAt < $1.createdAt
+            })
+        }.sorted {
+            if $0.latest.updatedAt != $1.latest.updatedAt { return $0.latest.updatedAt > $1.latest.updatedAt }
+            return $0.id < $1.id
+        }
+    }
+}
+
+struct RemoteCapabilities: Decodable { let conversationTurns: Bool? }
+
+struct RemoteConversation: Identifiable {
+    let id: String
+    let turns: [RemoteTask]
+    var first: RemoteTask { turns[0] }
+    var latest: RemoteTask { turns[turns.count - 1] }
+    var canContinue: Bool { latest.canContinue ?? (latest.terminal && latest.status != "interrupted") }
 }
 
 struct RemoteBackend: Decodable, Identifiable {
@@ -105,6 +129,9 @@ struct RemoteProject: Decodable, Identifiable {
 
 struct RemoteTask: Decodable, Identifiable {
     let id: String
+    let conversationId: String?
+    let turnIndex: Int?
+    let canContinue: Bool?
     let backend: String
     let project: String
     let request: String
@@ -142,6 +169,7 @@ struct PendingSubmission: Codable {
     let project: String
     let text: String
     let runId: String
+    var conversationId: String? = nil
 }
 
 enum MobileFailure: LocalizedError {
