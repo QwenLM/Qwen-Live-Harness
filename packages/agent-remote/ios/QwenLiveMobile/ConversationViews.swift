@@ -9,7 +9,8 @@ struct ConversationDetail: View {
     @FocusState private var editing: Bool
 
     private var conversation: RemoteConversation? {
-        guard model.contextID == route.contextID else { return nil }
+        guard model.contextID == route.contextID,
+              route.runID == nil || route.runID == model.state?.runId else { return nil }
         return model.state?.conversations.first { $0.id == route.conversationID }
     }
 

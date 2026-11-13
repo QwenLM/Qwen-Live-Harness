@@ -1,2 +1,4 @@
 "NSLocalNetworkUsageDescription" = "连接已配对的 电脑，以发送 Agent 任务、查看进度和处理授权请求。";
 "NSCameraUsageDescription" = "扫描 电脑 上显示的配对二维码。";
+"NSMicrophoneUsageDescription" = "使用麦克风，在此设备上把语音转成可编辑的文字。";
+"NSSpeechRecognitionUsageDescription" = "在此设备上识别语音，填写助手输入框。";

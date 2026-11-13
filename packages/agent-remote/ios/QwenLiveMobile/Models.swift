@@ -81,6 +81,7 @@ struct ComputerWorkspace: Codable {
 struct ConversationRoute: Hashable {
     let contextID: UUID
     let conversationID: String
+    var runID: String? = nil
 }
 
 struct RemoteState: Decodable {

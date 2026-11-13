@@ -10,7 +10,7 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = link
-        app.launch(); app.buttons["connectMac"].tap()
+        launchWorkbench(app); app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         app.buttons["newConversation"].tap()
         app.segmentedControls.buttons["Codex"].tap()
@@ -43,6 +43,16 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 3), .timedOut)
         XCTAssertEqual(elapsed.value as? String, duration)
         capture(app, name: "Completed duration stays fixed")
+        app.tabBars.buttons["Assistant"].tap()
+        let recent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-' AND label CONTAINS %@", "artifacts: final outputs")).firstMatch
+        XCTAssertTrue(recent.waitForExistence(timeout: 10)); recent.tap()
+        XCTAssertTrue(app.buttons["artifact-report.md"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["Feed"].tap()
+        let report = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@", "report.md")).firstMatch
+        XCTAssertTrue(report.waitForExistence(timeout: 10)); report.tap()
+        XCTAssertTrue(app.staticTexts["Preview report"].waitForExistence(timeout: 10))
+        capture(app, name: "Feed opens the owned real artifact")
     }
     func testMultipleComputersSwitchAndSurviveRelaunchWithoutNewPairing() throws {
         guard let fixture = Bundle(for: Self.self).url(forResource: "computers", withExtension: "json"),
@@ -54,7 +64,7 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = firstLink
-        app.launch()
+        launchWorkbench(app)
         app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac A")
@@ -71,7 +81,7 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac B")
         sendAndWait(app, text: "permission: second computer", agent: "Codex")
 
-        app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; app.launch()
+        app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; launchWorkbench(app)
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac B")
         app.buttons["computersButton"].tap()
@@ -137,7 +147,7 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = pairing
-        app.launch()
+        launchWorkbench(app)
         app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         for (agent, decision, outcome) in [("Qwen Code", "allowPermission", "completed"), ("Codex", "denyPermission", "cancelled")] {
@@ -151,7 +161,7 @@ final class MobileFlowTests: XCTestCase {
             XCTAssertTrue(button.waitForExistence(timeout: 20))
             XCTAssertTrue(button.isEnabled)
             // Reopening the phone app must retain the same pending Mac request.
-            app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; app.launch()
+            app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; launchWorkbench(app)
             let resumedRow = app.buttons.matching(rowPredicate).firstMatch
             XCTAssertTrue(resumedRow.waitForExistence(timeout: 20)); resumedRow.tap()
             XCTAssertTrue(app.buttons[decision].waitForExistence(timeout: 20))
@@ -163,17 +173,58 @@ final class MobileFlowTests: XCTestCase {
         }
     }
 
-    func testPersonalAgentIsClearlyPlannedAndPreviewDoesNotOfferRealExecution() {
+    private func launchWorkbench(_ app: XCUIApplication) {
+        app.launch()
+        app.tabBars.buttons["Workbench"].tap()
+    }
+
+    func testPairingLinkFromAssistantOpensExistingWorkbench() throws {
+        guard let fixture = Bundle(for: Self.self).url(forResource: "pairing", withExtension: "json"),
+              let data = try? Data(contentsOf: fixture),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let link = values["link"], let url = URL(string: link) else {
+            throw XCTSkip("Start the local iOS fixture before generating the project.")
+        }
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
-        app.tabBars.buttons["Assistant"].tap()
-        XCTAssertTrue(app.staticTexts["Planned"].exists)
-        app.buttons["previewPersonal"].tap()
-        XCTAssertTrue(app.staticTexts["Concept preview · Sample data"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
+        app.open(url)
+        XCTAssertTrue(app.buttons["connectMac"].waitForExistence(timeout: 10))
+        app.buttons["connectMac"].tap()
+        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Mac · Approval fixture")
+    }
+
+    func testPersonalTabsSaveLocallyWithoutInventingAnAssistantOrComputerResult() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label), ["Assistant", "Workbench", "Feed", "Me"])
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 0)
+        let input = app.descendants(matching: .any)["assistantInput"]
+        input.tap(); input.typeText("Keep this idea locally until the assistant is connected.")
+        app.buttons["assistantSend"].tap()
+        XCTAssertTrue(app.staticTexts["assistantReceipt"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["assistantReceipt"].label.contains("No task has been dispatched"))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 1)
         XCTAssertFalse(app.buttons["sendFollowup"].exists)
         XCTAssertFalse(app.buttons["sendTask"].exists)
-        capture(app, name: "Native Personal Agent concept preview")
+        capture(app, name: "Assistant saves an input locally without a fake reply")
+        app.buttons["assistantLive"].tap()
+        XCTAssertTrue(app.alerts["Live is not connected yet"].waitForExistence(timeout: 5))
+        app.alerts.buttons["Done"].tap()
+        app.tabBars.buttons["Feed"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-input.'")).firstMatch.waitForExistence(timeout: 5))
+        capture(app, name: "Feed shows real locally saved input")
+        app.tabBars.buttons["Me"].tap()
+        XCTAssertTrue(app.buttons["savedInputs"].waitForExistence(timeout: 5))
+        capture(app, name: "Personal settings")
+        app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; app.launch()
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 1)
+        app.tabBars.buttons["Me"].tap(); app.buttons["savedInputs"].tap()
+        XCTAssertTrue(app.staticTexts["Keep this idea locally until the assistant is connected."].waitForExistence(timeout: 5))
     }
 
     private func capture(_ app: XCUIApplication, name: String) {

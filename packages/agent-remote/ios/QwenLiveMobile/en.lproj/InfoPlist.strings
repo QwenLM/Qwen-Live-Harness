@@ -1,2 +1,4 @@
 "NSLocalNetworkUsageDescription" = "Connect to your paired computer to submit agent tasks and review permission requests.";
 "NSCameraUsageDescription" = "Scan the pairing QR code displayed on your computer.";
+"NSMicrophoneUsageDescription" = "Turn your speech into editable text on this device.";
+"NSSpeechRecognitionUsageDescription" = "Recognize speech on this device for the assistant input field.";

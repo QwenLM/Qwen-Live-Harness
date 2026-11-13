@@ -4,6 +4,8 @@ struct WorkbenchView: View {
     @EnvironmentObject private var model: AppModel
     let showAssistant: () -> Void
     let showWorkbench: () -> Void
+    @Binding var requestedRoute: ConversationRoute?
+    @Binding var requestedPairingURL: URL?
     @State private var path: [ConversationRoute] = []
     @State private var showComputers = false
     @State private var showPairing = false
@@ -40,7 +42,17 @@ struct WorkbenchView: View {
             }
         }
         .onChange(of: model.contextID) { _, _ in path = []; showNewConversation = false; search = "" }
-        .onOpenURL { url in
+        .onChange(of: requestedRoute, initial: true) { _, route in
+            guard let route else { return }
+            requestedRoute = nil
+            guard route.contextID == model.contextID, route.runID == model.state?.runId,
+                  model.state?.conversations.contains(where: { $0.id == route.conversationID }) == true else { return }
+            showNewConversation = false
+            if path.last != route { path.append(route) }
+        }
+        .onChange(of: requestedPairingURL, initial: true) { _, url in
+            guard let url else { return }
+            requestedPairingURL = nil
             showWorkbench()
             model.preparePairing(link: url.absoluteString)
             if showComputers { pairAfterListDismisses = true; showComputers = false }
@@ -95,7 +107,7 @@ struct WorkbenchView: View {
                 Button(action: showAssistant) {
                     Label {
                         VStack(alignment: .leading, spacing: 4) {
-                            HStack { Text(tr("personalTeaser")).foregroundStyle(.primary); Spacer(); Text(tr("planned")).font(.caption).foregroundStyle(.secondary) }
+                            HStack { Text(tr("personalTeaser")).foregroundStyle(.primary); Spacer(); Text(tr("assistantServicePendingShort")).font(.caption).foregroundStyle(.secondary) }
                             Text(tr("personalTeaserDetail")).font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: "sparkles") }
