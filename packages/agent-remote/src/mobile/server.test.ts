@@ -95,12 +95,83 @@ async function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
 }
 
 it.each(['qwen', 'codex'])(
+  'delivers %s artifacts through authenticated, run-bound read-only endpoints',
+  async (backend) => {
+    const { tasks, call, headers } = await setup('allow-all');
+    const id = randomUUID();
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { id, backend, project: 'fixture', text: 'artifacts: final result' },
+          headers,
+        )
+      ).status,
+    ).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.artifacts).toHaveLength(3),
+    );
+    const task = tasks.snapshot().tasks[0]!;
+    expect(task.artifacts.map((artifact) => artifact.kind)).toEqual([
+      'image',
+      'markdown',
+      'html',
+    ]);
+    const artifact = task.artifacts[1]!;
+    const path = `/v1/tasks/${id}/artifacts/${artifact.id}`;
+    expect((await call(path)).status).toBe(401);
+    expect(
+      (await call(path, undefined, { ...headers, 'x-live-run-id': 'old-run' }))
+        .status,
+    ).toBe(409);
+    expect(
+      (
+        await call(path, undefined, {
+          ...headers,
+          origin: 'https://untrusted.example',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(
+          `/v1/tasks/${randomUUID()}/artifacts/${artifact.id}`,
+          undefined,
+          headers,
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await call(
+          `/v1/tasks/${id}/artifacts/${randomUUID()}`,
+          undefined,
+          headers,
+        )
+      ).status,
+    ).toBe(404);
+    const content = await call(path, undefined, headers);
+    expect(content.status).toBe(200);
+    expect(content.value).toMatchObject({
+      id: artifact.id,
+      taskId: id,
+      runId: tasks.runId,
+      mimeType: 'text/markdown',
+    });
+    expect(
+      Buffer.from(content.value['data'] as string, 'base64').toString(),
+    ).toContain('# Preview report');
+    expect(tasks.snapshot().tasks[0]!.finishedAt).toBe(task.finishedAt);
+  },
+);
+
+it.each(['qwen', 'codex'])(
   'continues %s over HTTPS in the same ACP session without mixing results',
   async (backend) => {
     const { tasks, call, headers } = await setup('allow-all');
     expect(
       (await call('/v1/state', undefined, headers)).value['capabilities'],
-    ).toEqual({ conversationTurns: true });
+    ).toEqual({ conversationTurns: true, artifactPreviews: true });
     const first = {
       id: randomUUID(),
       backend,

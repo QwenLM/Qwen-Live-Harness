@@ -159,6 +159,7 @@ private struct ConversationTurn: View {
                 Text(task.output).font(.body).textSelection(.enabled).accessibilityIdentifier("taskOutput")
                 if task.outputTruncated { Text(tr("outputTruncated")).font(.caption).foregroundStyle(.secondary) }
             }
+            ArtifactList(task: task, contextID: contextID, runID: runID)
             ForEach(task.permissions) { permission in
                 VStack(alignment: .leading, spacing: 12) {
                     Label(tr("permissionTitle"), systemImage: "hand.raised.fill").font(.headline).foregroundStyle(.orange)

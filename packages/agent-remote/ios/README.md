@@ -14,6 +14,8 @@ Select your development team and trusted iPhone, then Run. The display name is A
 
 The app uses native SwiftUI tabs, navigation, lists and forms. Workbench groups conversations by project; follow-ups retain the same owned agent session, with separate per-turn results, approvals and cancellation. Drafts are isolated by computer, service run and conversation. Assistant is a planned feature with a read-only, clearly labeled concept preview; persistent personal memory and proactive push remain unimplemented. Upgrade the gateway together with the app for multi-turn support. Computer-service restarts do not restore old sessions.
 
+Finished turns show a fixed run duration. Open **Artifacts** below a reply to preview images, Markdown or static HTML. Preview support requires the updated gateway and app; see the [gateway guide](../README.md#ios-app) for supported files and limits.
+
 Simulator example:
 
 ```sh

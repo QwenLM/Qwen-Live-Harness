@@ -1,6 +1,49 @@
 import XCTest
 
 final class MobileFlowTests: XCTestCase {
+    func testArtifactPreviewsAndFinishedDuration() throws {
+        guard let fixture = Bundle(for: Self.self).url(forResource: "artifacts", withExtension: "json"),
+              let data = try? Data(contentsOf: fixture),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String: String], let link = values["link"] else {
+            throw XCTSkip("Start the artifact iOS fixture before generating the project.")
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
+        app.launchEnvironment["QWEN_LIVE_PAIRING"] = link
+        app.launch(); app.buttons["connectMac"].tap()
+        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        app.buttons["newConversation"].tap()
+        app.segmentedControls.buttons["Codex"].tap()
+        let input = app.textViews["taskInput"]; input.tap(); input.typeText("artifacts: final outputs")
+        app.buttons["sendTask"].tap()
+        XCTAssertTrue(app.buttons["artifact-report.md"].waitForExistence(timeout: 20))
+        capture(app, name: "Final artifacts in the conversation")
+        app.buttons["artifact-report.md"].tap()
+        XCTAssertTrue(app.staticTexts["Preview report"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Finished output"].exists)
+        capture(app, name: "Markdown artifact preview")
+        app.buttons["closePreview"].tap()
+        app.buttons["artifact-index.html"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["Preview page"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.webViews.staticTexts["Rendered HTML result"].exists)
+        XCTAssertFalse(app.webViews.staticTexts["SCRIPT EXECUTED"].exists)
+        capture(app, name: "Static HTML artifact preview")
+        app.buttons["closePreview"].tap()
+        app.buttons["artifact-output.png"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["imagePreview"].waitForExistence(timeout: 15))
+        capture(app, name: "Image artifact preview")
+        app.buttons["closePreview"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let elapsed = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH 'elapsed-'")).firstMatch
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
+        let duration = try XCTUnwrap(elapsed.value as? String)
+        XCTAssertNotNil(duration.range(of: #"\d+:\d{2}:\d{2}"#, options: .regularExpression))
+        let unchanged = NSPredicate { _, _ in elapsed.value as? String != duration }
+        let expectation = XCTNSPredicateExpectation(predicate: unchanged, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 3), .timedOut)
+        XCTAssertEqual(elapsed.value as? String, duration)
+        capture(app, name: "Completed duration stays fixed")
+    }
     func testMultipleComputersSwitchAndSurviveRelaunchWithoutNewPairing() throws {
         guard let fixture = Bundle(for: Self.self).url(forResource: "computers", withExtension: "json"),
               let data = try? Data(contentsOf: fixture),

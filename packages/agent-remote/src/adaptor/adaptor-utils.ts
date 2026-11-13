@@ -381,8 +381,7 @@ export function describePermissionDetails(
     toolCall['_meta'] !== undefined &&
     (!meta ||
       Object.keys(meta).some((key) => key !== 'toolName') ||
-      (meta['toolName'] !== undefined &&
-        typeof meta['toolName'] !== 'string'))
+      (meta['toolName'] !== undefined && typeof meta['toolName'] !== 'string'))
   )
     incomplete = true;
   if (Object.keys(toolCall).some((key) => !metadataKeys.has(key)))

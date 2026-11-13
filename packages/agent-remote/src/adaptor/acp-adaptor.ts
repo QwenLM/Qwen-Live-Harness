@@ -43,6 +43,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { publicActivity } from './public-activity.js';
+import { artifactContents } from './artifact-content.js';
 import { basename } from 'node:path';
 import { Writable } from 'node:stream';
 import { Readable } from 'node:stream';
@@ -981,6 +982,14 @@ export class AcpAdaptor implements BackendAdaptor {
     if (!state || state.closed) return;
     const update = isRecord(params['update']) ? params['update'] : {};
     const kind = update['sessionUpdate'];
+    if (state.busy && state.activeJobRef) {
+      for (const source of artifactContents(update))
+        state.queue.push({
+          type: 'artifact',
+          jobRef: state.activeJobRef,
+          source,
+        });
+    }
     const activity = publicActivity(update, state.activeJobRef, state.cwd);
     if (activity) state.queue.push(activity);
     if (kind === 'agent_message_chunk') {

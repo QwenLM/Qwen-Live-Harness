@@ -149,10 +149,25 @@ private struct ConversationRow: View {
                     .foregroundStyle(.secondary)
                 StatusBadge(status: conversation.latest.status)
                 Spacer()
-                Text(Date(timeIntervalSince1970: conversation.latest.updatedAt / 1000), style: .relative).foregroundStyle(.secondary)
+                TaskElapsedTime(task: conversation.latest).foregroundStyle(.secondary)
             }.font(.caption)
             if !conversation.latest.permissions.isEmpty { Label(tr("needsDecision"), systemImage: "hand.raised.fill").font(.caption).foregroundStyle(.orange) }
         }.padding(.vertical, 4)
+    }
+}
+
+struct TaskElapsedTime: View {
+    let task: RemoteTask
+    var body: some View {
+        Group {
+            if task.terminal { label(at: Date()) }
+            else { TimelineView(.periodic(from: .now, by: 1)) { label(at: $0.date) } }
+        }.monospacedDigit().accessibilityIdentifier("elapsed-\(task.id)")
+            .accessibilityLabel(tr("runDuration"))
+    }
+    private func label(at date: Date) -> some View {
+        let value = Duration.seconds(task.elapsed(at: date)).formatted(.time(pattern: .hourMinuteSecond(padHourToLength: 1)))
+        return Text(value).accessibilityValue(value)
     }
 }
 

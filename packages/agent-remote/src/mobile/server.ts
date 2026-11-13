@@ -143,6 +143,14 @@ export class MobileServer {
     // Mutations are bound to the Mac process that the phone actually observed.
     if (req.headers['x-live-run-id'] !== this.tasks.runId)
       throw new MobileError(409, 'server_restarted');
+    const artifact =
+      /^\/v1\/tasks\/([a-f0-9-]{36})\/artifacts\/([a-f0-9-]{36})$/u.exec(
+        req.url ?? '',
+      );
+    if (req.method === 'GET' && artifact) {
+      this.reply(res, 200, this.tasks.artifact(artifact[1]!, artifact[2]!));
+      return;
+    }
     if (req.method === 'POST' && req.url === '/v1/pairing') {
       const address = req.socket.remoteAddress;
       if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? ''))

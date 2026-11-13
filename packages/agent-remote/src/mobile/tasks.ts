@@ -9,7 +9,10 @@ import type {
   BackendAdaptor,
   BackendEvent,
   BackendHandle,
+  ArtifactSource,
 } from '../adaptor/types.js';
+import { artifactReferences } from '../adaptor/artifact-content.js';
+import { MobileArtifacts, type MobileArtifact } from './artifacts.js';
 import {
   redactPermissionText,
   stripControlSequences,
@@ -66,9 +69,13 @@ export interface MobileTask {
   status: MobileTaskStatus;
   createdAt: number;
   updatedAt: number;
+  finishedAt?: number;
   activity: string;
   output: string;
   outputTruncated: boolean;
+  artifacts: MobileArtifact[];
+  artifactsPending?: boolean;
+  artifactNotice?: string;
   permissions: MobilePermission[];
   events: Array<{ id: string; kind: string; text: string; at: number }>;
 }
@@ -78,10 +85,13 @@ interface OwnedTask {
   handle?: BackendHandle;
   jobRef?: string;
   buffered: BackendEvent[];
+  bufferedArtifactBytes: number;
   admitted: boolean;
   attempted: boolean;
   cancelRequested: boolean;
   controller: AbortController;
+  artifactSources: ArtifactSource[];
+  artifactBytes: number;
 }
 
 const TERMINAL = new Set<MobileTaskStatus>([
@@ -118,6 +128,8 @@ export class MobileTasks {
   private readonly broker: PermissionBroker;
   private readonly permissionMode: PermissionBrokerMode;
   private closed = false;
+  private readonly artifacts = new MobileArtifacts();
+  private artifactSourceBytes = 0;
 
   constructor(
     private readonly adaptors: ReadonlyMap<string, BackendAdaptor>,
@@ -166,7 +178,7 @@ export class MobileTasks {
       version: 1,
       runId: this.runId,
       permissionMode: this.permissionMode,
-      capabilities: { conversationTurns: true },
+      capabilities: { conversationTurns: true, artifactPreviews: true },
       backends: [...this.adaptors.keys()].map((id) => ({
         id,
         name: id === 'qwen' ? 'Qwen Code' : id === 'codex' ? 'Codex' : id,
@@ -214,6 +226,7 @@ export class MobileTasks {
           ),
       })),
       events: [...task.view.events],
+      artifacts: task.view.artifacts.map((artifact) => ({ ...artifact })),
     };
   }
 
@@ -297,14 +310,18 @@ export class MobileTasks {
         activity: '',
         output: '',
         outputTruncated: false,
+        artifacts: [],
         permissions: [],
         events: [],
       },
       controller: new AbortController(),
       buffered: [],
+      bufferedArtifactBytes: 0,
       admitted: false,
       attempted: false,
       cancelRequested: false,
+      artifactSources: [],
+      artifactBytes: 0,
       ...(previous?.handle ? { handle: previous.handle } : {}),
     };
     this.tasks.set(id, task);
@@ -381,6 +398,7 @@ export class MobileTasks {
       this.event(task, 'status', 'Task accepted by the agent');
       for (const event of task.buffered.splice(0))
         await this.consume(task, event);
+      task.bufferedArtifactBytes = 0;
       if (task.cancelRequested && !TERMINAL.has(task.view.status))
         await this.stopOwned(task).catch(() => {});
     } catch (error) {
@@ -399,6 +417,20 @@ export class MobileTasks {
       })) {
         if (this.closed || TERMINAL.has(task.view.status)) break;
         if (!task.admitted) {
+          if (event.type === 'artifact') {
+            const bytes =
+              event.source.type === 'inline'
+                ? event.source.data.length
+                : event.source.uri.length;
+            if (
+              task.bufferedArtifactBytes + bytes > 24 * 1024 * 1024 ||
+              task.buffered.length >= 64
+            ) {
+              task.view.artifactNotice = 'artifact_limit';
+              continue;
+            }
+            task.bufferedArtifactBytes += bytes;
+          }
           if (task.buffered.length >= 128) {
             this.finish(
               task,
@@ -430,6 +462,9 @@ export class MobileTasks {
     if ('jobRef' in event && event.jobRef && event.jobRef !== task.jobRef)
       return;
     switch (event.type) {
+      case 'artifact':
+        this.addArtifactSource(task, event.source);
+        break;
       case 'activity': {
         this.event(task, event.kind, event.text);
         if (event.kind === 'message') {
@@ -471,6 +506,8 @@ export class MobileTasks {
         this.broker.onResolved(task.handle!, event.requestId);
         break;
       case 'turn_complete':
+        for (const source of artifactReferences(event.detail ?? event.summary))
+          this.addArtifactSource(task, source);
         this.finish(task, 'completed', event.detail ?? event.summary);
         break;
       case 'turn_error':
@@ -502,6 +539,35 @@ export class MobileTasks {
     task.view.events = task.view.events.slice(-24);
   }
 
+  private addArtifactSource(task: OwnedTask, source: ArtifactSource): void {
+    if (
+      source.type === 'file' &&
+      task.artifactSources.some(
+        (entry) => entry.type === 'file' && entry.uri === source.uri,
+      )
+    )
+      return;
+    const size =
+      source.type === 'file' ? source.uri.length : source.data.length;
+    if (
+      task.artifactSources.length >= 48 ||
+      task.artifactBytes + size > 24 * 1024 * 1024 ||
+      this.artifactSourceBytes + size > 64 * 1024 * 1024
+    ) {
+      task.view.artifactNotice = 'artifact_limit';
+      return;
+    }
+    task.artifactSources.push(source);
+    task.artifactBytes += size;
+    this.artifactSourceBytes += size;
+  }
+
+  artifact(taskId: string, id: string) {
+    const content = this.artifacts.content(taskId, id);
+    if (!content) throw new MobileError(404, 'artifact_unavailable');
+    return { ...content, runId: this.runId };
+  }
+
   private finish(
     task: OwnedTask,
     status: MobileTaskStatus,
@@ -514,8 +580,40 @@ export class MobileTasks {
       task.view.output = clean(text);
     }
     this.event(task, 'status', text);
+    task.view.finishedAt = task.view.updatedAt;
     this.broker.clearSession(task.view.id);
     task.controller.abort();
+    task.buffered = [];
+    task.bufferedArtifactBytes = 0;
+    if (status === 'completed' && task.artifactSources.length) {
+      task.view.artifactsPending = true;
+      const project = this.projects.find(
+        (entry) => entry.id === task.view.project,
+      )!;
+      this.track(
+        this.artifacts
+          .collect(task.view.id, project.path, task.artifactSources)
+          .then((result) => {
+            if (!this.closed && this.tasks.get(task.view.id) === task) {
+              task.view.artifacts = result.artifacts;
+              task.view.artifactNotice ??= result.notice;
+            }
+          })
+          .catch(() => {
+            task.view.artifactNotice = 'artifact_unavailable';
+          })
+          .finally(() => {
+            task.view.artifactsPending = false;
+            this.artifactSourceBytes -= task.artifactBytes;
+            task.artifactSources = [];
+            task.artifactBytes = 0;
+          }),
+      );
+    } else {
+      this.artifactSourceBytes -= task.artifactBytes;
+      task.artifactSources = [];
+      task.artifactBytes = 0;
+    }
   }
 
   async permission(
@@ -600,6 +698,7 @@ export class MobileTasks {
       [...this.adaptors.values()].map((adaptor) => adaptor.close()),
     );
     await Promise.allSettled([...this.operations]);
+    this.artifacts.clear();
     if (outcomes.some((outcome) => outcome.status === 'rejected'))
       throw new Error('Agent cleanup failed; check the Mac');
   }

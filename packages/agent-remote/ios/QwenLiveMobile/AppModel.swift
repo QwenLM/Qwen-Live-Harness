@@ -284,6 +284,22 @@ final class AppModel: ObservableObject {
 
     func clearPending() { pending = nil; saveCurrentWorkspace() }
 
+    func loadArtifact(_ artifact: RemoteArtifact, taskID: String, expectedContext: UUID, runID: String) async throws -> Data {
+        guard contextID == expectedContext, let api, state?.runId == runID,
+              UUID(uuidString: taskID) != nil, UUID(uuidString: artifact.id) != nil,
+              (1...8 * 1024 * 1024).contains(artifact.size),
+              state?.tasks.first(where: { $0.id == taskID })?.artifacts?.contains(artifact) == true else {
+            throw MobileFailure.remote(409, "artifact_unavailable")
+        }
+        let content: ArtifactContent = try await api.request("v1/tasks/\(taskID)/artifacts/\(artifact.id)", body: nil, runId: runID)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard content.id == artifact.id, content.taskId == taskID, content.runId == runID,
+              content.mimeType == artifact.mimeType, content.data.utf8.count <= 12 * 1024 * 1024,
+              let data = Data(base64Encoded: content.data), data.count == artifact.size else { throw MobileFailure.invalidResponse }
+        return data
+    }
+
     func control(task: RemoteTask, permission: RemotePermission? = nil, decision: String? = nil,
                  expectedContext: UUID, expectedRunID: String) async {
         guard contextID == expectedContext, !busy, let api, let state, state.runId == expectedRunID,

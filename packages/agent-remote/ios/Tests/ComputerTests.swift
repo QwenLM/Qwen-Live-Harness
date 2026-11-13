@@ -92,6 +92,59 @@ final class ComputerTests: XCTestCase {
         XCTAssertNil(reopened.connection)
     }
 
+    func testArtifactReadsUseOnlyTheOwnedTurnAndRejectMismatchedResponses() async throws {
+        let a = computer("a"), taskID = UUID().uuidString.lowercased(), artifactID = UUID().uuidString.lowercased()
+        let text = "# Preview", encoded = Data("# Preview".utf8).base64EncodedString()
+        var item = task("work", id: taskID)
+        let metadata: [String: Any] = ["id": artifactID, "name": "report.md", "mimeType": "text/markdown", "kind": "markdown", "size": text.utf8.count]
+        item["artifacts"] = [metadata]; item["status"] = "completed"
+        var responseID = artifactID
+        let api = StubAPI { path, _, _ in
+            if path == "v1/state" { return try self.state("a", tasks: [item]) }
+            return try self.json(["id": responseID, "taskId": taskID, "runId": "same-run", "mimeType": "text/markdown", "data": encoded])
+        }
+        let model = AppModel(storage: store([a]), defaults: defaults(), makeAPI: { _ in api })
+        await model.refresh()
+        let artifact = try XCTUnwrap(model.state?.tasks.first?.artifacts?.first)
+        let content = try await model.loadArtifact(artifact, taskID: taskID, expectedContext: model.contextID, runID: "same-run")
+        XCTAssertEqual(String(data: content, encoding: .utf8), text)
+        XCTAssertEqual(api.calls.last?.path, "v1/tasks/\(taskID)/artifacts/\(artifactID)")
+        XCTAssertEqual(api.calls.last?.runID, "same-run"); XCTAssertNil(api.calls.last?.body)
+        responseID = UUID().uuidString.lowercased()
+        do { _ = try await model.loadArtifact(artifact, taskID: taskID, expectedContext: model.contextID, runID: "same-run"); XCTFail("Mismatched artifact must not display") }
+        catch MobileFailure.invalidResponse { }
+        let count = api.calls.count
+        do { _ = try await model.loadArtifact(artifact, taskID: UUID().uuidString, expectedContext: model.contextID, runID: "same-run"); XCTFail("Unknown turn must not be requested") }
+        catch { }
+        XCTAssertEqual(api.calls.count, count)
+    }
+
+    func testLateArtifactReadCannotCrossComputerSelectionsOrServerRuns() async throws {
+        for switchComputer in [true, false] {
+            let a = computer("a"), b = computer("b"), gate = ReplyGate()
+            let taskID = UUID().uuidString.lowercased(), artifactID = UUID().uuidString.lowercased()
+            var item = task("work", id: taskID)
+            item["artifacts"] = [["id": artifactID, "name": "report.md", "mimeType": "text/markdown", "kind": "markdown", "size": 2]]
+            var run = "same-run"
+            let api = StubAPI { path, _, _ in
+                if path == "v1/state" { return try self.state("a", run: run, tasks: [item]) }
+                return await gate.wait()
+            }
+            let apiB = StubAPI { _, _, _ in try self.state("b") }
+            let model = AppModel(storage: store([a, b]), defaults: defaults(), makeAPI: { $0.pin == a.connection.pin ? api : apiB })
+            await model.refresh()
+            let artifact = try XCTUnwrap(model.state?.tasks.first?.artifacts?.first), context = model.contextID
+            let loading = Task { try await model.loadArtifact(artifact, taskID: taskID, expectedContext: context, runID: "same-run") }
+            await waitFor { gate.waiting }
+            if switchComputer { XCTAssertTrue(model.selectComputer(b.id)) } else { run = "restarted-run" }
+            await model.refresh()
+            gate.resolve(try json(["id": artifactID, "taskId": taskID, "runId": "same-run", "mimeType": "text/markdown", "data": Data("ok".utf8).base64EncodedString()]))
+            do { _ = try await loading.value; XCTFail("Old preview must not be displayed") }
+            catch is CancellationError { }
+            XCTAssertEqual(model.state?.projects.first?.name, switchComputer ? "b" : "a")
+        }
+    }
+
     func testPairTwoComputersSwitchAndRestoreWithoutPairingAgain() async throws {
         let a = computer("a"), b = computer("b"), storage = store([]), preferences = defaults()
         let apiA = StubAPI { path, _, _ in path == "v1/pair" ? try self.json(["token": a.connection.token, "runId": "a-run"]) : try self.state("a") }

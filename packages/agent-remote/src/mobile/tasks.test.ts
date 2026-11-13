@@ -63,6 +63,7 @@ class FakeAdaptor implements BackendAdaptor {
 const services: MobileTasks[] = [];
 afterEach(async () => {
   await Promise.all(services.splice(0).map((service) => service.close()));
+  vi.restoreAllMocks();
 });
 function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
   const qwen = new FakeAdaptor('qwen'),
@@ -93,6 +94,120 @@ const permission: BackendEvent = {
 };
 
 describe('mobile task ownership', () => {
+  it('bounds early artifact bursts without interrupting the owned task', async () => {
+    const { service, qwen, submit } = setup();
+    const source = {
+      type: 'inline' as const,
+      mimeType: 'image/png',
+      data: Buffer.alloc(1024 * 1024).toString('base64'),
+    };
+    qwen.early = Array.from({ length: 40 }, () => ({
+      type: 'artifact' as const,
+      jobRef: 'job-1',
+      source,
+    }));
+    submit();
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('running'),
+    );
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-1', summary: 'Done' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.artifactsPending).toBe(false),
+    );
+    expect(service.snapshot().tasks[0]).toMatchObject({
+      status: 'completed',
+      artifactNotice: 'artifact_limit',
+    });
+    expect(service.snapshot().tasks[0]!.artifacts).toHaveLength(1);
+  });
+  it('freezes the terminal timestamp while artifact preparation and later events finish', async () => {
+    const { service, qwen, submit } = setup();
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'artifact',
+      jobRef: 'job-1',
+      source: {
+        type: 'inline',
+        mimeType: 'text/markdown',
+        data: Buffer.from('# Result').toString('base64'),
+      },
+    });
+    now = 5_000;
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-1', summary: 'Done' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.artifacts).toHaveLength(1),
+    );
+    now = 50_000;
+    qwen.emit({
+      type: 'activity',
+      jobRef: 'job-1',
+      kind: 'message',
+      text: 'late',
+    });
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-1', summary: 'duplicate' });
+    await Promise.resolve();
+    expect(service.snapshot().tasks[0]).toMatchObject({
+      createdAt: 1_000,
+      finishedAt: 5_000,
+      updatedAt: 5_000,
+      output: 'Done',
+      status: 'completed',
+    });
+  });
+
+  it('keeps artifacts bound to the exact admitted turn across follow-ups and cancellation', async () => {
+    const { service, qwen, submit } = setup();
+    const first = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    const source = {
+      type: 'inline' as const,
+      mimeType: 'text/markdown',
+      data: Buffer.from('# Owned result').toString('base64'),
+    };
+    qwen.emit({ type: 'artifact', jobRef: 'stale', source });
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'No artifact from the stale job',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    expect(service.snapshot().tasks[0]!.artifacts).toEqual([]);
+    const second = service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      text: 'Follow up',
+      conversationId: first.id,
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    qwen.emit({ type: 'artifact', jobRef: 'job-1', source });
+    qwen.emit({ type: 'artifact', jobRef: 'job-2', source });
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-2', summary: 'Done' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.artifacts).toHaveLength(1),
+    );
+    const artifact = service.snapshot().tasks[0]!.artifacts[0]!;
+    expect(service.artifact(second.id, artifact.id).taskId).toBe(second.id);
+    expect(() => service.artifact(first.id, artifact.id)).toThrow(
+      'artifact_unavailable',
+    );
+    expect(service.snapshot().tasks[1]!.artifacts).toEqual([]);
+    const third = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(3));
+    qwen.emit({ type: 'artifact', jobRef: 'job-3', source });
+    await service.cancel(third.id);
+    qwen.emit({ type: 'turn_error', jobRef: 'job-3', error: 'cancelled' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('cancelled'),
+    );
+    qwen.emit({ type: 'artifact', jobRef: 'job-3', source });
+    expect(service.snapshot().tasks[0]!.artifacts).toEqual([]);
+  });
   it('continues the exact owned session with independent, deduplicated turns', async () => {
     const { service, qwen, submit } = setup();
     const first = submit();

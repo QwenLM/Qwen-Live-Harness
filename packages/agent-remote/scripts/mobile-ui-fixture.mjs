@@ -67,6 +67,13 @@ try {
   writeFileSync(join(fixtures, 'computers.json'), JSON.stringify(computers), {
     mode: 0o600,
   });
+  writeFileSync(
+    join(fixtures, 'artifacts.json'),
+    JSON.stringify(
+      await computer('artifacts', 'Artifact Preview Mac', 'allow-all'),
+    ),
+    { mode: 0o600 },
+  );
   console.log(
     'iOS HTTPS/ACP fixtures ready: one approval flow and two independent computers. Generate the Xcode project now.',
   );

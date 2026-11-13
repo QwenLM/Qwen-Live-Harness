@@ -149,6 +149,7 @@ export interface PermissionOption {
 }
 
 export type BackendEvent =
+  | { type: 'artifact'; jobRef: string; source: ArtifactSource }
   | { type: 'turn_started'; jobRef?: string }
   | { type: 'turn_joined'; messageId: string; jobRef: string }
   | {
@@ -181,6 +182,11 @@ export type BackendEvent =
   | { type: 'turn_complete'; jobRef?: string; summary: string; detail?: string }
   | { type: 'turn_error'; jobRef?: string; error: string }
   | { type: 'session_closed' };
+
+/** Display-only output. File references are checked against the owned project. */
+export type ArtifactSource =
+  | { type: 'file'; uri: string }
+  | { type: 'inline'; mimeType: string; data: string; name?: string };
 
 /**
  * `allow` is a one-shot grant. `allow_always` asks the backend to remember

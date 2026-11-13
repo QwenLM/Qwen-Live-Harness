@@ -150,6 +150,42 @@ new AgentSideConnection(
         },
       });
 
+      if (text.includes('artifacts:')) {
+        // Display fixtures only: no filesystem access, account or model call.
+        for (const content of [
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            data: 'iVBORw0KGgoAAAANSUhEUgAAAKAAAAB4CAIAAAD6wG44AAACcUlEQVR4nO3dyY1bQRAE0fFLlsgKWS0PdNBRBwLEQLNgFv7OyqgAwoBmvgNXsJ/+/vlt4J7iJ7BLExiewPAEhicwPIHhCQxPYHgCwxMYnsDwBIYnMDyB4e0C/vHr5634SY61CPiuu8p4C/B/unuMVwC/qrvEGA78Du0SZjLwB3XZxljgT+mCjZnAX9ClGtOAv0xLZUYBP0QXZswBfqAuyRgC/HBdjHE98EW0GOZu4AO67cbFwMd0q41bgQ/r9hr3AUdoe5nLgOO6dcZNwHHXRuMa4LhoqXEBcByymnk6cNyv3Xg0cFwOYDwXOG7GMJ4IHKciMY8DjgvBjGcBx214xoOA4ypI4xHAcQwwcx44bsA2DgPH18cbJ4Hju28wzgDH597DHACOr7zK+DRwfN8JYYHjy86JBhwfdGYQ4PiOk6sHji84v2Lg+HYttQJrnNX1OTjf1eP7Kpqs6/tgMm0AWOPDun4WDdf12yS4rt8Hk2nzwHuMgwv7myyy7ghgtnF82xHASOb4nuOAScbxJYcCM4zjG44GbjeOr1cAXMocX6wMuMs4vlUlcItxfKVi4PnG8X3qgccyxzdBAU8zjq8BBJ5jHN8BCzzBOL4AHDjIHH/Ui4D9x3c+sHc28IG9dYUPfClz/HF9PwiwN5+9FQfYuwtfDQXs7aMvowHfkvYeE9gbwO9hgT9rHD/tRZGBP24cP+d1wYFv7aS9tQL4LeP4qQ60Bfilcfw8Z1oE/Nw4fpJjCQxPYHgCwxMYnsDwBIYnMDyB4QkMT2B4u4AXJjA8geEJDE9geALDExiewPAEhicwPIHhCQxPYHgCwxMYnsDw/gHaFv8R0UnRJAAAAABJRU5ErkJggg==',
+          },
+          {
+            type: 'resource',
+            resource: {
+              uri: 'report.md',
+              mimeType: 'text/markdown',
+              text: '# Preview report\n\n**Finished output**\n\n- First result\n- Second result\n\n```swift\nlet done = true\n```',
+            },
+          },
+          {
+            type: 'resource',
+            resource: {
+              uri: 'index.html',
+              mimeType: 'text/html',
+              text: '<h1>Preview page</h1><p style="color:teal">Rendered HTML result</p><script>document.body.textContent="SCRIPT EXECUTED"</script>',
+            },
+          },
+        ])
+          await connection.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'artifact-fixture',
+              status: 'completed',
+              content: [{ type: 'content', content }],
+            },
+          });
+      }
+
       if (text.includes('permission:') && asksForApproval()) {
         const response = await connection.requestPermission({
           sessionId,

@@ -148,3 +148,13 @@
 "conversation_target_mismatch" = "A conversation keeps its original agent and project. Start a new conversation to change them.";
 "conversation_busy" = "This turn is still running. Wait for it to finish or request a stop.";
 "conversation_unavailable" = "The agent session cannot be continued. Review its outcome on the computer before starting a new conversation.";
+"runDuration" = "Run duration";
+"artifacts" = "Artifacts";
+"preview" = "Preview";
+"preparingArtifacts" = "Preparing artifacts…";
+"loadingPreview" = "Loading preview…";
+"previewUnavailable" = "Preview unavailable";
+"staticHTMLPreview" = "Static preview · Scripts and external requests are disabled";
+"previewTruncated" = "Showing the first 512,000 characters.";
+"artifact_unavailable" = "A referenced file could not be previewed. Save outputs inside the shared project folder; missing files and links outside it are unavailable.";
+"artifact_limit" = "Some artifacts exceed the preview limits: 8 MB per file, 12 files and 16 MB per turn, with 64 MB retained by the service.";

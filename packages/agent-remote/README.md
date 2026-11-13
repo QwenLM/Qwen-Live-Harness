@@ -134,7 +134,9 @@ The native SwiftUI app opens **Workbench**, grouping conversations by project. S
 
 Drafts, agent/project choices and unconfirmed submissions are retained separately for each computer. Switching neither stops remote work nor replays old requests on another computer. The previous single-computer credential and pending submission migrate automatically. Re-pair only when its certificate or authorization becomes invalid. Forgetting removes that computer's phone records without stopping its tasks.
 
-This version supports local networks, without internet relay, background push, voice or file previews.
+Completed turns retain a fixed run duration. **Artifacts** below each reply previews images, Markdown and static HTML reported by the agent. Files must be inside the shared project folder (including resolved symlink targets); inline ACP images and embedded documents are also supported. Previews use the paired HTTPS connection and immutable snapshots, limited to 8 MB per file, 12 files / 16 MB per turn and 64 MB per service run. HTML scripts, external requests and navigation are disabled; text previews show at most 512,000 characters. Missing or out-of-project files show an explanation. Upgrade both the gateway and iOS app for previews; old services retain text-only results.
+
+This version supports local networks, without internet relay, background push or voice.
 
 ## Development, verification and extraction
 

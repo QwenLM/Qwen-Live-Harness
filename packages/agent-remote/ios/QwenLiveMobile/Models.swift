@@ -105,7 +105,7 @@ struct RemoteState: Decodable {
     }
 }
 
-struct RemoteCapabilities: Decodable { let conversationTurns: Bool? }
+struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool? }
 
 struct RemoteConversation: Identifiable {
     let id: String
@@ -138,12 +138,37 @@ struct RemoteTask: Decodable, Identifiable {
     let status: String
     let createdAt: Double
     let updatedAt: Double
+    let finishedAt: Double?
     let activity: String
     let output: String
     let outputTruncated: Bool
+    let artifacts: [RemoteArtifact]?
+    let artifactsPending: Bool?
+    let artifactNotice: String?
     let permissions: [RemotePermission]
     let events: [RemoteEvent]
     var terminal: Bool { ["completed", "failed", "cancelled", "interrupted"].contains(status) }
+
+    func elapsed(at date: Date) -> TimeInterval {
+        let end = terminal ? (finishedAt ?? updatedAt) / 1000 : date.timeIntervalSince1970
+        return max(0, end - createdAt / 1000)
+    }
+}
+
+struct RemoteArtifact: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let mimeType: String
+    let kind: String
+    let size: Int
+}
+
+struct ArtifactContent: Decodable {
+    let id: String
+    let taskId: String
+    let runId: String
+    let mimeType: String
+    let data: String
 }
 
 struct RemotePermission: Decodable, Identifiable {

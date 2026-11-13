@@ -148,3 +148,13 @@
 "conversation_target_mismatch" = "会话沿用原来的 Agent 和项目，需要更换时请新建会话。";
 "conversation_busy" = "本轮仍在执行，请等待完成或请求停止。";
 "conversation_unavailable" = "这个 Agent 会话已无法继续，请先在电脑核对执行结果，再新建会话。";
+"runDuration" = "运行耗时";
+"artifacts" = "产物";
+"preview" = "预览";
+"preparingArtifacts" = "正在准备产物…";
+"loadingPreview" = "正在载入预览…";
+"previewUnavailable" = "暂时无法预览";
+"staticHTMLPreview" = "静态预览 · 不执行脚本和外部请求";
+"previewTruncated" = "仅展示前 512,000 个字符。";
+"artifact_unavailable" = "部分引用文件无法预览。请将产物保存在共享项目目录中；文件缺失或链接指向目录外时无法读取。";
+"artifact_limit" = "部分产物超出预览限制：单文件 8 MB，每轮最多 12 个文件、共 16 MB，服务总计保留 64 MB。";
