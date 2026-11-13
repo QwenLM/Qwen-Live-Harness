@@ -1,0 +1,2544 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>我的助手 · iOS V2</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #fafbf8;
+        --surface: #fffefa;
+        --ink: #25352e;
+        --muted: #758077;
+        --line: #e8ece5;
+        --green: #315b49;
+        --soft: #edf2e9;
+        --sand: #f0e4d7;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #eef0eb;
+        color: var(--ink);
+        font-family: 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        border: 0;
+        background: none;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible,
+      a:focus-visible {
+        outline: 2px solid #527954;
+        outline-offset: 3px;
+      }
+      svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .review-bar {
+        height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 32px;
+        border-bottom: 1px solid #dce2d7;
+        gap: 16px;
+      }
+      .review-brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .review-brand svg {
+        width: 19px;
+        height: 19px;
+      }
+      .v2 {
+        font-size: 10px;
+        font-weight: 500;
+        background: #dfe7d8;
+        border-radius: 5px;
+        padding: 4px 6px;
+      }
+      .review-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .review-actions button {
+        min-height: 44px;
+        padding: 0 14px;
+        font-size: 12px;
+        border-radius: 25px;
+      }
+      .review-actions button.active {
+        background: #dde5d8;
+      }
+      .review-actions .lang {
+        border: 1px solid #d3dccd;
+        min-width: 48px;
+        padding: 0 10px;
+        margin-left: 8px;
+      }
+      .preview {
+        display: grid;
+        grid-template-columns: 230px 393px;
+        gap: 88px;
+        justify-content: center;
+        align-items: center;
+        padding: 47px 30px 55px;
+      }
+      .review-copy {
+        align-self: center;
+      }
+      .review-copy .eyebrow {
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        color: #76816f;
+      }
+      .review-copy h1 {
+        font-size: 32px;
+        line-height: 1.55;
+        font-weight: 500;
+        letter-spacing: -0.045em;
+        margin: 18px 0 22px;
+      }
+      .review-copy p {
+        font-size: 13px;
+        line-height: 1.95;
+        color: #657360;
+        margin: 0;
+      }
+      .review-copy .rule {
+        width: 24px;
+        height: 1px;
+        background: #adbda2;
+        margin: 30px 0;
+      }
+      .review-copy .demo {
+        font-size: 11px;
+        color: #7c8575;
+        margin-top: 27px;
+        line-height: 1.85;
+      }
+      .device {
+        position: relative;
+        width: 393px;
+        height: 852px;
+        background: var(--bg);
+        border: 1px solid #bdc4b6;
+        border-radius: 43px;
+        overflow: hidden;
+        box-shadow:
+          0 0 0 7px #27362c,
+          0 0 0 9px #b1baaa,
+          0 20px 45px #31452a0e;
+        display: flex;
+        flex-direction: column;
+      }
+      .statusbar {
+        height: 49px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 3px 25px 0 29px;
+        position: relative;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .island {
+        width: 104px;
+        height: 28px;
+        border-radius: 20px;
+        background: #1e271f;
+        position: absolute;
+        top: 11px;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      .status-icons {
+        display: flex;
+        gap: 4px;
+      }
+      .status-icons svg {
+        width: 15px;
+        height: 15px;
+        stroke-width: 1.9;
+      }
+      .phone-content {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        position: relative;
+      }
+      .app-header {
+        height: 65px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 2px 18px 0 24px;
+        flex-shrink: 0;
+      }
+      .app-header h1 {
+        font-size: 23px;
+        font-weight: 650;
+        letter-spacing: -0.035em;
+        margin: 0;
+      }
+      .app-header .inline-title {
+        font-size: 15px;
+        font-weight: 550;
+      }
+      .icon-button {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .icon-button:hover {
+        background: #eaf0e4;
+      }
+      .header-spacer {
+        width: 44px;
+      }
+      .scroll {
+        overflow: auto;
+        flex: 1;
+        min-height: 0;
+        scrollbar-width: none;
+        overscroll-behavior: contain;
+      }
+      .scroll::-webkit-scrollbar {
+        display: none;
+      }
+      .home-indicator {
+        width: 124px;
+        height: 5px;
+        background: #293a2c;
+        border-radius: 4px;
+        position: absolute;
+        bottom: 7px;
+        left: 50%;
+        transform: translateX(-50%);
+        pointer-events: none;
+        z-index: 20;
+      }
+      .tabbar {
+        display: flex;
+        flex-shrink: 0;
+        height: 78px;
+        border-top: 1px solid var(--line);
+        padding: 6px 9px 18px;
+        background: var(--bg);
+      }
+      .tabbar button {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        align-items: center;
+        justify-content: center;
+        color: #899185;
+        font-size: 10px;
+      }
+      .tabbar button.active {
+        color: var(--green);
+        font-weight: 600;
+      }
+      .tabbar svg {
+        width: 22px;
+        height: 22px;
+      }
+      .recent-section {
+        padding: 14px 21px 0;
+      }
+      .recent-heading {
+        min-height: 33px;
+        margin-bottom: 12px;
+        color: #626f59;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+      }
+      .recent-list {
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .recent-card {
+        width: 100%;
+        text-align: left;
+        padding: 15px 16px 16px;
+        border-radius: 17px;
+        background: #f0f3ec;
+      }
+      .recent-card:hover {
+        background: #e9efe3;
+      }
+      .recent-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 10px;
+        color: #626f59;
+      }
+      .recent-state {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: #626f59;
+      }
+      .recent-state.waiting {
+        color: #7b6743;
+      }
+      .recent-state svg {
+        width: 13px;
+        height: 13px;
+      }
+      .recent-card h2 {
+        margin: 11px 0 5px;
+        font-size: 15px;
+        font-weight: 550;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+      .recent-card p {
+        margin: 0;
+        font-size: 12px;
+        color: #626f59;
+        line-height: 1.8;
+      }
+      .instant-reply {
+        margin: 21px 25px 24px;
+        padding-top: 11px;
+        border-top: 1px solid var(--line);
+      }
+      .reply-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #8a967e;
+        font-size: 11px;
+      }
+      .reply-heading .icon-button {
+        width: 44px;
+        height: 44px;
+      }
+      .reply-heading svg {
+        width: 14px;
+        height: 14px;
+      }
+      .instant-reply p {
+        margin: 6px 0 0;
+        font-size: 14px;
+        line-height: 1.9;
+        color: #5c7252;
+        overflow-wrap: anywhere;
+      }
+      .task-link {
+        display: inline-flex;
+        align-items: center;
+        text-align: left;
+        gap: 7px;
+        padding: 9px 0 4px;
+        font-size: 12px;
+        color: var(--green);
+        line-height: 1.7;
+        min-height: 44px;
+        max-width: 100%;
+      }
+      .task-link svg {
+        width: 14px;
+        height: 14px;
+      }
+      .task-link.waiting {
+        color: #8a7859;
+      }
+      .task-link .link-text {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .composer-area {
+        flex-shrink: 0;
+        padding: 11px 16px 15px;
+        background: var(--bg);
+      }
+      .compose-box {
+        display: flex;
+        align-items: center;
+        min-height: 62px;
+        padding: 7px;
+        border: 1px solid #dce4d5;
+        border-radius: 22px;
+        background: #fffefa;
+        gap: 1px;
+      }
+      .compose-box .icon-button {
+        width: 44px;
+        height: 44px;
+      }
+      .compose-box textarea {
+        background: none;
+        border: 0;
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        padding: 12px 3px;
+        resize: none;
+        font-size: 14px;
+        line-height: 20px;
+        outline-offset: 0;
+      }
+      .compose-box textarea::placeholder {
+        color: #99a18f;
+      }
+      .compose-box .send {
+        color: var(--green);
+      }
+      .live-button {
+        border-left: 1px solid #e0e7d9;
+        min-width: 68px;
+        padding: 0 9px 0 10px;
+        min-height: 44px;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        justify-content: center;
+        color: var(--green);
+        font-size: 13px;
+      }
+      .live-button svg {
+        width: 16px;
+        height: 16px;
+      }
+      .voice-preview {
+        font-size: 12px;
+        color: #6d7e65;
+        padding: 0 6px 12px;
+        line-height: 1.8;
+      }
+      .input-wave {
+        display: flex;
+        height: 44px;
+        flex: 1;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-width: 0;
+      }
+      .input-wave i,
+      .live-wave i {
+        width: 3px;
+        border-radius: 4px;
+        background: #66835c;
+        transform-origin: center;
+        animation: wave 1.2s ease-in-out infinite alternate;
+      }
+      .input-wave i:nth-child(2n),
+      .live-wave i:nth-child(2n) {
+        animation-delay: -0.5s;
+      }
+      .recording {
+        color: #9c624b;
+      }
+      .recording .stop {
+        width: 15px;
+        height: 15px;
+        border-radius: 4px;
+        background: currentColor;
+      }
+      @keyframes wave {
+        to {
+          transform: scaleY(0.45);
+          opacity: 0.6;
+        }
+      }
+      .feed-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        padding: 8px 15px 23px;
+        align-items: start;
+      }
+      .feed-col {
+        display: flex;
+        flex-direction: column;
+        gap: 21px;
+      }
+      .feed-card {
+        display: block;
+        padding: 0;
+        text-align: left;
+        width: 100%;
+      }
+      .feed-card h2 {
+        font-size: 13px;
+        line-height: 1.65;
+        font-weight: 550;
+        margin: 9px 3px 6px;
+      }
+      .feed-meta {
+        font-size: 10px;
+        color: #8a947f;
+        margin: 0 3px;
+        line-height: 1.6;
+      }
+      .cover {
+        width: 100%;
+        border-radius: 12px;
+        position: relative;
+        overflow: hidden;
+        padding: 16px 13px;
+        text-align: left;
+        display: flex;
+        flex-direction: column;
+      }
+      .cover .label {
+        font-size: 8px;
+        letter-spacing: 0.07em;
+        font-weight: 550;
+      }
+      .cover h3 {
+        font-size: 23px;
+        line-height: 1.45;
+        font-weight: 500;
+        letter-spacing: -0.04em;
+        margin: 14px 0 0;
+      }
+      .cover-design {
+        background: #e3eadb;
+        height: 209px;
+      }
+      .cover-design .mini-phone {
+        position: absolute;
+        width: 74px;
+        height: 120px;
+        border: 2px solid #53654c;
+        background: #fcfcf5;
+        border-radius: 12px;
+        right: 17px;
+        bottom: -27px;
+        transform: rotate(10deg);
+        padding: 14px 7px;
+        box-shadow: -12px 5px 0 #c8d6bb;
+      }
+      .mini-line {
+        width: 75%;
+        height: 2px;
+        background: #adbaa1;
+        margin-bottom: 6px;
+      }
+      .mini-input {
+        height: 20px;
+        border: 1px solid #d3dfc7;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+      .mini-dots {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .mini-dots i {
+        width: 8px;
+        height: 8px;
+        background: #d1ddc5;
+        border-radius: 50%;
+      }
+      .cover-memory {
+        background: #efe7dc;
+        height: 169px;
+        color: #6d5844;
+      }
+      .cover-memory h3 {
+        font-size: 21px;
+      }
+      .cover-memory .under {
+        width: 39px;
+        height: 1px;
+        background: #cbb8a0;
+        margin-top: 18px;
+      }
+      .cover-daily {
+        height: 190px;
+        background: #e8ecdf;
+        color: #5f7051;
+      }
+      .cover-daily h3 {
+        font-size: 22px;
+        margin-top: 20px;
+      }
+      .cover-daily .daily-lines {
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .daily-lines i {
+        height: 3px;
+        width: 80%;
+        background: #becbad;
+        border-radius: 4px;
+      }
+      .daily-lines i:nth-child(2) {
+        width: 62%;
+      }
+      .daily-lines i:nth-child(3) {
+        width: 71%;
+      }
+      .cover-note {
+        height: 213px;
+        background: #f1eadc;
+        color: #736345;
+      }
+      .cover-note h3 {
+        font-size: 22px;
+      }
+      .cover-note .note-detail {
+        font-size: 10px;
+        line-height: 1.8;
+        margin-top: 18px;
+        opacity: 0.8;
+      }
+      .cover-research {
+        height: 171px;
+        background: #e1e8e2;
+        color: #436055;
+      }
+      .cover-research h3 {
+        font-size: 22px;
+      }
+      .cover-week {
+        height: 175px;
+        background: #e8e5dc;
+        color: #6b6a50;
+      }
+      .cover-week h3 {
+        font-size: 22px;
+      }
+      .feed-end {
+        text-align: center;
+        font-size: 10px;
+        color: #8b9582;
+        padding: 4px 15px 25px;
+      }
+      .feed-sentinel {
+        height: 1px;
+      }
+      .computer-selector {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        margin: 5px 22px 20px;
+        min-height: 49px;
+        padding: 4px 0;
+        text-align: left;
+        width: calc(100% - 44px);
+      }
+      .computer-selector svg {
+        width: 22px;
+        height: 22px;
+      }
+      .computer-selector .computer-name {
+        flex: 1;
+        font-size: 14px;
+      }
+      .computer-selector small {
+        font-size: 10px;
+        color: #74856a;
+      }
+      .status-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        display: inline-block;
+        background: #76926b;
+        margin-right: 4px;
+      }
+      .status-dot.offline {
+        background: #b39b73;
+      }
+      .computer-selector .chevron {
+        width: 13px;
+        height: 13px;
+        color: #9ba58e;
+      }
+      .task-group {
+        padding: 0 23px 18px;
+      }
+      .group-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #829174;
+        font-size: 11px;
+        min-height: 29px;
+        margin: 0 0 5px;
+        font-weight: 500;
+      }
+      .group-title svg {
+        width: 12px;
+        height: 12px;
+      }
+      .task-row {
+        display: block;
+        text-align: left;
+        width: 100%;
+        padding: 16px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .task-row:last-child {
+        border-bottom: 0;
+      }
+      .task-row h2 {
+        font-size: 15px;
+        line-height: 1.7;
+        margin: 0 0 7px;
+        font-weight: 500;
+      }
+      .task-meta {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 10px;
+        color: #829075;
+        line-height: 1.8;
+      }
+      .task-meta .status {
+        color: #63805a;
+      }
+      .task-meta .waiting {
+        color: #9a8159;
+      }
+      .task-meta .failed {
+        color: #a56750;
+      }
+      .task-meta .right {
+        margin-left: auto;
+      }
+      .pending-group {
+        margin: 0 15px 20px;
+        padding: 13px 14px 6px;
+        background: #f2f0e7;
+        border-radius: 13px;
+      }
+      .pending-group .group-title {
+        color: #9a886b;
+      }
+      .pending-group .task-row {
+        padding: 8px 0 12px;
+      }
+      .pending-group .task-row h2 {
+        font-size: 14px;
+      }
+      .pending-group .task-meta {
+        color: #a08e70;
+      }
+      .settings-top {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px 24px 27px;
+      }
+      .avatar {
+        width: 45px;
+        height: 45px;
+        border-radius: 50%;
+        background: #e7eddf;
+        color: #65785c;
+        display: grid;
+        place-items: center;
+      }
+      .avatar svg {
+        width: 22px;
+        height: 22px;
+      }
+      .settings-top h2 {
+        font-size: 17px;
+        margin: 0 0 5px;
+        font-weight: 550;
+      }
+      .settings-top p {
+        font-size: 11px;
+        margin: 0;
+        color: #8a9680;
+      }
+      .settings-group {
+        padding: 0 23px 20px;
+      }
+      .settings-label {
+        font-size: 10px;
+        color: #8b977e;
+        margin: 5px 0 8px;
+      }
+      .setting-row {
+        width: 100%;
+        min-height: 61px;
+        padding: 12px 0;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+        font-size: 14px;
+      }
+      .setting-row > svg {
+        width: 18px;
+        height: 18px;
+        color: #718169;
+      }
+      .setting-row .row-title {
+        flex: 1;
+      }
+      .setting-row .setting-value {
+        color: #9ba38e;
+        font-size: 11px;
+      }
+      .setting-row .chevron {
+        width: 14px;
+        height: 14px;
+        color: #acb39f;
+      }
+      .toggle {
+        width: 38px;
+        height: 23px;
+        border-radius: 15px;
+        background: #d9dfd2;
+        display: block;
+        position: relative;
+      }
+      .toggle::after {
+        content: '';
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        background: #fffef9;
+        transition: transform 0.18s ease-out;
+      }
+      .toggle.on {
+        background: #608357;
+      }
+      .toggle.on::after {
+        transform: translateX(15px);
+      }
+      .about-note {
+        padding: 24px;
+        color: #9ba58c;
+        font-size: 10px;
+        text-align: center;
+      }
+      .detail-pad {
+        padding: 20px 24px 26px;
+      }
+      .detail-pad h2 {
+        font-size: 25px;
+        line-height: 1.6;
+        letter-spacing: -0.035em;
+        font-weight: 550;
+        margin: 9px 0 16px;
+      }
+      .detail-pad p {
+        font-size: 14px;
+        line-height: 1.95;
+        color: #6b7a61;
+        margin: 0 0 20px;
+      }
+      .detail-label {
+        font-size: 10px;
+        color: #8c9981;
+        line-height: 1.8;
+      }
+      .detail-status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #778b69;
+        font-size: 11px;
+        margin-bottom: 19px;
+      }
+      .activity-line {
+        border-top: 1px solid var(--line);
+        padding-top: 19px;
+        margin-top: 23px;
+      }
+      .detail-dock {
+        flex-shrink: 0;
+        padding: 12px 21px 16px;
+      }
+      .detail-dock input {
+        width: 100%;
+        background: #fffefa;
+        border: 1px solid #dce4d4;
+        border-radius: 15px;
+        padding: 15px;
+        font-size: 13px;
+      }
+      .detail-dock .primary {
+        margin-top: 10px;
+      }
+      .primary {
+        width: 100%;
+        min-height: 49px;
+        padding: 13px 18px;
+        border-radius: 14px;
+        background: var(--green);
+        color: #fffef6;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .primary svg {
+        width: 17px;
+        height: 17px;
+      }
+      .secondary {
+        width: 100%;
+        min-height: 44px;
+        border: 1px solid #cdd9c2;
+        border-radius: 12px;
+        font-size: 13px;
+        margin-top: 10px;
+      }
+      .artifact-cover {
+        padding: 5px 23px 0;
+      }
+      .artifact-cover .cover {
+        height: 245px;
+        padding: 25px;
+      }
+      .artifact-cover .cover h3 {
+        font-size: 31px;
+      }
+      .artifact-cover .cover-design .mini-phone {
+        width: 95px;
+        height: 140px;
+        bottom: -35px;
+        right: 35px;
+      }
+      .artifact-source {
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+        font-size: 11px;
+        line-height: 1.9;
+        color: #8b987f;
+      }
+      .text-link {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--green);
+        padding: 0;
+      }
+      .text-link svg {
+        width: 14px;
+        height: 14px;
+      }
+      .live-view {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        padding: 30px 25px 38px;
+        text-align: center;
+      }
+      .live-top {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        color: #89967b;
+        font-size: 11px;
+      }
+      .live-view h2 {
+        margin: 33px 0 10px;
+        font-size: 24px;
+        font-weight: 500;
+      }
+      .live-view .call-state {
+        margin: 0;
+        font-size: 13px;
+        color: #819274;
+      }
+      .live-orbit {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex: 1;
+        min-height: 190px;
+      }
+      .orb {
+        width: 105px;
+        height: 105px;
+        border-radius: 50%;
+        background: #d6e1cc;
+        border: 1px solid #b8cbaa;
+        position: relative;
+        display: grid;
+        place-items: center;
+      }
+      .orb::before,
+      .orb::after {
+        content: '';
+        position: absolute;
+        inset: -22px;
+        border-radius: 50%;
+        border: 1px solid #dfe7d7;
+        animation: breathe 3.5s ease-in-out infinite alternate;
+      }
+      .orb::after {
+        inset: -46px;
+        border-color: #edf0e7;
+        animation-delay: -1s;
+      }
+      .live-wave {
+        height: 40px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .live-wave i {
+        width: 3px;
+        background: #6b8c5c;
+      }
+      .live-view .live-caption {
+        color: #8d9a81;
+        font-size: 12px;
+        line-height: 1.85;
+        margin: 0 0 35px;
+      }
+      .call-controls {
+        display: flex;
+        justify-content: space-around;
+        gap: 20px;
+      }
+      .call-control {
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        gap: 11px;
+        font-size: 10px;
+        color: #8a967d;
+      }
+      .call-control .circle {
+        width: 58px;
+        height: 58px;
+        border-radius: 50%;
+        background: #eaf0e3;
+        color: #68845b;
+        display: grid;
+        place-items: center;
+      }
+      .call-control .circle.end {
+        background: #ab6a54;
+        color: #fff8f1;
+      }
+      .call-control .circle.selected {
+        background: #d5e2cb;
+      }
+      .live-timer {
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        margin-top: 25px;
+        color: #8e9b81;
+      }
+      @keyframes breathe {
+        to {
+          transform: scale(1.09);
+          opacity: 0.45;
+        }
+      }
+      .sheet-scrim {
+        position: absolute;
+        inset: 0;
+        background: #1b2b2330;
+        z-index: 30;
+        display: flex;
+        align-items: end;
+      }
+      .sheet {
+        width: 100%;
+        max-height: 96%;
+        overflow: auto;
+        background: var(--bg);
+        border-radius: 25px 25px 0 0;
+        padding: 8px 23px 30px;
+      }
+      .sheet-handle {
+        width: 34px;
+        height: 4px;
+        border-radius: 4px;
+        background: #cbd5c2;
+        margin: 0 auto 9px;
+      }
+      .sheet-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .sheet-head h2 {
+        font-size: 18px;
+        margin: 0;
+        font-weight: 550;
+      }
+      .sheet p {
+        font-size: 13px;
+        line-height: 1.9;
+        color: #78896c;
+      }
+      .form-label {
+        display: block;
+        font-size: 11px;
+        color: #89977c;
+        margin: 18px 0 8px;
+      }
+      .sheet input,
+      .sheet textarea,
+      .sheet select {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid #dce4d4;
+        border-radius: 11px;
+        background: #fffefa;
+        padding: 12px;
+        font-size: 14px;
+      }
+      .sheet textarea {
+        resize: vertical;
+        line-height: 1.8;
+        min-height: 125px;
+      }
+      .sheet .primary {
+        margin-top: 20px;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .computer-option {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+        padding: 18px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .computer-option .name {
+        flex: 1;
+        font-size: 14px;
+      }
+      .computer-option small {
+        display: block;
+        font-size: 10px;
+        margin-top: 6px;
+        color: #91a080;
+      }
+      .computer-option .checked {
+        width: 17px;
+        color: var(--green);
+      }
+      .memory-note {
+        padding: 16px 0;
+        border-top: 1px solid var(--line);
+      }
+      .memory-note h3 {
+        font-size: 14px;
+        line-height: 1.8;
+        font-weight: 500;
+        margin: 0 0 7px;
+      }
+      .memory-note p {
+        font-size: 11px;
+        margin: 0;
+      }
+      .memory-note button {
+        min-height: 44px;
+        padding: 0;
+        margin-right: 17px;
+        color: #58754a;
+        font-size: 12px;
+      }
+      .overview {
+        max-width: 1000px;
+        margin: auto;
+        padding: 44px 40px 60px;
+      }
+      .overview-head {
+        margin-bottom: 35px;
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 30px;
+      }
+      .overview-head h1 {
+        font-size: 26px;
+        line-height: 1.5;
+        font-weight: 500;
+        margin: 0;
+        letter-spacing: -0.025em;
+      }
+      .overview-head p {
+        font-size: 11px;
+        line-height: 1.9;
+        color: #7f8b74;
+        max-width: 260px;
+        margin: 0;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: 393px 393px;
+        gap: 44px 65px;
+        justify-content: center;
+      }
+      .board-caption {
+        margin-top: 20px;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .board-caption small {
+        font-size: 10px;
+        color: #9aa48d;
+      }
+      .board-note {
+        font-size: 11px;
+        color: #7f8f73;
+        line-height: 1.9;
+        margin: 8px 0 0;
+      }
+      .toast {
+        position: fixed;
+        bottom: 25px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 60;
+        padding: 13px 20px;
+        color: #f7faed;
+        background: #3e5a36;
+        border-radius: 12px;
+        font-size: 12px;
+        max-width: 90vw;
+        box-shadow: 0 5px 25px #263d1c15;
+      }
+      @media (min-width: 1750px) {
+        .overview {
+          max-width: 1800px;
+        }
+        .overview-grid {
+          grid-template-columns: repeat(4, 393px);
+          gap: 38px;
+        }
+      }
+      @media (max-width: 900px) {
+        .preview {
+          display: flex;
+          flex-direction: column;
+          gap: 35px;
+          padding: 34px 22px;
+        }
+        .review-copy {
+          order: 2;
+          max-width: 393px;
+          width: 100%;
+        }
+        .review-copy h1 {
+          font-size: 23px;
+          margin: 12px 0;
+        }
+        .review-copy .rule {
+          margin: 18px 0;
+        }
+        .review-copy .demo {
+          margin-top: 17px;
+        }
+        .overview {
+          padding: 35px 20px 45px;
+        }
+        .overview-grid {
+          gap: 40px;
+        }
+      }
+      @media (max-width: 870px) {
+        .overview-grid {
+          grid-template-columns: 393px;
+        }
+        .overview-head {
+          display: block;
+          max-width: 393px;
+          margin-left: auto;
+          margin-right: auto;
+        }
+        .overview-head p {
+          margin-top: 13px;
+          max-width: none;
+        }
+      }
+      @media (max-width: 460px) {
+        .review-bar {
+          height: 64px;
+          padding: 0 17px;
+          gap: 6px;
+        }
+        .review-brand {
+          font-size: 11px;
+          gap: 7px;
+        }
+        .review-brand svg {
+          width: 16px;
+          height: 16px;
+        }
+        .review-actions {
+          gap: 0;
+        }
+        .review-actions button {
+          padding: 0 10px;
+          font-size: 11px;
+        }
+        .review-actions .lang {
+          min-width: 40px;
+          margin-left: 3px;
+          padding: 0 8px;
+        }
+        .preview {
+          padding: 25px 17px 35px;
+          gap: 35px;
+        }
+        .device {
+          width: calc(100vw - 34px);
+          height: calc((100vw - 34px) * 2.168);
+          min-height: 770px;
+          border-radius: 39px;
+        }
+        .overview {
+          padding: 30px 17px 40px;
+        }
+        .overview-grid {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+        .overview-grid > article {
+          width: calc(100vw - 34px);
+        }
+        .compose-box textarea {
+          font-size: 13px;
+        }
+        .live-button {
+          min-width: 62px;
+          padding-left: 8px;
+          padding-right: 7px;
+        }
+        .cover h3 {
+          font-size: 21px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script>
+      // Fictional, in-memory design demo. No model, microphone, call, pairing,
+      // push, machine execution or persistent memory service is connected.
+      const zh = {
+        brand: 'AGENT REMOTE',
+        interactive: '交互',
+        overview: '四屏总览',
+        title: '说话。做事。<br>看看。',
+        summary: '四个 Tab，各做一件事。',
+        principles: '助手看近况、随时说。<br>工作台做事，动态看成果。',
+        demo: '仅为设计预览，数据均为示例。语音与 Live 不会真实录音或通话。',
+        names: ['我的助手', '工作台', '动态', '我的'],
+        tabs: ['助手', '工作台', '动态', '我的'],
+        notes: [
+          '最近三件事的简要概括，底部随时输入。',
+          '等待中的任务与项目列表，支持手动新建。',
+          '成果、记忆和日常整理，直接往下看。',
+          '通知、语音、记忆和电脑等设置。',
+        ],
+        overviewTitle: '四个 Tab，刚刚好。',
+        overviewNote:
+          '看近况、说需求，具体任务交给工作台。<br>动态与设置放在后面。',
+        recentHeading: '最近的三件事',
+        recentDesign: '四个入口的界面正在调整，初稿已经可以查看。',
+        recentNotes: '本周的设计决定和待办，已经整理在一起。',
+        recentWaiting: '已替你留在工作台，就绪后接着处理。',
+        recentRunning: '已经开始处理，进展会更新在工作台。',
+        recentDone: '已经处理完成，可以到工作台查看结果。',
+        currentReply: '这次答复',
+        dismissReply: '收起答复',
+        directTabs: '现在有四个入口：助手、工作台、动态和我的。',
+        directVoice: '底部点麦克风可以输入语音；点 Live 可以直接通话。',
+        today: '今天',
+        yesterday: '昨天',
+        you: '你',
+        assistant: '助手',
+        inputLabel: '输入内容',
+        placeholder: '随时说点什么…',
+        textInput: '文字输入',
+        send: '发送',
+        voice: '语音输入',
+        stopVoice: '停止语音输入',
+        cancelVoice: '取消语音输入',
+        voicePreview: '识别中：帮我把首页再做简单一点。',
+        voiceText: '帮我把首页再做简单一点。',
+        live: 'Live',
+        liveLabel: '开始 Live 通话',
+        introInput: '我想把助手做简单一些，随时能接着说就好。',
+        introReply: '好，就一直在这里接着说。',
+        taskInput: '先帮我做一版四个 Tab 的设计稿。',
+        taskReply: '已经交给工作台处理，你可以继续说。',
+        heldReply: '语音页也先替你留着，工作台就绪后接着处理。',
+        heldLink: '语音页面 · 待处理',
+        runningLink: '四个 Tab 的设计稿 · 正在处理',
+        plainReply: '记下了，你可以接着说。',
+        queuedReply: '先替你留着，工作台就绪后再处理。',
+        sentLink: '查看工作台任务',
+        newTask: '新建任务',
+        back: '返回',
+        close: '关闭',
+        chooseComputer: '选择电脑',
+        available: '已连接',
+        unavailable: '未就绪',
+        pending: '待处理',
+        waitingComputer: '等待电脑就绪',
+        fromAssistant: '来自助手',
+        fromManual: '手动创建',
+        newTaskHint: '新任务会使用这里选择的电脑和 Agent。',
+        computer: '电脑',
+        project: '项目',
+        agent: 'Agent',
+        request: '要做什么？',
+        requestPlaceholder: '描述这项任务…',
+        startTask: '开始任务',
+        saveTask: '先保存任务',
+        agentRemote: 'Agent Remote',
+        researchProject: '研究笔记',
+        inProgress: '进行中',
+        completed: '已完成',
+        taskStatus: '任务状态',
+        added: '已加入工作台',
+        missingInput: '先写下要做的事。',
+        taskSaved: '已保存，等待电脑就绪',
+        designTask: 'iOS 四个 Tab 的设计稿',
+        heldTask: '补充 Live 语音页面',
+        manualTask: '检查产物预览的交互',
+        doneTask: '整理本周的设计笔记',
+        taskActivity: '正在调整助手、动态、工作台和设置的页面结构。',
+        manualActivity: '正在检查图片和 HTML 产物的预览入口。',
+        doneActivity: '设计笔记已整理，可以在动态中查看。',
+        pendingActivity: '这项任务已保存。电脑就绪后，可以从这里继续。',
+        taskFollowup: '补充到这项任务…',
+        submitFollowup: '发送补充',
+        followupAdded: '已补充到同一项任务',
+        viewArtifact: '查看产物',
+        checkComputer: '查看电脑',
+        resumeTask: '在这台电脑上继续',
+        resumed: '示例任务已开始',
+        elapsed: '已运行 2 分钟',
+        createdTime: '刚刚',
+        source: '来源',
+        feedLabels: [
+          '设计稿',
+          '记忆',
+          '日常整理',
+          '想法',
+          '研究笔记',
+          '每周回顾',
+        ],
+        feedTitles: [
+          '四个 Tab，先把事情做简单',
+          '你偏好先看设计稿，再决定实现',
+          '今天做过的事，收在这里',
+          '刚才没展开的想法，也替你留着',
+          '关于持续对话的几条笔记',
+          '这一周，慢慢做成的事',
+        ],
+        covers: [
+          '四个 Tab，<br>刚刚好。',
+          '先看设计，<br>再动手。',
+          '今天的进展，<br>一起看看。',
+          '随口一说，<br>也可以留住。',
+          '一直说，<br>接着理解。',
+          '这一周，<br>往前走了些。',
+        ],
+        coverNote: '那些还没来得及展开的念头。',
+        feedTimes: ['刚刚', '今天', '今天', '昨天', '昨天', '周日'],
+        moreSoon: '新的内容会继续出现在这里',
+        artifactTitle: '设计稿',
+        artifactBody:
+          '这次把产品收成四个清晰的入口。助手里持续表达，动态里浏览内容，具体执行回到工作台，设置放在「我的」。',
+        memoryBody:
+          '你在这次示例输入中提到，希望先看设计稿，再决定如何实现。这条记忆可以随时纠正或忘记。',
+        dailyBody:
+          '助手页面已经收成一个连续记录入口；工作台保留项目任务列表。接下来可以看看 Live 通话的体验。',
+        thoughtBody:
+          '有些想法暂时不用变成任务。先留在时间记录里，等你愿意展开的时候，再接着说。',
+        researchBody:
+          '用户看到的是持续的表达。内容如何关联、何时形成任务，由背后的助手来处理。',
+        weekBody:
+          '把一周的任务和想法整理在一起，看看哪些已经完成，哪些还可以继续。',
+        artifactSource: '来自「iOS 四个 Tab 的设计稿」',
+        memorySource: '来自今天的示例输入',
+        dailySource: '来自工作台的示例任务记录',
+        thoughtSource: '来自昨天的示例记录',
+        researchSource: '来自「研究笔记」',
+        weekSource: '来自本周的示例任务与记录',
+        editMemory: '纠正这条记忆',
+        forgetMemory: '忘记',
+        memoryForgot: '这条示例记忆已移除',
+        memoryUpdated: '这条示例记忆已更新',
+        memoryValue: '设计类任务，先看设计稿再决定实现。',
+        save: '保存',
+        saved: '已收藏',
+        removeSaved: '已取消收藏',
+        space: '我的空间',
+        profileNote: '所有设置，都在这里。',
+        preferences: '偏好',
+        notifications: '通知',
+        liveVoice: 'Live 语音',
+        naturalVoice: '自然',
+        quietVoice: '轻柔',
+        memory: '记忆',
+        computers: '我的电脑',
+        dataPrivacy: '隐私与数据',
+        about: '关于',
+        aboutText:
+          'Agent Remote · iOS V2<br>可点击的概念设计，尚未接入实际服务。',
+        settingsDemo: '设置只在本次演示中生效',
+        computerCount: '2 台电脑',
+        privacyBody:
+          '此页面使用示例数据，输入仅保存在本次页面内。刷新后重置；不会录音、连接电脑或向外发送。',
+        memoryExplain: '查看助手记住的事，也可以纠正。',
+        memoryOrigin: '来源：今天的示例输入',
+        memoryEmpty: '暂时没有已保存的记忆。',
+        connected: '已连接',
+        liveDemo: 'Live · 演示',
+        callListening: '正在听',
+        callMuted: '麦克风已静音',
+        callCaption: '想说什么，直接说。',
+        mute: '静音',
+        unmute: '取消静音',
+        hangup: '结束通话',
+        speaker: '扬声器',
+        earpiece: '听筒',
+        liveEnded: 'Live 通话已结束',
+        liveRecord: 'Live 通话',
+        liveReply: '通话已结束，需要继续处理的事会放在工作台。',
+        editLabel: '修改记忆',
+        settingChanged: '已更新本次演示设置',
+        taskNotFound: '这项示例任务已不存在。',
+        taskPrefix: '任务',
+        dismiss: '完成',
+        minutes: '分钟',
+      };
+      const en = {
+        ...zh,
+        interactive: 'Interactive',
+        overview: 'Four screens',
+        title: 'Say it. Do it.<br>See it.',
+        summary: 'Four tabs. One purpose each.',
+        principles:
+          'Catch up and say what you need.<br>Work in Workbench. Browse the Feed.',
+        demo: 'Design preview with fictional data. Voice and Live do not record audio or make real calls.',
+        names: ['My assistant', 'Workbench', 'Feed', 'Me'],
+        tabs: ['Assistant', 'Workbench', 'Feed', 'Me'],
+        notes: [
+          'Three recent updates, with text, voice and Live at the bottom.',
+          'Pending work and project lists, with manual task creation.',
+          'Artifacts, memories and recaps in one uninterrupted feed.',
+          'Notifications, voice, memory and computer settings.',
+        ],
+        overviewTitle: 'Four tabs. Just enough.',
+        overviewNote:
+          'Catch up, say what you need, and hand tasks to Workbench.<br>Feed and settings follow.',
+        recentHeading: 'Three recent updates',
+        recentDesign:
+          'The four screens are being refined. A first draft is ready to review.',
+        recentNotes:
+          'This week’s design decisions and next steps are organized in one place.',
+        recentWaiting:
+          'Kept in Workbench, ready to continue when it is available.',
+        recentRunning: 'Work has started. Progress will appear in Workbench.',
+        recentDone: 'Complete. Open Workbench to see the result.',
+        currentReply: 'Latest answer',
+        dismissReply: 'Dismiss answer',
+        directTabs: 'There are four tabs: Assistant, Workbench, Feed and Me.',
+        directVoice:
+          'Tap the microphone for voice input, or Live to start a call.',
+        today: 'Today',
+        yesterday: 'Yesterday',
+        you: 'You',
+        assistant: 'Assistant',
+        inputLabel: 'Your message',
+        placeholder: 'Say something…',
+        textInput: 'Text input',
+        send: 'Send',
+        voice: 'Voice input',
+        stopVoice: 'Stop voice input',
+        cancelVoice: 'Cancel voice input',
+        voicePreview: 'Transcribing: make home a little simpler.',
+        voiceText: 'Make the home screen a little simpler.',
+        liveLabel: 'Start a Live call',
+        introInput:
+          'Keep the assistant simple. I just want to pick up where I left off.',
+        introReply: 'Of course. Keep talking right here.',
+        taskInput: 'Make a design draft with four tabs first.',
+        taskReply: 'The workbench is handling it. You can keep talking.',
+        heldReply:
+          "I've kept the voice page for later. It can continue when the workbench is ready.",
+        heldLink: 'Voice page · Pending',
+        runningLink: 'Four-tab design · In progress',
+        plainReply: "Got it. Keep going whenever you're ready.",
+        queuedReply:
+          'Kept for later. It can continue when the workbench is ready.',
+        sentLink: 'View workbench task',
+        newTask: 'New task',
+        back: 'Back',
+        close: 'Close',
+        chooseComputer: 'Choose a computer',
+        available: 'Connected',
+        unavailable: 'Not ready',
+        pending: 'Pending',
+        waitingComputer: 'Waiting for a computer',
+        fromAssistant: 'From Assistant',
+        fromManual: 'Added manually',
+        newTaskHint: 'This task will use the selected computer and Agent.',
+        computer: 'Computer',
+        project: 'Project',
+        request: 'What needs doing?',
+        requestPlaceholder: 'Describe the task…',
+        startTask: 'Start task',
+        saveTask: 'Save for later',
+        researchProject: 'Research notes',
+        inProgress: 'In progress',
+        completed: 'Completed',
+        taskStatus: 'Task status',
+        added: 'Added to Workbench',
+        missingInput: 'Describe what needs doing first.',
+        taskSaved: 'Saved, waiting for a computer',
+        designTask: 'Design the four iOS tabs',
+        heldTask: 'Add the Live voice screen',
+        manualTask: 'Check artifact preview interactions',
+        doneTask: "Organize this week's design notes",
+        taskActivity:
+          'Adjusting the Assistant, Feed, Workbench and Settings screens.',
+        manualActivity:
+          'Checking image and HTML artifact preview entry points.',
+        doneActivity: 'Design notes are organized and available in the Feed.',
+        pendingActivity:
+          'This task is saved. Continue here when a computer is ready.',
+        taskFollowup: 'Add to this task…',
+        submitFollowup: 'Send follow-up',
+        followupAdded: 'Added to the same task',
+        viewArtifact: 'View artifact',
+        checkComputer: 'View computers',
+        resumeTask: 'Continue on this computer',
+        resumed: 'Example task started',
+        elapsed: 'Running for 2 minutes',
+        createdTime: 'Just now',
+        source: 'Source',
+        feedLabels: [
+          'Design',
+          'Memory',
+          'Daily recap',
+          'Thought',
+          'Research',
+          'Weekly recap',
+        ],
+        feedTitles: [
+          'Four tabs. Keep things simple.',
+          'You prefer to review a design before implementation',
+          "Today's progress, all here",
+          'A passing thought, kept for later',
+          'Notes on continuous conversation',
+          'This week, a little further along',
+        ],
+        covers: [
+          'Four tabs.<br>Just enough.',
+          'Design first.<br>Then build.',
+          "Today's<br>progress.",
+          'A passing<br>thought.',
+          'Keep talking.<br>Keep context.',
+          'This week,<br>moving on.',
+        ],
+        coverNote: "Ideas you haven't had time to explore yet.",
+        feedTimes: [
+          'Just now',
+          'Today',
+          'Today',
+          'Yesterday',
+          'Yesterday',
+          'Sunday',
+        ],
+        moreSoon: 'New items will keep appearing here',
+        artifactTitle: 'Design draft',
+        artifactBody:
+          'Four clear places: continuous expression in Assistant, content in Feed, execution in Workbench, and settings in Me.',
+        memoryBody:
+          'In this fictional input, you asked to see a design draft before deciding what to implement. You can correct or forget this memory.',
+        dailyBody:
+          'Assistant now has one continuous entry point. Workbench keeps the project task list. Next, review the Live call experience.',
+        thoughtBody:
+          'Some ideas can wait before becoming tasks. Keep them in the timeline and pick them up when you want to explore further.',
+        researchBody:
+          'The user sees one ongoing conversation. The assistant behind it handles context relationships and when work becomes a task.',
+        weekBody:
+          "Review this week's tasks and ideas: what is complete, and what can continue.",
+        artifactSource: 'From “Design the four iOS tabs”',
+        memorySource: "From today's fictional input",
+        dailySource: 'From example workbench records',
+        thoughtSource: "From yesterday's fictional record",
+        researchSource: 'From Research notes',
+        weekSource: "From this week's example tasks and records",
+        editMemory: 'Correct this memory',
+        forgetMemory: 'Forget',
+        memoryForgot: 'Example memory removed',
+        memoryUpdated: 'Example memory updated',
+        memoryValue:
+          'Review design drafts before deciding implementation scope.',
+        save: 'Save',
+        saved: 'Saved',
+        removeSaved: 'Removed from saved items',
+        space: 'My space',
+        profileNote: 'All your settings, right here.',
+        preferences: 'Preferences',
+        notifications: 'Notifications',
+        liveVoice: 'Live voice',
+        naturalVoice: 'Natural',
+        quietVoice: 'Soft',
+        memory: 'Memory',
+        computers: 'My computers',
+        dataPrivacy: 'Privacy & data',
+        about: 'About',
+        aboutText:
+          'Agent Remote · iOS V2<br>Interactive design concept. No real services connected.',
+        settingsDemo: 'Settings apply to this demonstration only',
+        computerCount: '2 computers',
+        privacyBody:
+          'This page uses fictional data. Input stays in this page and resets on reload. It does not record audio, connect to computers or send data.',
+        memoryExplain: 'See what your assistant remembers, and correct it.',
+        memoryOrigin: "Source: today's fictional input",
+        memoryEmpty: 'No saved memories here yet.',
+        connected: 'Connected',
+        liveDemo: 'Live · Demo',
+        callListening: 'Listening',
+        callMuted: 'Microphone muted',
+        callCaption: "Say whatever's on your mind.",
+        mute: 'Mute',
+        unmute: 'Unmute',
+        hangup: 'End call',
+        speaker: 'Speaker',
+        earpiece: 'Earpiece',
+        liveEnded: 'Live call ended',
+        liveRecord: 'Live call',
+        liveReply:
+          'Call ended. Work that needs execution will appear in Workbench.',
+        editLabel: 'Edit memory',
+        settingChanged: 'Demo setting updated',
+        taskNotFound: 'This example task no longer exists.',
+        taskPrefix: 'Task',
+        dismiss: 'Done',
+        minutes: 'minutes',
+      };
+      const params = new URLSearchParams(location.search);
+      const state = {
+        lang: params.get('lang') === 'en' ? 'en' : 'zh',
+        view: params.get('view') === 'overview' ? 'overview' : 'interactive',
+        tab: 0,
+        page: null,
+        draft: '',
+        recording: false,
+        live: false,
+        muted: false,
+        speaker: true,
+        liveStarted: null,
+        reply: null,
+        recentTaskIds: ['demo-design', 'demo-notes', 'demo-voice'],
+        selectedComputer: 'mini',
+        sheet: null,
+        selectedTask: null,
+        selectedFeed: 0,
+        saved: {},
+        notifications: true,
+        softVoice: false,
+        memoryValue: null,
+        memoryForgot: false,
+        taskDraft: '',
+        newProject: 'remote',
+        newAgent: 'Qwen Code',
+        followup: '',
+        scrollToEnd: false,
+      };
+      const tasks = [
+        {
+          id: 'demo-design',
+          key: 'designTask',
+          computer: 'mini',
+          agent: 'Qwen Code',
+          project: 'remote',
+          status: 'running',
+          source: 'assistant',
+          session: 'demo-design-session',
+          activity: 'taskActivity',
+          artifactIndex: 0,
+        },
+        {
+          id: 'demo-voice',
+          key: 'heldTask',
+          computer: 'book',
+          agent: 'Codex',
+          project: 'remote',
+          status: 'pending',
+          source: 'assistant',
+        },
+        {
+          id: 'demo-manual',
+          key: 'manualTask',
+          computer: 'mini',
+          agent: 'Qwen Code',
+          project: 'remote',
+          status: 'running',
+          source: 'manual',
+          session: 'demo-manual-session',
+          activity: 'manualActivity',
+        },
+        {
+          id: 'demo-notes',
+          key: 'doneTask',
+          computer: 'mini',
+          agent: 'Codex',
+          project: 'research',
+          status: 'completed',
+          source: 'manual',
+          session: 'demo-notes-session',
+          activity: 'doneActivity',
+          artifactIndex: 5,
+        },
+      ];
+      const computers = [
+        { id: 'mini', name: 'Mac mini', online: true },
+        { id: 'book', name: 'MacBook Pro', online: false },
+      ];
+      const icons = {
+        assistant:
+          '<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4Z"/>',
+        feed: '<rect x="3" y="3" width="7" height="10" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/><rect x="3" y="17" width="7" height="4" rx="1.5"/><rect x="14" y="13" width="7" height="8" rx="1.5"/>',
+        laptop:
+          '<rect x="4" y="4" width="16" height="12" rx="2"/><path d="m2 20 2-4h16l2 4H2Z"/>',
+        person:
+          '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+        keyboard:
+          '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 9h0m4 0h0m4 0h0m4 0h0M6 13h0m4 0h0m4 0h0m4 0h0m-11 3h10"/>',
+        mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1m-6 7v3m-3 0h6"/>',
+        micOff:
+          '<path d="m3 3 18 18M9 9v3a3 3 0 0 0 5 2m1-5V6a3 3 0 0 0-5-2M6 11v1a6 6 0 0 0 10 4m2-5v1m-6 6v3m-3 0h6"/>',
+        wave: '<path d="M3 10v4m4-7v10m5-13v16m5-13v10m4-7v4"/>',
+        arrow: '<path d="M12 19V5m-5 5 5-5 5 5"/>',
+        right: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+        chevron: '<path d="m9 5 7 7-7 7"/>',
+        down: '<path d="m7 10 5 5 5-5"/>',
+        left: '<path d="m15 5-7 7 7 7"/>',
+        plus: '<path d="M12 5v14M5 12h14"/>',
+        close: '<path d="m6 6 12 12M6 18 18 6"/>',
+        check: '<path d="m5 12 4 4L19 6"/>',
+        clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+        bell: '<path d="M5 17h14l-2-3V9A5 5 0 0 0 7 9v5l-2 3Zm5 3h4"/>',
+        memory:
+          '<path d="M9 4a3 3 0 0 0-5 3 4 4 0 0 0-1 7 4 4 0 0 0 6 5V4Zm6 0a3 3 0 0 1 5 3 4 4 0 0 1 1 7 4 4 0 0 1-6 5V4Z"/>',
+        shield:
+          '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
+        info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h0"/>',
+        save: '<path d="M6 3h12v18l-6-4-6 4V3Z"/>',
+        phone:
+          '<path d="M4 15a15 15 0 0 1 16 0l1-4a20 20 0 0 0-18 0l1 4Zm0 0 5-1m6 0 5 1"/>',
+        speaker:
+          '<path d="m11 4-6 5H2v6h3l6 5V4Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
+        signal: '<path d="M3 20v-3m5 3v-7m5 7V9m5 11V5"/>',
+        wifi: '<path d="M3 8a14 14 0 0 1 18 0M6 12a9 9 0 0 1 12 0m-9 4a4 4 0 0 1 6 0m-3 4h0"/>',
+        battery:
+          '<rect x="2" y="6" width="18" height="12" rx="3"/><path d="M23 10v4M5 9h11v6H5Z"/>',
+      };
+      const t = () => (state.lang === 'en' ? en : zh);
+      const esc = (v) =>
+        String(v).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              '&': '&amp;',
+              '<': '&lt;',
+              '>': '&gt;',
+              '"': '&quot;',
+              "'": '&#39;',
+            })[c],
+        );
+      const icon = (n) =>
+        `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[n] || icons.assistant}</svg>`;
+      const iconButton = (i, a, label, extra = '') =>
+        `<button class="icon-button ${extra}" data-action="${a}" aria-label="${esc(label)}">${icon(i)}</button>`;
+      const titleOf = (task) => task.title || t()[task.key];
+      const machine = (id) => computers.find((c) => c.id === id);
+      const statusOf = (task) =>
+        t()[
+          task.status === 'pending'
+            ? 'waitingComputer'
+            : task.status === 'running'
+              ? 'inProgress'
+              : 'completed'
+        ];
+      const clockTime = () =>
+        new Date().toLocaleTimeString(state.lang === 'en' ? 'en-GB' : 'zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+          timeZone: 'Asia/Shanghai',
+        });
+      function header(name, action = '', back = false) {
+        return `<header class="app-header">${back ? iconButton('left', 'back', t().back) : ''}${back ? `<span class="inline-title">${name}</span>` : `<h1>${name}</h1>`}${action || (back ? '<span class="header-spacer"></span>' : '')}</header>`;
+      }
+      function tabs(index) {
+        return `<nav class="tabbar" aria-label="${state.lang === 'zh' ? '主要导航' : 'Main navigation'}">${['assistant', 'laptop', 'feed', 'person'].map((n, i) => `<button class="${i === index ? 'active' : ''}" data-action="tab" data-value="${i}" ${i === index ? 'aria-current="page"' : ''}>${icon(n)}<span>${t().tabs[i]}</span></button>`).join('')}</nav>`;
+      }
+      function taskLink(id, label, wait = false) {
+        const task = tasks.find((item) => item.id === id);
+        if (task) {
+          wait = task.status === 'pending';
+          if (id === 'demo-voice' && !wait) {
+            label = `${t().heldTask} · ${statusOf(task)}`;
+          }
+        }
+        return `<button class="task-link ${wait ? 'waiting' : ''}" data-action="openTask" data-value="${id}">${icon(wait ? 'clock' : 'right')}<span class="link-text">${esc(label)}</span></button>`;
+      }
+      function recentItem(task) {
+        const copy = t();
+        const status =
+          copy[
+            task.status === 'pending'
+              ? 'pending'
+              : task.status === 'completed'
+                ? 'completed'
+                : 'inProgress'
+          ];
+        const description =
+          task.status === 'pending'
+            ? copy.recentWaiting
+            : task.id === 'demo-design'
+              ? copy.recentDesign
+              : task.id === 'demo-notes'
+                ? copy.recentNotes
+                : task.status === 'completed'
+                  ? copy.recentDone
+                  : copy.recentRunning;
+        const mark =
+          task.status === 'pending'
+            ? 'clock'
+            : task.status === 'completed'
+              ? 'check'
+              : 'laptop';
+        return `<button class="recent-card" data-action="openTask" data-value="${task.id}"><span class="recent-meta"><span class="recent-state ${task.status === 'pending' ? 'waiting' : ''}">${icon(mark)}${status}</span><span>${task.updatedLabel || (task.id === 'demo-design' ? copy.createdTime : copy.today)}</span></span><h2>${esc(titleOf(task))}</h2><p>${description}</p></button>`;
+      }
+      function assistant() {
+        const copy = t();
+        const recent = state.recentTaskIds
+          .map((id) => tasks.find((task) => task.id === id))
+          .filter(Boolean)
+          .slice(0, 3);
+        return `${header(copy.names[0])}<div class="scroll" data-assistant-scroll><section class="recent-section"><div class="recent-heading"><span>${copy.recentHeading}</span></div><div class="recent-list">${recent.map(recentItem).join('')}</div></section>${state.reply ? `<section class="instant-reply" role="status"><div class="reply-heading"><span>${copy.currentReply}</span>${iconButton('close', 'dismissReply', copy.dismissReply)}</div><p>${esc(state.reply.text)}</p>${state.reply.task ? taskLink(state.reply.task, copy.sentLink) : ''}</section>` : ''}</div><div class="composer-area">${state.recording ? `<div class="voice-preview">${copy.voicePreview}</div>` : ''}<div class="compose-box">${iconButton(state.recording ? 'close' : state.draft.trim() ? 'arrow' : 'keyboard', state.recording ? 'cancelVoice' : state.draft.trim() ? 'send' : 'text', state.recording ? copy.cancelVoice : state.draft.trim() ? copy.send : copy.textInput, state.draft.trim() ? 'send' : '')}${state.recording ? `<div class="input-wave" aria-hidden="true">${[8, 13, 20, 15, 27, 32, 24, 35, 20, 27, 17, 12].map((h) => `<i style="height:${h}px"></i>`).join('')}</div>` : `<label class="sr-only" for="assistant-draft">${copy.inputLabel}</label><textarea id="assistant-draft" rows="1" data-input="draft" placeholder="${copy.placeholder}">${esc(state.draft)}</textarea>`}<button class="icon-button ${state.recording ? 'recording' : ''}" data-action="voice" aria-label="${state.recording ? copy.stopVoice : copy.voice}">${state.recording ? '<i class="stop"></i>' : icon('mic')}</button><button class="live-button" data-action="live" aria-label="${copy.liveLabel}" ${state.recording ? 'disabled' : ''}>${icon('wave')}<span>Live</span></button></div></div>`;
+      }
+      function cover(index) {
+        const copy = t(),
+          type = ['design', 'memory', 'daily', 'note', 'research', 'week'][
+            index % 6
+          ];
+        return `<div class="cover cover-${type}"><span class="label">${copy.feedLabels[index % 6]}</span><h3>${copy.covers[index % 6]}</h3>${type === 'design' ? '<div class="mini-phone" aria-hidden="true"><div class="mini-line"></div><div class="mini-line"></div><div class="mini-input"></div><div class="mini-dots"><i></i><i></i><i></i></div></div>' : type === 'memory' ? '<div class="under"></div>' : type === 'daily' ? '<div class="daily-lines" aria-hidden="true"><i></i><i></i><i></i></div>' : type === 'note' ? `<p class="note-detail">${copy.coverNote}</p>` : ''}</div>`;
+      }
+      function feedCard(i) {
+        const copy = t();
+        return `<button class="feed-card" data-action="feedDetail" data-value="${i}">${cover(i)}<h2>${copy.feedTitles[i % 6]}</h2><p class="feed-meta">${copy.feedLabels[i % 6]} · ${copy.feedTimes[i % 6]}</p></button>`;
+      }
+      function feed() {
+        return `${header(t().names[2])}<div class="scroll" data-feed-scroll><div class="feed-grid"><div class="feed-col">${[
+          0, 2, 4,
+        ]
+          .filter((i) => !state.memoryForgot || i !== 1)
+          .map(feedCard)
+          .join('')}</div><div class="feed-col">${[1, 3, 5]
+          .filter((i) => !state.memoryForgot || i !== 1)
+          .map(feedCard)
+          .join(
+            '',
+          )}</div></div><div class="feed-end">${t().moreSoon}</div></div>`;
+      }
+      function taskRow(task) {
+        const copy = t();
+        return `<button class="task-row" data-action="openTask" data-value="${task.id}"><h2>${esc(titleOf(task))}</h2><div class="task-meta"><span>${task.agent}</span><span class="status ${task.status === 'pending' ? 'waiting' : ''}">${statusOf(task)}</span><span class="right">${task.status === 'pending' ? copy[task.source === 'assistant' ? 'fromAssistant' : 'fromManual'] : task.status === 'running' ? '09:41' : copy.yesterday}</span></div></button>`;
+      }
+      function workbench() {
+        const copy = t(),
+          selected = machine(state.selectedComputer),
+          pending = tasks.filter((x) => x.status === 'pending');
+        return `${header(copy.names[1], iconButton('plus', 'newTask', copy.newTask))}<div class="scroll"><button class="computer-selector" data-action="computers">${icon('laptop')}<span class="computer-name">${selected.name}</span><small><i class="status-dot ${selected.online ? '' : 'offline'}"></i>${selected.online ? copy.available : copy.unavailable}</small>${icon('down').replace('<svg', '<svg class="chevron"')}</button>${pending.length ? `<section class="pending-group"><h2 class="group-title">${copy.pending}<span>${pending.length}</span></h2>${pending.map(taskRow).join('')}</section>` : ''}${[
+          'remote',
+          'research',
+        ]
+          .map((p) => {
+            const list = tasks.filter(
+              (x) =>
+                x.project === p &&
+                x.status !== 'pending' &&
+                x.computer === state.selectedComputer,
+            );
+            return list.length
+              ? `<section class="task-group"><h2 class="group-title">${copy[p === 'remote' ? 'agentRemote' : 'researchProject']}</h2>${list.map(taskRow).join('')}</section>`
+              : '';
+          })
+          .join('')}</div>`;
+      }
+      function setting(i, label, action, value = '') {
+        return `<button class="setting-row" data-action="${action}">${icon(i)}<span class="row-title">${label}</span>${value ? `<span class="setting-value">${value}</span>` : ''}${icon('chevron').replace('<svg', '<svg class="chevron"')}</button>`;
+      }
+      function settings() {
+        const copy = t();
+        return `${header(copy.names[3])}<div class="scroll"><div class="settings-top"><div class="avatar">${icon('person')}</div><div><h2>${copy.space}</h2><p>${copy.profileNote}</p></div></div><section class="settings-group"><p class="settings-label">${copy.preferences}</p><button class="setting-row" data-action="notifications" role="switch" aria-checked="${state.notifications}">${icon('bell')}<span class="row-title">${copy.notifications}</span><span class="toggle ${state.notifications ? 'on' : ''}" aria-hidden="true"></span></button>${setting('wave', copy.liveVoice, 'voiceSetting', state.softVoice ? copy.quietVoice : copy.naturalVoice)}${setting('memory', copy.memory, 'memory')}${setting('laptop', copy.computers, 'computers', copy.computerCount)}</section><section class="settings-group">${setting('shield', copy.dataPrivacy, 'privacy')}${setting('info', copy.about, 'about')}</section><p class="about-note">${copy.settingsDemo}</p></div>`;
+      }
+      function taskDetail() {
+        const copy = t(),
+          task = tasks.find((x) => x.id === state.selectedTask);
+        if (!task)
+          return `${header(copy.taskPrefix, '', true)}<div class="detail-pad"><p>${copy.taskNotFound}</p></div>`;
+        return `${header(copy.taskPrefix, '', true)}<div class="scroll"><div class="detail-pad"><div class="detail-status"><i class="status-dot ${task.status === 'pending' ? 'offline' : ''}"></i>${statusOf(task)}</div><h2>${esc(titleOf(task))}</h2><span class="detail-label">${machine(task.computer).name} · ${task.agent}<br>${copy[task.project === 'remote' ? 'agentRemote' : 'researchProject']} · ${copy[task.source === 'assistant' ? 'fromAssistant' : 'fromManual']}</span><div class="activity-line"><p>${copy[task.status === 'pending' ? 'pendingActivity' : task.activity] || copy.taskActivity}</p>${task.followups?.map((f) => `<p>${esc(f)}</p>`).join('') || ''}</div>${task.status === 'pending' ? `<button class="text-link" data-action="computers">${copy.checkComputer}${icon('right')}</button>` : Number.isInteger(task.artifactIndex) ? `<button class="text-link" data-action="taskArtifact">${copy.viewArtifact}${icon('right')}</button>` : ''}</div></div><div class="detail-dock">${task.status === 'pending' ? `<button class="primary" data-action="resumeTask">${copy.resumeTask}</button>` : `<label class="sr-only" for="task-followup">${copy.taskFollowup}</label><input id="task-followup" data-input="followup" placeholder="${copy.taskFollowup}" value="${esc(state.followup)}"><button class="primary" data-action="followup">${copy.submitFollowup}${icon('arrow')}</button>`}</div>`;
+      }
+      function feedDetail() {
+        const copy = t(),
+          i = state.selectedFeed % 6,
+          body = [
+            copy.artifactBody,
+            copy.memoryBody,
+            copy.dailyBody,
+            copy.thoughtBody,
+            copy.researchBody,
+            copy.weekBody,
+          ][i],
+          source = [
+            copy.artifactSource,
+            copy.memorySource,
+            copy.dailySource,
+            copy.thoughtSource,
+            copy.researchSource,
+            copy.weekSource,
+          ][i];
+        return `${header(copy.feedLabels[i], iconButton('save', 'saveFeed', state.saved[i] ? copy.saved : copy.save), true)}<div class="scroll"><div class="artifact-cover">${cover(i)}</div><div class="detail-pad"><h2>${copy.feedTitles[i]}</h2><p>${i === 1 && state.memoryValue ? esc(state.memoryValue) : body}</p><div class="artifact-source">${copy.source} · ${source}</div>${i === 0 ? `<button class="text-link" data-action="openTask" data-value="demo-design">${copy.sentLink}${icon('right')}</button>` : i === 1 ? `<button class="text-link" data-action="editMemory">${copy.editMemory}${icon('right')}</button>` : ''}</div></div>`;
+      }
+      function live() {
+        const copy = t();
+        return `<div class="live-view"><div class="live-top">${icon('wave')}${copy.liveDemo}</div><h2>${copy.names[0]}</h2><p class="call-state">${state.muted ? copy.callMuted : copy.callListening}</p><div class="live-orbit"><div class="orb"><div class="live-wave" ${state.muted ? 'style="opacity:.3"' : ''}>${[10, 19, 30, 22, 12].map((h) => `<i style="height:${h}px;${state.muted ? 'animation:none' : ''}"></i>`).join('')}</div></div></div><p class="live-caption">${copy.callCaption}</p><div class="call-controls"><button class="call-control" data-action="mute" aria-pressed="${state.muted}"><span class="circle ${state.muted ? 'selected' : ''}">${icon(state.muted ? 'micOff' : 'mic')}</span><span>${state.muted ? copy.unmute : copy.mute}</span></button><button class="call-control" data-action="hangup"><span class="circle end">${icon('phone')}</span><span>${copy.hangup}</span></button><button class="call-control" data-action="speaker" aria-pressed="${state.speaker}"><span class="circle ${state.speaker ? 'selected' : ''}">${icon('speaker')}</span><span>${state.speaker ? copy.speaker : copy.earpiece}</span></button></div><span class="live-timer" data-call-time>${callDuration()}</span></div>`;
+      }
+      function callDuration() {
+        const seconds = Math.max(
+          0,
+          Math.floor((Date.now() - (state.liveStarted || Date.now())) / 1000),
+        );
+        return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+      }
+      function sheet() {
+        if (!state.sheet) return '';
+        const copy = t();
+        let name = '',
+          body = '';
+        if (state.sheet === 'newTask') {
+          const selected = machine(state.selectedComputer);
+          name = copy.newTask;
+          body = `<label class="form-label" for="new-computer">${copy.computer}</label><select id="new-computer" data-input="selectedComputer">${computers.map((c) => `<option value="${c.id}" ${c.id === state.selectedComputer ? 'selected' : ''}>${c.name} · ${c.online ? copy.available : copy.unavailable}</option>`).join('')}</select><div class="form-grid"><div><label class="form-label" for="new-project">${copy.project}</label><select id="new-project" data-input="newProject"><option value="remote" ${state.newProject === 'remote' ? 'selected' : ''}>${copy.agentRemote}</option><option value="research" ${state.newProject === 'research' ? 'selected' : ''}>${copy.researchProject}</option></select></div><div><label class="form-label" for="new-agent">${copy.agent}</label><select id="new-agent" data-input="newAgent"><option ${state.newAgent === 'Qwen Code' ? 'selected' : ''}>Qwen Code</option><option ${state.newAgent === 'Codex' ? 'selected' : ''}>Codex</option></select></div></div><label class="form-label" for="new-request">${copy.request}</label><textarea id="new-request" data-input="taskDraft" placeholder="${copy.requestPlaceholder}">${esc(state.taskDraft)}</textarea><button class="primary" data-action="createTask">${selected.online ? copy.startTask : copy.saveTask}</button>`;
+        } else if (state.sheet === 'computers') {
+          name = copy.computers;
+          body = computers
+            .map(
+              (c) =>
+                `<button class="computer-option" data-action="selectComputer" data-value="${c.id}">${icon('laptop')}<span class="name">${c.name}<small><i class="status-dot ${c.online ? '' : 'offline'}"></i>${c.online ? copy.available : copy.unavailable}</small></span>${c.id === state.selectedComputer ? icon('check').replace('<svg', '<svg class="checked"') : ''}</button>`,
+            )
+            .join('');
+        } else if (state.sheet === 'memory') {
+          name = copy.memory;
+          body = `<p>${copy.memoryExplain}</p>${state.memoryForgot ? `<p>${copy.memoryEmpty}</p>` : `<article class="memory-note"><h3>${esc(state.memoryValue || copy.memoryValue)}</h3><p>${copy.memoryOrigin}</p><button data-action="editMemory">${copy.editMemory}</button><button data-action="forgetMemory">${copy.forgetMemory}</button></article>`}`;
+        } else if (state.sheet === 'editMemory') {
+          name = copy.editLabel;
+          body = `<label class="form-label" for="memory-value">${copy.memory}</label><textarea id="memory-value" data-input="memoryEdit">${esc(state.memoryValue || copy.memoryValue)}</textarea><button class="primary" data-action="saveMemory">${copy.save}</button>`;
+        } else if (state.sheet === 'voiceSetting') {
+          name = copy.liveVoice;
+          body = [copy.naturalVoice, copy.quietVoice]
+            .map(
+              (v, i) =>
+                `<button class="computer-option" data-action="setVoice" data-value="${i}"><span class="name">${v}</span>${state.softVoice === (i === 1) ? icon('check') : ''}</button>`,
+            )
+            .join('');
+        } else {
+          name = state.sheet === 'privacy' ? copy.dataPrivacy : copy.about;
+          body = `<p>${state.sheet === 'privacy' ? copy.privacyBody : copy.aboutText}</p>`;
+        }
+        return `<div class="sheet-scrim"><section class="sheet" role="dialog" aria-modal="true" aria-label="${esc(name)}"><div class="sheet-handle"></div><div class="sheet-head"><h2>${name}</h2>${iconButton('close', 'closeSheet', copy.close)}</div>${body}</section></div>`;
+      }
+      function device(index, board = false) {
+        const isLive = !board && state.live,
+          isDetail = !board && state.page,
+          body = isLive
+            ? live()
+            : isDetail
+              ? state.page === 'task'
+                ? taskDetail()
+                : feedDetail()
+              : [assistant, workbench, feed, settings][index]();
+        return `<div class="device" data-tab="${index}" data-page="${isDetail ? state.page : 'root'}"><div class="statusbar"><span>9:41</span><i class="island"></i><span class="status-icons">${icon('signal')}${icon('wifi')}${icon('battery')}</span></div><div class="phone-content">${body}${isLive ? '' : tabs(index)}${!board ? sheet() : ''}</div><span class="home-indicator"></span></div>`;
+      }
+      const scrollPositions = {};
+      function render() {
+        const copy = t();
+        document.querySelectorAll('.device .scroll').forEach((el) => {
+          const d = el.closest('.device');
+          scrollPositions[`${d.dataset.tab}:${d.dataset.page}`] = el.scrollTop;
+        });
+        document.documentElement.lang = state.lang === 'zh' ? 'zh-Hans' : 'en';
+        document.getElementById('app').innerHTML =
+          `<header class="review-bar"><div class="review-brand">${icon('assistant')}${copy.brand}<span class="v2">V2</span></div><nav class="review-actions" aria-label="${state.lang === 'zh' ? '设计稿视图' : 'Design views'}"><button data-action="view" data-value="interactive" class="${state.view === 'interactive' ? 'active' : ''}">${copy.interactive}</button><button data-action="view" data-value="overview" class="${state.view === 'overview' ? 'active' : ''}">${copy.overview}</button><button class="lang" data-action="lang">${state.lang === 'zh' ? 'EN' : '中文'}</button></nav></header>${state.view === 'interactive' ? `<main class="preview"><aside class="review-copy"><span class="eyebrow">IOS CONCEPT / SECOND EDITION</span><h1>${copy.title}</h1><p>${copy.summary}</p><div class="rule"></div><p>${copy.principles}</p><p class="demo">${copy.demo}</p></aside>${device(state.tab)}</main>` : `<main class="overview"><div class="overview-head"><h1>${copy.overviewTitle}</h1><p>${copy.overviewNote}<br>${copy.demo}</p></div><div class="overview-grid">${copy.names.map((name, i) => `<article>${device(i, true)}<div class="board-caption"><small>0${i + 1}</small>${name}</div><p class="board-note">${copy.notes[i]}</p></article>`).join('')}</div></main>`}`;
+        document.querySelectorAll('.device .scroll').forEach((el) => {
+          const d = el.closest('.device');
+          el.scrollTop =
+            state.scrollToEnd && el.hasAttribute('data-assistant-scroll')
+              ? el.scrollHeight
+              : scrollPositions[`${d.dataset.tab}:${d.dataset.page}`] || 0;
+        });
+        state.scrollToEnd = false;
+      }
+      let toastTimer;
+      function toast(message) {
+        const el = document.getElementById('toast');
+        el.textContent = message;
+        el.className = 'toast';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          el.textContent = '';
+          el.className = '';
+        }, 3000);
+      }
+      function openTab(index) {
+        state.tab = index;
+        state.page = null;
+        state.sheet = null;
+        state.recording = false;
+        state.view = 'interactive';
+        render();
+      }
+      function openTask(id) {
+        const task = tasks.find((x) => x.id === id);
+        if (!task) return;
+        state.selectedTask = id;
+        state.selectedComputer = task.computer;
+        state.followup = '';
+        state.tab = 1;
+        state.page = 'task';
+        state.sheet = null;
+        state.view = 'interactive';
+        render();
+      }
+      function rememberRecent(id) {
+        state.recentTaskIds = [
+          id,
+          ...state.recentTaskIds.filter((item) => item !== id),
+        ].slice(0, 3);
+      }
+      function sendInput() {
+        const text = state.draft.trim();
+        if (!text) return;
+        state.draft = '';
+        // Scripted demo only. The future harness decides whether to answer or delegate.
+        if (/设计稿|做一版|任务|实现|design|build|task|fix/i.test(text)) {
+          const id = `demo-input-${Date.now()}`,
+            available = machine(state.selectedComputer).online;
+          tasks.unshift({
+            id,
+            title: text,
+            computer: state.selectedComputer,
+            agent: 'Qwen Code',
+            project: 'remote',
+            status: available ? 'running' : 'pending',
+            source: 'assistant',
+            updatedLabel: clockTime(),
+            ...(available ? { session: `${id}-session` } : {}),
+          });
+          rememberRecent(id);
+          state.reply = {
+            text: available ? t().taskReply : t().queuedReply,
+            task: id,
+          };
+        } else {
+          state.reply = {
+            text: /tab|入口|几个/i.test(text)
+              ? t().directTabs
+              : /语音|live|通话|voice|call/i.test(text)
+                ? t().directVoice
+                : t().plainReply,
+          };
+        }
+        state.scrollToEnd = true;
+        render();
+        document.querySelector('#assistant-draft')?.focus();
+      }
+      function openSheet(name) {
+        state.sheet = name;
+        render();
+        document.querySelector('.sheet .icon-button')?.focus();
+      }
+      document.addEventListener('input', (e) => {
+        const key = e.target.dataset.input;
+        if (!key) return;
+        state[key] = e.target.value;
+        if (key === 'draft') {
+          const b = document.querySelector('.compose-box .icon-button');
+          if (b) {
+            b.dataset.action = state.draft.trim() ? 'send' : 'text';
+            b.setAttribute(
+              'aria-label',
+              state.draft.trim() ? t().send : t().textInput,
+            );
+            b.innerHTML = icon(state.draft.trim() ? 'arrow' : 'keyboard');
+          }
+        }
+      });
+      document.addEventListener('change', (e) => {
+        const key = e.target.dataset.input;
+        if (key) {
+          state[key] = e.target.value;
+          if (key === 'selectedComputer' && state.sheet === 'newTask') render();
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && state.sheet) {
+          state.sheet = null;
+          render();
+        }
+        if (
+          e.target.id === 'assistant-draft' &&
+          e.key === 'Enter' &&
+          !e.shiftKey &&
+          !e.isComposing
+        ) {
+          e.preventDefault();
+          sendInput();
+        }
+        if (e.key === 'Tab' && state.sheet) {
+          const controls = document.querySelectorAll(
+              '.sheet button:not(:disabled),.sheet input,.sheet textarea,.sheet select',
+            ),
+            first = controls[0],
+            last = controls[controls.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last?.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first?.focus();
+          }
+        }
+      });
+      document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const a = el.dataset.action,
+          v = el.dataset.value,
+          copy = t();
+        const board = e.target.closest('.device');
+        if (state.view === 'overview' && board) {
+          state.tab = Number(board.dataset.tab);
+          state.view = 'interactive';
+          render();
+        }
+        if (a === 'view') {
+          state.view = v;
+          state.sheet = null;
+          state.page = null;
+          state.live = false;
+          state.recording = false;
+          render();
+          return;
+        }
+        if (a === 'lang') {
+          state.lang = state.lang === 'zh' ? 'en' : 'zh';
+          render();
+          return;
+        }
+        if (a === 'tab') {
+          openTab(Number(v));
+          return;
+        }
+        if (a === 'back') {
+          state.page = null;
+          render();
+          return;
+        }
+        if (a === 'text') {
+          document.querySelector('#assistant-draft')?.focus();
+          return;
+        }
+        if (a === 'dismissReply') {
+          state.reply = null;
+          render();
+          return;
+        }
+        if (a === 'send') {
+          sendInput();
+          return;
+        }
+        if (a === 'voice') {
+          if (state.recording) {
+            state.recording = false;
+            state.draft = copy.voiceText;
+            render();
+            document.querySelector('#assistant-draft')?.focus();
+          } else {
+            state.recording = true;
+            render();
+          }
+          return;
+        }
+        if (a === 'cancelVoice') {
+          state.recording = false;
+          render();
+          return;
+        }
+        if (a === 'live') {
+          state.live = true;
+          state.liveStarted = Date.now();
+          state.recording = false;
+          render();
+          return;
+        }
+        if (a === 'mute') {
+          state.muted = !state.muted;
+          render();
+          return;
+        }
+        if (a === 'speaker') {
+          state.speaker = !state.speaker;
+          render();
+          return;
+        }
+        if (a === 'hangup') {
+          const duration = callDuration();
+          state.live = false;
+          state.liveStarted = null;
+          state.reply = {
+            text: `${copy.liveRecord} · ${duration} · ${copy.liveReply}`,
+          };
+          state.scrollToEnd = true;
+          openTab(0);
+          toast(copy.liveEnded);
+          return;
+        }
+        if (a === 'openTask') {
+          openTask(v);
+          return;
+        }
+        if (a === 'newTask') {
+          state.taskDraft = '';
+          openSheet('newTask');
+          return;
+        }
+        if (a === 'createTask') {
+          const text = state.taskDraft.trim();
+          if (!text) {
+            toast(copy.missingInput);
+            document.querySelector('#new-request')?.focus();
+            return;
+          }
+          const id = `demo-manual-${Date.now()}`,
+            available = machine(state.selectedComputer).online;
+          tasks.unshift({
+            id,
+            title: text,
+            computer: state.selectedComputer,
+            project: state.newProject,
+            agent: state.newAgent,
+            status: available ? 'running' : 'pending',
+            source: 'manual',
+            ...(available ? { session: `${id}-session` } : {}),
+          });
+          rememberRecent(id);
+          state.taskDraft = '';
+          openTab(1);
+          toast(available ? copy.added : copy.taskSaved);
+          return;
+        }
+        if (a === 'resumeTask') {
+          const task = tasks.find((x) => x.id === state.selectedTask);
+          if (!task) return;
+          if (!machine(state.selectedComputer).online) {
+            openSheet('computers');
+            return;
+          }
+          task.computer = state.selectedComputer;
+          task.status = 'running';
+          task.session = `${task.id}-session`;
+          task.activity = 'taskActivity';
+          render();
+          toast(copy.resumed);
+          return;
+        }
+        if (a === 'followup') {
+          const task = tasks.find((x) => x.id === state.selectedTask);
+          if (!task || !state.followup.trim()) {
+            document.querySelector('#task-followup')?.focus();
+            return;
+          }
+          task.followups ??= [];
+          task.followups.push(state.followup.trim());
+          state.followup = '';
+          render();
+          toast(copy.followupAdded);
+          return;
+        }
+        if (a === 'feedDetail') {
+          state.selectedFeed = Number(v);
+          state.tab = 2;
+          state.page = 'feed';
+          state.view = 'interactive';
+          render();
+          return;
+        }
+        if (a === 'taskArtifact') {
+          const task = tasks.find((item) => item.id === state.selectedTask);
+          if (!Number.isInteger(task?.artifactIndex)) return;
+          state.selectedFeed = task.artifactIndex;
+          state.tab = 2;
+          state.page = 'feed';
+          render();
+          return;
+        }
+        if (a === 'saveFeed') {
+          const i = state.selectedFeed % 6;
+          state.saved[i] = !state.saved[i];
+          render();
+          toast(state.saved[i] ? copy.saved : copy.removeSaved);
+          return;
+        }
+        if (a === 'notifications') {
+          state.notifications = !state.notifications;
+          render();
+          return;
+        }
+        if (a === 'setVoice') {
+          state.softVoice = v === '1';
+          state.sheet = null;
+          render();
+          return;
+        }
+        if (a === 'selectComputer') {
+          state.selectedComputer = v;
+          state.sheet = null;
+          render();
+          return;
+        }
+        if (a === 'editMemory') {
+          state.memoryEdit = state.memoryValue || copy.memoryValue;
+          openSheet('editMemory');
+          return;
+        }
+        if (a === 'saveMemory') {
+          if (!state.memoryEdit.trim()) return;
+          state.memoryValue = state.memoryEdit.trim();
+          state.sheet = null;
+          render();
+          toast(copy.memoryUpdated);
+          return;
+        }
+        if (a === 'forgetMemory') {
+          state.memoryForgot = true;
+          render();
+          toast(copy.memoryForgot);
+          return;
+        }
+        if (a === 'closeSheet') {
+          state.sheet = null;
+          render();
+          return;
+        }
+        if (
+          ['computers', 'memory', 'voiceSetting', 'privacy', 'about'].includes(
+            a,
+          )
+        ) {
+          openSheet(a);
+        }
+      });
+      setInterval(() => {
+        if (state.live) {
+          const el = document.querySelector('[data-call-time]');
+          if (el) el.textContent = callDuration();
+        }
+      }, 1000);
+      render();
+    </script>
+  </body>
+</html>

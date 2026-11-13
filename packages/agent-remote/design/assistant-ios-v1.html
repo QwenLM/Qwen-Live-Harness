@@ -1,0 +1,2774 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>我的助手 · iOS 设计提案 / My Assistant · iOS Design</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #f7f6f1;
+        --ink: #213c34;
+        --muted: #66756e;
+        --green: #275c4b;
+        --soft: #e7eee7;
+        --line: #dce1d8;
+        --peach: #f1dbca;
+        --ochre: #e9dfbc;
+        --orange: #965730;
+        --white: #fffefb;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #eaece6;
+        color: var(--ink);
+        font-family: 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+        color: inherit;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+      button {
+        border: 0;
+        background: none;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      textarea:focus-visible,
+      input:focus-visible {
+        outline: 3px solid #ac713b;
+        outline-offset: 3px;
+      }
+      svg {
+        width: 21px;
+        height: 21px;
+        flex-shrink: 0;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.65;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      a {
+        color: inherit;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .review-header {
+        height: 84px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #d3d9cf;
+        padding: 0 42px;
+        gap: 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .brand-mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: var(--ink);
+        color: var(--paper);
+        display: grid;
+        place-items: center;
+      }
+      .brand-mark svg {
+        width: 18px;
+        height: 18px;
+      }
+      .review-tabs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .review-tabs button,
+      .lang {
+        min-height: 44px;
+        padding: 0 17px;
+        font-size: 13px;
+        border-radius: 24px;
+      }
+      .review-tabs button.active {
+        background: var(--ink);
+        color: var(--paper);
+      }
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .edition {
+        font-size: 11px;
+        color: #5f6f64;
+        letter-spacing: 0.12em;
+      }
+      .lang {
+        border: 1px solid #c6cec1;
+        min-width: 52px;
+        padding: 0 12px;
+      }
+      .preview {
+        max-width: 1250px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: minmax(300px, 1fr) 430px 160px;
+        gap: 46px;
+        align-items: center;
+        padding: 46px 32px 55px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.2em;
+        color: #596f60;
+        text-transform: uppercase;
+      }
+      .intro h1 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 54px;
+        line-height: 1.22;
+        letter-spacing: -0.03em;
+        font-weight: 500;
+        margin: 23px 0;
+      }
+      .intro > .lede {
+        max-width: 350px;
+        font-size: 15px;
+        line-height: 1.9;
+        color: #53655b;
+      }
+      .design-position {
+        margin-top: 32px;
+        padding-top: 25px;
+        border-top: 1px solid #ccd4c7;
+        max-width: 350px;
+      }
+      .design-position h2 {
+        font-size: 16px;
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      .design-position p {
+        font-size: 13px;
+        line-height: 1.9;
+        margin: 0;
+        color: #5b6c61;
+      }
+      .scenario {
+        margin-top: 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        max-width: 350px;
+      }
+      .scenario button {
+        min-height: 36px;
+        padding: 0 11px;
+        border: 1px solid #c6cec1;
+        border-radius: 18px;
+        font-size: 11px;
+      }
+      .scenario button.active {
+        background: #d4decf;
+        border-color: #a3b69c;
+      }
+      .demo-note {
+        font-size: 11px;
+        color: #657267;
+        line-height: 1.8;
+        margin-top: 18px;
+        max-width: 350px;
+      }
+      .device-wrap {
+        justify-self: center;
+        position: relative;
+      }
+      .device-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 0 5px 16px;
+        font-size: 11px;
+        color: #64715f;
+        letter-spacing: 0.08em;
+      }
+      .phone {
+        width: 393px;
+        height: 852px;
+        border: 1px solid #b1b6aa;
+        border-radius: 45px;
+        background: var(--paper);
+        overflow: hidden;
+        position: relative;
+        box-shadow:
+          0 0 0 7px #26332d,
+          0 0 0 9px #a2ab9c,
+          0 24px 55px #22342819;
+        display: flex;
+        flex-direction: column;
+      }
+      .statusbar {
+        flex: 0 0 49px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 25px 0 30px;
+        color: #1d2e26;
+        font-weight: 600;
+        font-size: 14px;
+        position: relative;
+      }
+      .island {
+        width: 105px;
+        height: 28px;
+        background: #1a211c;
+        border-radius: 30px;
+        position: absolute;
+        left: 50%;
+        top: 11px;
+        transform: translateX(-50%);
+      }
+      .status-icons {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .status-icons svg {
+        width: 16px;
+        height: 16px;
+        stroke-width: 2;
+      }
+      .phone-inner {
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+      }
+      .screen-header {
+        height: 62px;
+        padding: 0 18px 0 22px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      .screen-title {
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.04em;
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .icon-button {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        flex-shrink: 0;
+        border-radius: 50%;
+      }
+      .icon-button:hover {
+        background: #e2e9df;
+      }
+      .online {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 8px 9px;
+        border: 1px solid #d5dfd1;
+        border-radius: 20px;
+        min-height: 36px;
+      }
+      .dot {
+        width: 5px;
+        height: 5px;
+        background: #4b7b50;
+        border-radius: 50%;
+        display: inline-block;
+        flex-shrink: 0;
+      }
+      .dot.amber {
+        background: #a86b32;
+      }
+      .scroll {
+        min-height: 0;
+        overflow: auto;
+        scrollbar-width: none;
+        flex: 1;
+        overscroll-behavior: contain;
+      }
+      .scroll::-webkit-scrollbar {
+        display: none;
+      }
+      .home-top {
+        padding: 14px 22px 0;
+      }
+      .home-top {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: var(--paper);
+        padding-bottom: 10px;
+      }
+      .online,
+      .filters button,
+      .composer-actions .icon-button,
+      .memory-tools button {
+        min-height: 44px;
+      }
+      .composer-actions .icon-button {
+        width: 44px;
+        height: 44px;
+      }
+      .captured-input {
+        margin: 0 24px 18px;
+        padding: 12px 15px;
+        border-left: 2px solid #b2c4a7;
+        color: #687b62;
+        font-size: 12px;
+        line-height: 1.85;
+      }
+      .intake-copy {
+        margin: 0 24px 22px;
+        color: #5c7255;
+        font-size: 14px;
+        line-height: 1.95;
+      }
+      .intake-choices {
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+        margin: 10px 24px 20px;
+      }
+      .intake-choices button {
+        min-height: 49px;
+        padding: 12px;
+        background: #e5eddf;
+        border: 1px solid #c5d6bb;
+        border-radius: 13px;
+        text-align: left;
+        font-size: 14px;
+      }
+      .linked-goal {
+        margin-top: 10px;
+        color: #476d42;
+        font-size: 11px;
+      }
+      .greeting {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 28px;
+        line-height: 1.4;
+        margin: 0 0 7px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+      .subtle {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.65;
+        margin: 0;
+      }
+      .composer {
+        border: 1px solid #c7d3c6;
+        border-radius: 22px;
+        background: var(--white);
+        margin-top: 20px;
+        padding: 14px 14px 10px;
+        box-shadow: 0 5px 14px #213c3404;
+      }
+      .composer textarea {
+        width: 100%;
+        height: 46px;
+        border: 0;
+        resize: none;
+        outline-offset: 0;
+        padding: 0 3px;
+        background: none;
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+      .composer textarea::placeholder {
+        color: #718173;
+      }
+      .composer-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .composer-hint {
+        font-size: 10px;
+        color: #718073;
+        display: flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .composer-hint svg {
+        width: 13px;
+        height: 13px;
+      }
+      .composer-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .mic {
+        background: #edf1e9;
+        width: 42px;
+        height: 42px;
+      }
+      .send {
+        background: var(--green);
+        color: var(--white);
+        width: 42px;
+        height: 42px;
+      }
+      .send:hover {
+        background: #1f4b3e;
+      }
+      .feed-header {
+        padding: 27px 22px 13px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .feed-header h2 {
+        font-size: 17px;
+        margin: 0;
+        font-weight: 600;
+      }
+      .tiny-label {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .filters {
+        display: flex;
+        gap: 7px;
+        padding: 0 22px 16px;
+      }
+      .filters button {
+        border-radius: 16px;
+        font-size: 11px;
+        padding: 0 12px;
+        min-height: 32px;
+        color: #617368;
+      }
+      .filters button.active {
+        background: #e0e8dc;
+        color: #294b3b;
+        font-weight: 600;
+      }
+      .feed {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        padding: 0 16px 24px;
+        align-items: start;
+      }
+      .feed-column {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .feed-card {
+        text-align: left;
+        padding: 0;
+        border-radius: 13px;
+        width: 100%;
+        display: block;
+      }
+      .cover {
+        border-radius: 13px;
+        overflow: hidden;
+        position: relative;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        text-align: left;
+      }
+      .cover-design {
+        height: 210px;
+        background: #dbe5d9;
+        padding: 17px 14px;
+      }
+      .cover-kicker {
+        font-size: 8px;
+        letter-spacing: 0.13em;
+        font-weight: 600;
+      }
+      .cover h3 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 1.3;
+        margin: 10px 0 0;
+        letter-spacing: -0.04em;
+      }
+      .mini-ui {
+        position: absolute;
+        width: 81px;
+        height: 123px;
+        background: #f8f7ee;
+        bottom: -19px;
+        right: 18px;
+        transform: rotate(12deg);
+        border: 3px solid #304b3c;
+        border-radius: 14px;
+        padding: 10px 6px;
+        box-shadow: -14px 9px 0 #b5c8af;
+      }
+      .mini-ui .mini-line {
+        width: 75%;
+        height: 3px;
+        background: #94a58b;
+        margin-bottom: 5px;
+        border-radius: 3px;
+      }
+      .mini-ui .mini-input {
+        height: 25px;
+        border: 1px solid #b8c7ac;
+        border-radius: 6px;
+        margin: 9px 0;
+      }
+      .mini-tiles {
+        display: flex;
+        gap: 4px;
+      }
+      .mini-tiles i {
+        height: 40px;
+        width: 50%;
+        background: #d2dec7;
+        border-radius: 4px;
+      }
+      .mini-tiles i + i {
+        background: #e5c8b2;
+        height: 48px;
+      }
+      .cover-recap {
+        height: 153px;
+        background: var(--peach);
+        padding: 17px 14px;
+        color: #613f2e;
+      }
+      .cover-recap h3 {
+        font-size: 25px;
+        margin-top: 17px;
+      }
+      .cover-recap .small-note {
+        font-size: 9px;
+        margin-top: 12px;
+      }
+      .cover-insight {
+        height: 183px;
+        background: #e7e5d5;
+        padding: 17px 14px;
+        color: #4a513a;
+      }
+      .cover-insight h3 {
+        font-size: 23px;
+        margin-top: 14px;
+      }
+      .insight-lines {
+        position: absolute;
+        bottom: 16px;
+        left: 15px;
+        right: 15px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .insight-lines i {
+        width: 25px;
+        height: 25px;
+        border: 1px solid #a8b099;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-style: normal;
+        font-size: 9px;
+      }
+      .insight-lines b {
+        height: 1px;
+        background: #a8b099;
+        flex: 1;
+      }
+      .cover-report {
+        height: 150px;
+        background: #315d4d;
+        color: #f5eedb;
+        padding: 17px 14px;
+      }
+      .cover-report h3 {
+        font-size: 24px;
+      }
+      .report-mark {
+        margin-top: 15px;
+        width: 36px;
+        height: 3px;
+        background: #a8c0a5;
+      }
+      .card-title {
+        font-size: 13px;
+        font-weight: 550;
+        line-height: 1.6;
+        margin: 8px 3px 5px;
+      }
+      .card-meta {
+        margin: 0 3px;
+        font-size: 9px;
+        color: #647565;
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        line-height: 1.5;
+      }
+      .card-meta .dot {
+        width: 4px;
+        height: 4px;
+      }
+      .tabbar {
+        flex: 0 0 77px;
+        border-top: 1px solid #dde3d7;
+        display: flex;
+        justify-content: space-around;
+        padding: 8px 35px 14px;
+        background: var(--paper);
+      }
+      .tabbar button {
+        width: 118px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        gap: 4px;
+        color: #7b8579;
+        font-size: 10px;
+      }
+      .tabbar button.active {
+        color: var(--green);
+        font-weight: 600;
+      }
+      .tabbar svg {
+        width: 22px;
+        height: 22px;
+      }
+      .home-indicator {
+        width: 125px;
+        height: 5px;
+        border-radius: 6px;
+        position: absolute;
+        bottom: 7px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #243a2d;
+        z-index: 5;
+        pointer-events: none;
+      }
+      .screen-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .screen-rail button {
+        min-height: 53px;
+        display: flex;
+        gap: 11px;
+        align-items: center;
+        text-align: left;
+        color: #6a796b;
+        padding: 8px;
+        border-radius: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .screen-rail button.active {
+        background: #dde4d6;
+        color: #214732;
+      }
+      .rail-number {
+        font-size: 10px;
+        font-family: Georgia, serif;
+        opacity: 0.7;
+      }
+      .rail-rule {
+        height: 1px;
+        background: #ccd4c7;
+        margin: 12px 8px;
+      }
+      .rail-caption {
+        font-size: 10px;
+        line-height: 1.8;
+        color: #6d786c;
+        padding: 0 8px;
+      }
+      .page-pad {
+        padding: 14px 22px 25px;
+      }
+      .back-title {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .voice-body {
+        padding: 25px 27px 24px;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+      }
+      .voice-state {
+        color: #537a5a;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .transcript {
+        font-size: 27px;
+        line-height: 1.65;
+        font-weight: 500;
+        letter-spacing: -0.035em;
+        margin: 26px 0 18px;
+      }
+      .transcript .faint {
+        color: #71826d;
+      }
+      .voice-edit {
+        border: 1px solid #c7d3c6;
+        border-radius: 13px;
+        padding: 12px;
+        width: 100%;
+        min-height: 185px;
+        font-size: 20px;
+        line-height: 1.6;
+        background: var(--white);
+        color: var(--ink);
+        resize: vertical;
+      }
+      .context-chip {
+        align-self: flex-start;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: #5e725d;
+        background: #e8ede2;
+        padding: 9px 12px;
+        border-radius: 20px;
+        margin-top: 8px;
+      }
+      .context-chip svg {
+        width: 13px;
+        height: 13px;
+      }
+      .voice-space {
+        flex: 1;
+        min-height: 28px;
+      }
+      .waveform {
+        height: 52px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        margin: 12px 0 21px;
+      }
+      .waveform i {
+        width: 4px;
+        border-radius: 4px;
+        background: #61866b;
+        transform: scaleY(0.8);
+        animation: listen 1.4s ease-in-out infinite alternate;
+      }
+      .waveform i:nth-child(3n) {
+        animation-delay: -0.7s;
+      }
+      .waveform i:nth-child(3n + 1) {
+        animation-delay: -0.3s;
+      }
+      @keyframes listen {
+        to {
+          transform: scaleY(0.45);
+          opacity: 0.65;
+        }
+      }
+      .voice-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .text-button {
+        min-height: 44px;
+        font-size: 12px;
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+      .record-button {
+        width: 66px;
+        height: 66px;
+        border: 1px solid #9eb39c;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: #e5ecdf;
+      }
+      .stop-square {
+        width: 19px;
+        height: 19px;
+        border-radius: 5px;
+        background: var(--green);
+      }
+      .voice-caption {
+        text-align: center;
+        font-size: 11px;
+        color: var(--muted);
+        margin: 16px 0 25px;
+      }
+      .primary {
+        background: var(--green);
+        color: var(--white);
+        border-radius: 15px;
+        min-height: 50px;
+        padding: 12px 18px;
+        font-size: 14px;
+        font-weight: 550;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        width: 100%;
+      }
+      .primary svg {
+        width: 17px;
+        height: 17px;
+      }
+      .secondary {
+        border: 1px solid #bdcbb8;
+        min-height: 44px;
+        border-radius: 12px;
+        padding: 10px 15px;
+        font-size: 12px;
+        width: 100%;
+        margin-top: 10px;
+      }
+      .receipt-hero {
+        padding: 23px 24px 20px;
+      }
+      .ack-icon {
+        width: 47px;
+        height: 47px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #a7c3a1;
+        border-radius: 50%;
+        color: var(--green);
+        margin-bottom: 20px;
+      }
+      .receipt-hero h2 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 30px;
+        font-weight: 600;
+        margin: 0 0 12px;
+        line-height: 1.4;
+        letter-spacing: -0.03em;
+      }
+      .receipt-hero p {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.9;
+        margin: 0;
+      }
+      .task-receipt {
+        border: 1px solid #d2dccb;
+        border-radius: 18px;
+        margin: 0 22px;
+        padding: 18px;
+        background: #fffdf7;
+      }
+      .task-eyebrow {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: #63745f;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .task-receipt h3 {
+        font-size: 17px;
+        line-height: 1.55;
+        margin: 12px 0 18px;
+      }
+      .receipt-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+        margin: 11px 0;
+      }
+      .receipt-row svg {
+        width: 17px;
+        height: 17px;
+        color: #657c64;
+      }
+      .receipt-row span {
+        flex: 1;
+      }
+      .receipt-row small {
+        color: #72816e;
+        font-size: 10px;
+      }
+      .session-id {
+        border-top: 1px solid #e0e5d9;
+        padding-top: 9px;
+        margin-top: 15px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 10px;
+        color: #71816d;
+      }
+      .session-id button {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 35px;
+        padding: 0 5px;
+      }
+      .session-id svg {
+        width: 13px;
+        height: 13px;
+      }
+      .reason {
+        margin: 17px 24px 0;
+        font-size: 11px;
+        color: #657862;
+        line-height: 1.8;
+      }
+      .reason button {
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0;
+        min-height: 35px;
+      }
+      .reason svg {
+        width: 13px;
+        height: 13px;
+      }
+      .bottom-actions {
+        margin-top: auto;
+        padding: 24px 22px 26px;
+      }
+      .bottom-actions .subtle {
+        text-align: center;
+        font-size: 10px;
+        margin: 12px 0 0;
+      }
+      .workbench-top {
+        padding: 8px 22px 16px;
+      }
+      .workbench-top h2 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 27px;
+        line-height: 1.4;
+        margin: 11px 0 7px;
+        font-weight: 600;
+      }
+      .project-selector {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #677e65;
+        font-size: 11px;
+      }
+      .project-selector svg {
+        width: 14px;
+        height: 14px;
+      }
+      .segmented {
+        display: flex;
+        background: #e7ecdf;
+        border-radius: 10px;
+        padding: 3px;
+        margin-top: 18px;
+      }
+      .segmented button {
+        min-height: 33px;
+        flex: 1;
+        border-radius: 8px;
+        font-size: 12px;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        justify-content: center;
+      }
+      .segmented button.active {
+        background: var(--white);
+        box-shadow: 0 1px 4px #203c3410;
+      }
+      .segmented svg {
+        width: 14px;
+        height: 14px;
+      }
+      .tree {
+        padding: 5px 22px 20px;
+      }
+      .goal-node {
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 0 18px;
+        font-weight: 600;
+      }
+      .goal-icon {
+        width: 28px;
+        height: 28px;
+        background: #dce6d4;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+      }
+      .goal-icon svg {
+        width: 14px;
+        height: 14px;
+      }
+      .tree-children {
+        margin-left: 13px;
+        border-left: 1px solid #b9c9ad;
+        padding: 0 0 0 23px;
+      }
+      .tree-node {
+        position: relative;
+        width: 100%;
+        text-align: left;
+        padding: 11px 13px;
+        border: 1px solid #d9e0d2;
+        background: #fdfcf7;
+        border-radius: 12px;
+        display: block;
+        margin-bottom: 13px;
+      }
+      .tree-node::before {
+        content: '';
+        position: absolute;
+        left: -24px;
+        top: 26px;
+        width: 23px;
+        height: 1px;
+        background: #b9c9ad;
+      }
+      .tree-node.selected {
+        border-color: #7e9f77;
+        background: #e9f0e2;
+      }
+      .node-top {
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 7px;
+        font-weight: 550;
+        line-height: 1.5;
+      }
+      .node-status {
+        color: #5f7c56;
+        font-size: 9px;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+      .node-status.pending {
+        color: #817951;
+      }
+      .node-meta {
+        color: #6e7d66;
+        font-size: 9px;
+        margin-top: 7px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .node-meta svg {
+        width: 11px;
+        height: 11px;
+      }
+      .subtask {
+        border-left: 1px dashed #bdcbb2;
+        margin-left: 15px;
+        padding: 0 0 0 14px;
+        font-size: 10px;
+        color: #75806b;
+        min-height: 32px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .selection-panel {
+        margin: 0 22px 18px;
+        padding: 15px;
+        border-top: 1px solid #ced8c6;
+      }
+      .selection-panel h3 {
+        font-size: 14px;
+        margin: 8px 0;
+      }
+      .selection-panel p {
+        font-size: 11px;
+        line-height: 1.8;
+        color: #66785f;
+        margin: 0;
+      }
+      .session-link {
+        color: var(--green);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        min-height: 44px;
+        padding: 0;
+        margin-top: 6px;
+      }
+      .session-link svg {
+        width: 14px;
+        height: 14px;
+      }
+      .graph-wrap {
+        height: 298px;
+        position: relative;
+        margin: 0 13px 15px;
+        border: 1px solid #dce3d3;
+        border-radius: 16px;
+        background-image: radial-gradient(#ccd5c4 0.8px, transparent 0.8px);
+        background-size: 16px 16px;
+        overflow: hidden;
+      }
+      .graph-lines {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        stroke: #a6b99c;
+        stroke-width: 1.2;
+      }
+      .graph-node {
+        position: absolute;
+        padding: 11px 12px;
+        border: 1px solid #b8cbae;
+        border-radius: 11px;
+        background: #f9fbf3;
+        font-size: 11px;
+        text-align: left;
+        min-height: 48px;
+      }
+      .graph-node.root {
+        top: 25px;
+        left: 104px;
+        background: #dfead6;
+      }
+      .graph-node.a {
+        top: 117px;
+        left: 12px;
+      }
+      .graph-node.b {
+        top: 117px;
+        right: 12px;
+        background: #2b5a46;
+        color: #fff8e9;
+      }
+      .graph-node.c {
+        top: 219px;
+        left: 118px;
+      }
+      .graph-legend {
+        padding: 0 24px 15px;
+        font-size: 9px;
+        color: #718069;
+      }
+      .detail-hero {
+        margin: 12px 21px 0;
+        height: 260px;
+        background: #dce6d8;
+        border-radius: 20px;
+        padding: 23px;
+        overflow: hidden;
+        position: relative;
+      }
+      .detail-hero .cover-kicker {
+        font-size: 10px;
+      }
+      .detail-hero h2 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 34px;
+        line-height: 1.32;
+        font-weight: 600;
+        margin: 21px 0 0;
+        letter-spacing: -0.035em;
+      }
+      .detail-hero .mini-ui {
+        width: 95px;
+        height: 145px;
+        bottom: -48px;
+        right: 32px;
+        border-radius: 19px;
+        padding: 17px 9px;
+        box-shadow: -19px 13px 0 #b4c9ac;
+      }
+      .detail-text {
+        padding: 21px 23px;
+      }
+      .detail-text h2 {
+        font-size: 21px;
+        line-height: 1.5;
+        margin: 10px 0 12px;
+        letter-spacing: -0.025em;
+      }
+      .detail-text p {
+        font-size: 13px;
+        line-height: 1.95;
+        color: #596f5b;
+        margin: 0 0 18px;
+      }
+      .provenance {
+        border-top: 1px solid #d5decf;
+        padding: 16px 0 0;
+        font-size: 11px;
+        color: #6a7d66;
+        line-height: 1.8;
+      }
+      .provenance b {
+        display: block;
+        color: #3f6044;
+        font-weight: 550;
+        margin-bottom: 4px;
+      }
+      .detail-actions {
+        display: flex;
+        gap: 9px;
+        padding: 12px 22px 30px;
+        margin-top: auto;
+        border-top: 1px solid #dbe2d5;
+      }
+      .detail-actions .primary {
+        flex: 1;
+      }
+      .detail-actions .icon-button {
+        border: 1px solid #bfceb6;
+        width: 50px;
+        height: 50px;
+        border-radius: 14px;
+      }
+      .memory-intro {
+        padding: 13px 23px 16px;
+      }
+      .memory-intro h2 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 29px;
+        line-height: 1.4;
+        margin: 0 0 13px;
+        font-weight: 600;
+      }
+      .memory-section {
+        padding: 9px 23px 14px;
+      }
+      .section-heading {
+        font-size: 12px;
+        font-weight: 600;
+        color: #5f755c;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .memory-entry {
+        border-top: 1px solid #d6dfce;
+        padding: 17px 0 12px;
+      }
+      .memory-entry h3 {
+        font-size: 15px;
+        line-height: 1.6;
+        margin: 0 0 8px;
+        font-weight: 550;
+      }
+      .memory-entry p {
+        margin: 0;
+        font-size: 11px;
+        color: #677c62;
+        line-height: 1.85;
+      }
+      .memory-entry .source {
+        font-size: 10px;
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .source svg {
+        width: 12px;
+        height: 12px;
+      }
+      .memory-tools {
+        display: flex;
+        gap: 15px;
+        margin-top: 5px;
+      }
+      .memory-tools button {
+        min-height: 36px;
+        padding: 0;
+        font-size: 11px;
+        color: #476e4a;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .memory-inference {
+        background: #ebe9d8;
+        padding: 15px;
+        border-radius: 14px;
+      }
+      .memory-inference h3 {
+        font-size: 14px;
+        margin: 9px 0;
+        line-height: 1.6;
+      }
+      .memory-inference p {
+        color: #6e7354;
+        font-size: 11px;
+        line-height: 1.8;
+        margin: 0;
+      }
+      .memory-footer {
+        font-size: 10px;
+        color: #708168;
+        line-height: 1.85;
+        padding: 12px 23px 32px;
+      }
+      .inline-receipt {
+        margin: 15px 22px 0;
+        border: 1px solid #bacdb0;
+        background: #e5eddf;
+        border-radius: 12px;
+        padding: 12px;
+        text-align: left;
+        width: calc(100% - 44px);
+        display: flex;
+        gap: 9px;
+        align-items: center;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+      .inline-receipt span {
+        flex: 1;
+      }
+      .inline-receipt svg {
+        width: 17px;
+        height: 17px;
+      }
+      .toast {
+        position: fixed;
+        bottom: 25px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 14px 22px;
+        background: #243f32;
+        color: #fff8eb;
+        border-radius: 14px;
+        font-size: 13px;
+        z-index: 50;
+        max-width: 90vw;
+        box-shadow: 0 5px 22px #1d33242b;
+      }
+      .sheet-scrim {
+        position: absolute;
+        inset: 0;
+        z-index: 10;
+        background: #19342130;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+      }
+      .sheet {
+        background: #f7f8ef;
+        border-radius: 26px 26px 0 0;
+        padding: 9px 22px 33px;
+        max-height: 91%;
+        overflow: auto;
+        box-shadow: 0 -8px 25px #25382d12;
+      }
+      .sheet-handle {
+        width: 35px;
+        height: 4px;
+        border-radius: 4px;
+        margin: 0 auto 12px;
+        background: #c2cdb9;
+      }
+      .sheet-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .sheet-head h2 {
+        font-size: 19px;
+        margin: 0;
+      }
+      .sheet p {
+        font-size: 12px;
+        line-height: 1.9;
+        color: #60775c;
+      }
+      .computer {
+        padding: 17px 0;
+        border-top: 1px solid #d3dfca;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .computer svg {
+        width: 25px;
+        height: 25px;
+      }
+      .computer div {
+        flex: 1;
+      }
+      .computer h3 {
+        font-size: 14px;
+        margin: 0 0 7px;
+      }
+      .computer p {
+        font-size: 10px;
+        margin: 0;
+      }
+      .computer small {
+        font-size: 10px;
+        color: #5e7a50;
+      }
+      .sheet input {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #b9caae;
+        border-radius: 10px;
+        background: var(--white);
+        font-size: 14px;
+        color: var(--ink);
+        margin: 10px 0;
+      }
+      .boards {
+        max-width: 1350px;
+        margin: 0 auto;
+        padding: 45px 35px 65px;
+      }
+      .boards-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        margin-bottom: 38px;
+      }
+      .boards h1 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-size: 37px;
+        font-weight: 500;
+        margin: 12px 0 0;
+      }
+      .boards-heading p {
+        font-size: 12px;
+        line-height: 1.9;
+        color: #63755f;
+        max-width: 335px;
+        margin: 0;
+      }
+      .boards-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 393px);
+        gap: 48px 45px;
+        justify-content: center;
+      }
+      .board-caption {
+        padding: 18px 0 0;
+        display: flex;
+        gap: 12px;
+        font-size: 12px;
+        align-items: baseline;
+      }
+      .board-caption small {
+        font-size: 10px;
+        color: #64755d;
+      }
+      .board-note {
+        font-size: 11px;
+        line-height: 1.8;
+        color: #64755d;
+        margin: 7px 0 0;
+        max-width: 375px;
+      }
+      .spec {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 60px 40px 100px;
+      }
+      .spec h1 {
+        font-family: 'Songti SC', Georgia, serif;
+        font-weight: 500;
+        font-size: 45px;
+        line-height: 1.35;
+        margin: 18px 0 27px;
+      }
+      .spec-lede {
+        max-width: 780px;
+        font-size: 17px;
+        line-height: 1.95;
+        color: #516b54;
+      }
+      .spec-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 44px 64px;
+        margin-top: 45px;
+      }
+      .spec section {
+        border-top: 1px solid #bdccb5;
+        padding-top: 22px;
+      }
+      .spec h2 {
+        font-size: 21px;
+        margin: 0 0 16px;
+        font-weight: 550;
+      }
+      .spec p,
+      .spec li {
+        color: #536d53;
+        font-size: 14px;
+        line-height: 1.95;
+      }
+      .spec ul {
+        padding-left: 20px;
+      }
+      .spec li {
+        margin: 8px 0;
+      }
+      .flow {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 9px;
+        padding: 22px 0;
+        margin: 28px 0;
+        border-top: 1px solid #c2ceba;
+        border-bottom: 1px solid #c2ceba;
+      }
+      .flow span {
+        font-size: 13px;
+        padding: 10px 14px;
+        background: #dde7d5;
+        border-radius: 7px;
+      }
+      .flow b {
+        font-weight: 400;
+        color: #809375;
+      }
+      .compact .boards-grid > article:nth-child(n + 4) {
+        display: none;
+      }
+      .online,
+      .filters button,
+      .memory-tools button {
+        min-height: 44px;
+      }
+      @media (min-width: 1700px) {
+        .preview {
+          padding-top: 65px;
+        }
+      }
+      @media (max-width: 1150px) {
+        .preview {
+          grid-template-columns: minmax(230px, 1fr) 410px;
+          max-width: 910px;
+          gap: 36px;
+        }
+        .screen-rail {
+          grid-column: 1 / -1;
+          flex-direction: row;
+          justify-content: center;
+          flex-wrap: wrap;
+        }
+        .rail-rule,
+        .rail-caption {
+          display: none;
+        }
+        .intro h1 {
+          font-size: 46px;
+        }
+        .boards-grid {
+          grid-template-columns: repeat(2, 393px);
+          gap: 45px;
+        }
+      }
+      @media (max-width: 780px) {
+        .review-header {
+          height: auto;
+          padding: 15px 18px;
+          flex-wrap: wrap;
+          gap: 12px;
+        }
+        .header-right {
+          margin-left: auto;
+        }
+        .edition {
+          display: none;
+        }
+        .review-tabs {
+          order: 3;
+          width: 100%;
+          justify-content: center;
+        }
+        .review-tabs button {
+          flex: 1;
+        }
+        .preview {
+          display: flex;
+          flex-direction: column;
+          padding: 30px 15px;
+          gap: 30px;
+        }
+        .intro {
+          width: min(100%, 393px);
+          order: 1;
+        }
+        .device-wrap {
+          order: 0;
+        }
+        .intro h1 {
+          font-size: 35px;
+          margin: 12px 0;
+        }
+        .intro .lede {
+          font-size: 13px;
+        }
+        .design-position,
+        .demo-note {
+          display: none;
+        }
+        .scenario {
+          margin-top: 14px;
+        }
+        .screen-rail {
+          max-width: 420px;
+          order: 2;
+        }
+        .screen-rail button {
+          font-size: 11px;
+          min-height: 44px;
+        }
+        .boards {
+          padding: 32px 16px;
+        }
+        .boards-grid {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 38px;
+        }
+        .boards-heading {
+          display: block;
+        }
+        .boards-heading p {
+          margin-top: 15px;
+        }
+        .boards h1 {
+          font-size: 29px;
+        }
+        .spec {
+          padding: 35px 23px;
+        }
+        .spec h1 {
+          font-size: 34px;
+        }
+        .spec-grid {
+          grid-template-columns: 1fr;
+          gap: 28px;
+        }
+        .spec-lede {
+          font-size: 15px;
+        }
+      }
+      @media (max-width: 425px) {
+        .phone {
+          width: calc(100vw - 34px);
+          height: calc((100vw - 34px) * 2.168);
+          min-height: 770px;
+          border-radius: 40px;
+        }
+        .device-wrap,
+        .boards-grid > article {
+          width: calc(100vw - 34px);
+        }
+        .screen-title {
+          font-size: 21px;
+        }
+        .transcript {
+          font-size: 25px;
+        }
+        .greeting {
+          font-size: 26px;
+        }
+        .cover h3 {
+          font-size: 22px;
+        }
+        .cover-design {
+          height: 200px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script>
+      // This standalone design uses fictional fixtures only. It makes no network,
+      // microphone, model, machine, notification, or durable-memory calls.
+      const zh = {
+        brand: 'AGENT REMOTE / 我的助手',
+        preview: '交互预览',
+        boards: '全部画板',
+        spec: '设计说明',
+        edition: 'iOS CONCEPT · 01 / 2026.11',
+        eyebrow: 'PERSONAL ASSISTANT, REIMAGINED',
+        headline: '一个入口，<br>接住所有想法。',
+        lede: '你负责表达，助手负责记住、理解和安排。工作在电脑上继续，值得看的结果回到你身边。',
+        demo: '可点击的概念设计。全部内容为示例；未连接真实电脑、记忆、麦克风或推送服务。',
+        scenarioLabel: '模拟分派状态',
+        healthy: '正常分派',
+        offline: '全部离线',
+        uncertain: '回执未确认',
+        screenNames: [
+          '助手首页',
+          '语音输入',
+          '分派回执',
+          '我的工作台',
+          '成果详情',
+          '记忆与理解',
+        ],
+        screenNotes: [
+          '唯一的表达入口。成果、回顾与洞察组成有来源的信息流。',
+          '先接住自然表达。识别结果可编辑，发送后才交给助手处理。',
+          '展示任务名、电脑与 Agent。用户自己决定是否进入工作台。',
+          '以目标组织任务树；需要跨任务关系时再切换网图。',
+          '先看产物，再追溯任务。支持收藏、查看来源和继续推进。',
+          '长期记忆与推测分开。每条都有来源，并能修改或忘记。',
+        ],
+        rail: '同一条体验路径<br>表达 → 分派 → 执行 → 成果',
+        assistant: '我的助手',
+        workbench: '我的工作台',
+        online: '2 台可用',
+        noOnline: '暂无可用电脑',
+        computers: '可用电脑',
+        memory: '记忆与理解',
+        greet: '想到了，就交给我。',
+        greetSub: '一个念头，或一件想完成的事。',
+        placeholder: '把想法放在这里…',
+        continuity: '会联系之前的上下文',
+        send: '交给助手',
+        voice: '语音输入',
+        forYou: '为你准备',
+        feedTime: '今天 · 11 月 13 日',
+        filters: ['全部', '成果', '洞察', '回顾'],
+        designKicker: 'IOS / DESIGN STUDY',
+        designCover: '一个入口，<br>很多种可能。',
+        designTitle: '「我的助手」第一版设计，已经可以看了',
+        artifactMeta: '任务产物 · 09:12',
+        recapKicker: 'YOUR DAILY RECAP',
+        recapCover: '昨天的事，<br>有了新进展。',
+        recapTitle: '把昨天的进展，收成一页',
+        recapNote: '一份可以接着往前的回顾',
+        recapMeta: '每日回顾 · 08:30',
+        insightKicker: 'A THOUGHT FOR YOU',
+        insightCover: '这些想法，<br>也许是同一件事。',
+        insightTitle: '语音、记忆、任务路由，可以收进同一个目标',
+        insightMeta: '待确认洞察 · 为什么推荐',
+        reportKicker: 'RESEARCH / NOTE 04',
+        reportCover: '长期记忆，<br>先保留依据。',
+        reportTitle: '整理了一份记忆与压缩的设计笔记',
+        reportMeta: '任务产物 · 昨天',
+        tabAssistant: '我的助手',
+        tabWorkbench: '我的工作台',
+        latestReceipt: '已分派 · iOS 助手模块设计',
+        latestQueued: '等待电脑上线 · iOS 助手模块设计',
+        latestUnknown: '正在确认分派结果 · 不会重复派单',
+        back: '返回',
+        close: '关闭',
+        voiceTitle: '说给我听',
+        listening: '正在听 · 演示',
+        voiceStopped: '录音已停止 · 演示',
+        transcript:
+          "帮我把 iOS 助手模块<br>先做一版设计。<br><span class='faint'>延续之前的方向，<br>不要做成聊天界面。</span>",
+        request:
+          '帮我把 iOS 助手模块先做一版设计，延续之前的方向，不要做成聊天界面。',
+        associated: '关联到「iOS 助手体验」',
+        editText: '编辑文字',
+        stop: '停止录音',
+        resume: '继续录音',
+        voiceHint: '点按停止，编辑后再发送',
+        voiceStoppedHint: '确认文字后，交给助手处理',
+        typedLabel: '输入想法',
+        receiptTitle: '交给它了，<br>你可以继续想。',
+        receiptSub:
+          'Mac mini 已接收任务并返回会话标识。<br>有结果后，会出现在「为你准备」。',
+        queuedTitle: '已经接住，<br>等电脑回来。',
+        queuedSub:
+          '当前没有可执行这项工作的电脑。<br>想法保存在此演示中，尚未派单。',
+        unknownTitle: '正在确认，<br>先不重复派单。',
+        unknownSub:
+          '请求已经发出，但尚未收到电脑回执。<br>确认结果前，不会自动创建第二个任务。',
+        running: '进行中',
+        queued: '待分派',
+        confirming: '回执待确认',
+        taskName: 'iOS 助手模块设计',
+        project: 'Agent Remote / iOS',
+        taskComputer: 'Mac mini',
+        taskAgent: 'Qwen Code',
+        writable: '项目可访问',
+        working: '正在整理信息结构与关键界面',
+        session: 'Session',
+        copy: '复制标识',
+        copied: '已复制示例会话标识',
+        copyUnavailable: '浏览器未允许复制，请选择标识文本复制',
+        noSession: '收到电脑回执后才显示 Session ID',
+        routeReason: '为什么交给这台电脑？',
+        reasonText:
+          'Mac mini 在线，拥有目标项目的访问权限，Qwen Code 已就绪；这也延续了此项目上一次的执行环境。可用状态不等于手机当前选中的电脑。',
+        viewWorkbench: '去工作台看看',
+        keepHere: '先留在这里',
+        noJump: '继续输入不会打断这项工作',
+        retryLookup: '重新查询回执',
+        lookupResult: '演示状态：仍未收到回执，未重新派单',
+        waitOnline: '等待可用电脑',
+        queueNote: '上线后仍需重新检查项目和 Agent 的可用状态。',
+        workTitle: '让助手成为<br>一个长期入口',
+        projectGoal: '目标 / iOS 助手体验',
+        taskCount: '1 项进行中 · 1 项待开始',
+        tree: '任务树',
+        graph: '网图',
+        goal: '完成「我的助手」第一版体验',
+        research: '梳理输入与路由',
+        done: '已完成',
+        design: 'iOS 助手模块设计',
+        implement: '实现 SwiftUI 页面',
+        notStarted: '待开始',
+        acceptance: '真机体验验收',
+        later: '依赖页面实现',
+        selected: '当前选中',
+        selectionBody:
+          '正在准备首页、语音输入和任务分派的设计稿。先看方案，再决定实现范围。',
+        openSession: '打开对应会话',
+        graphLegend: '实线：目标拆解　虚线：前置依赖',
+        detailTitle: '成果',
+        detailHeadline: '把「我的助手」，做成一个长期入口',
+        detailBody:
+          '第一版把表达、任务和成果分开呈现。你只需要说清楚想法，助手负责联系上下文，把需要执行的部分交到合适的电脑上。',
+        provenanceTitle: '来自「iOS 助手模块设计」',
+        provenanceBody:
+          'Mac mini · Qwen Code<br>基于本次任务生成 · 09:12<br>概念稿，尚未实现或验收',
+        openArtifact: '预览设计产物',
+        save: '收藏',
+        saved: '已收藏',
+        unsaved: '已取消收藏',
+        recapDetailTitle: '昨天的进展，收成一页',
+        recapBody:
+          '完成了输入与路由的信息结构；助手首页设计正在进行；SwiftUI 实现等待方案确认。下一步可以先评审语音输入到分派回执的衔接。',
+        recapSource: '来自 2 个示例任务的状态记录',
+        recapSourceBody:
+          '每日回顾 · 08:30<br>按任务记录归纳，点击可追溯到原任务。',
+        insightDetailTitle: '这几个想法，可能属于同一个目标',
+        insightBody:
+          '在这组示例输入里，语音、长期记忆和任务路由反复出现。它们可能都服务于「让助手成为一个长期入口」。这只是一个待确认的归纳。',
+        insightSource: '依据：3 条示例输入',
+        insightSourceBody:
+          '待确认洞察 · 不会自动创建执行任务<br>你可以接受、修改，或选择不再推荐这类内容。',
+        acceptInsight: '整理成一个目标',
+        insightAccepted: '已在演示工作台中关联这些示例任务',
+        reportHeadline: '长期记忆，先保留依据',
+        reportBody:
+          '把原始输入、工作摘要与长期记忆分开。压缩用于腾出当前工作空间，长期记忆仍应保留来源、时间与适用范围，并在新信息出现后允许修正。',
+        memoryHeading: '记住重要的，<br>也允许你纠正。',
+        memoryIntro: '记忆帮助理解你。每一条都应该能追溯、修改，或被忘记。',
+        confirmed: '已确认的记忆',
+        preference: '工作偏好',
+        memoryFact: '设计类任务，先看设计稿再决定实现。',
+        memoryScope: '范围：iOS 助手项目',
+        memorySource: '来源：本次示例输入 · 今天',
+        source: '查看来源',
+        edit: '修改',
+        forget: '忘记',
+        inference: '待确认的理解',
+        inferred: '你可能更偏好用成果浏览进展。',
+        inferredSource:
+          '依据：示例中提到了 Feed 与成果预览。尚未写入长期记忆。',
+        confirm: '记住这个偏好',
+        dismiss: '忽略',
+        memoryFooter:
+          '压缩的是当前工作上下文，来源仍可追溯。<br>临时想法不必都变成长期记忆。',
+        memoryEmpty: '此条记忆已从演示中移除。',
+        memoryUpdated: '已更新这条示例记忆',
+        memoryForgot: '已忘记这条示例记忆',
+        inferenceConfirmed: '已将此偏好记入演示记忆',
+        inferenceDismissed: '已忽略这条推测',
+        sourceBody:
+          '示例输入原文：<br>「这个模块先出设计稿，我看完后再决定怎么实现。」<br><br>此内容为设计演示数据。',
+        memoryEditor: '修改记忆',
+        saveMemory: '保存修改',
+        availableTitle: '可用的执行环境',
+        availableBody:
+          '路由时同时检查在线状态、项目位置和 Agent 能力。以下为示例数据。',
+        macBook: 'MacBook Pro',
+        macBookDetail: '资料项目可访问 · Codex 就绪',
+        miniDetail: 'Agent Remote 可访问 · Qwen Code 就绪',
+        offlineDetail: '离线 · 不会被当作可执行目标',
+        selectedComputer: '此项目优先',
+        previewArtifactTitle: '设计产物预览',
+        previewArtifactBody:
+          '此处展示设计产物的阅读方式。正式版本应打开真实文件；当前样例没有连接真实任务或文件。',
+        sessionSheetTitle: '任务会话',
+        sessionSheetBody:
+          '会话中展示执行过程、产物和继续补充的入口。这里保留工作台的会话职责。示例会话没有真实执行日志。',
+        addDetail: '补充到这项任务',
+        detailAdded: '示例补充已关联到同一任务；未向电脑发送',
+        taskNotStarted: '这项工作尚未开始，先完成设计评审。',
+        boardsHeading: '从一句想法，到一个看得见的结果。',
+        boardsLede:
+          '暖纸色 × 森林绿。六个关键界面，共同描述助手如何接住、安排和交还。',
+        specTitle: '助手负责连续理解，<br>工作台负责具体执行。',
+        specLede:
+          '这个方向值得做。它把个人助手的价值放在长期理解和协调上，让多台电脑上的执行能力围绕用户目标组织起来。Feed 则让做过的工作变得容易看见、容易接着推进。',
+        flow: [
+          '语音 / 文字',
+          '理解与检索记忆',
+          '即时处理 / 任务分派',
+          '电脑 + Agent 会话',
+          '成果与回顾',
+        ],
+        specSections: [
+          [
+            '01 / 三个产品层次',
+            '<p><b>表达层：</b>首页只有一个语音／文字输入框。输入后以短回执回应；需要澄清时在原输入附近问一个具体问题。</p><p><b>执行层：</b>工作台承载任务树、依赖关系、会话、授权与执行状态。回执链接到明确的电脑、服务运行和会话标识。</p><p><b>回看层：</b>成果、日回顾和待确认洞察组成有来源的 Feed。用户可以收藏、追溯和继续推进。</p>',
+          ],
+          [
+            '02 / Memory 与 compression',
+            '<p>不能把持续接收输入等同于无限上下文。保留原始输入索引、按项目维护滚动摘要、检索相关证据，并单独维护可修正的长期记忆。</p><p>每条长期记忆带来源、时间、范围与确认状态；推测单独呈现。压缩后保留目标、决定、未完成事项、任务标识和必要依据。任务重试沿用原请求身份，避免重复副作用。</p>',
+          ],
+          [
+            '03 / 路由需要可解释',
+            '<p>先判断是否需要 agentic 执行，再检查电脑在线状态、项目可访问性、Agent 能力与当前负载；沿用项目上下文通常比随意换机器更好。</p><p>可用电脑与手机当前选中的电脑是两个概念。回执展示任务名、电脑和 Agent，详细信息再展示 Session ID。没有执行端回执时只显示待分派或待确认。</p>',
+          ],
+          [
+            '04 / Feed 的内容承诺',
+            '<p>借鉴轻松刷到成果的感觉：双列封面、不同内容节奏、短标题与明确来源。排序优先待处理事项和与当前目标有关的成果。</p><p>每一项都能回答「来自什么」「为什么出现」「接下来能做什么」。洞察是待确认建议；主动产生衍生任务应依据用户已有授权与设置。日报可合并，推送时间和频率由用户控制。</p>',
+          ],
+          [
+            '05 / 任务树先行，网图补充',
+            '<p>首页不承担复杂关系管理。工作台默认按目标展开任务树；跨目标关联和前置依赖放进网图。图中的不同关系需有明确含义。</p><p>任务可以跨电脑，但每个执行会话仍有自己的归属和身份。查看某个任务时应切到它真正所在的环境，不能因为切换手机当前电脑而串入别的会话。</p>',
+          ],
+          [
+            '06 / 建议的第一版范围',
+            '<p>先完成文字／语音输入、记忆来源与纠正、单任务分派回执、深链进入工作台、任务树，以及来自真实产物的 Feed。</p><p>之后增加多机自动选择、每日回顾与待确认洞察，再扩展网图和主动衍生任务。当前仓库已有项目会话和产物预览；助手记忆、主动推送与跨机编排仍需实现。本稿只验证信息结构和交互方向。</p>',
+          ],
+        ],
+      };
+      Object.assign(zh, {
+        note: '随手记',
+        clarify: '需要澄清',
+        noteTitle: '先放在这里，<br>以后接着想。',
+        noteRequest: '记一下：助手首页的成果封面，可以再轻松一点。',
+        noteBody:
+          '已收进「iOS 助手体验」的项目笔记。这条临时想法不会自动成为长期偏好，也不会触发电脑上的执行。',
+        clarifyTitle: '还差一个，<br>小小的线索。',
+        clarifyRequest: '刚才那个设计，再补上语音输入。',
+        clarifyBody: '这句话是补充到「iOS 助手模块设计」，还是新开一项任务？',
+        continueTask: '补充到原任务',
+        newTask: '新开一项任务',
+        noteStatus: '项目笔记 · 已收下',
+        latestNote: '已收进项目笔记 · 暂不执行',
+        latestClarify: '还差一个线索 · 等你补充',
+        linkedGoal: '3 条示例想法已关联到这个目标',
+        reportSource: '来自「记忆与压缩设计笔记」',
+        reportSourceBody:
+          'MacBook Pro · Codex<br>任务产物 · 昨天<br>示例笔记，非实际研究结果',
+      });
+      const en = {
+        ...zh,
+        brand: 'AGENT REMOTE / MY ASSISTANT',
+        preview: 'Prototype',
+        boards: 'All screens',
+        spec: 'Design rationale',
+        headline: 'One place for<br>every thought.',
+        lede: 'You express the intent. Your assistant remembers, connects and arranges. Work continues on your computers; useful results find their way back.',
+        demo: 'Interactive concept with fictional data. No real computer, memory, microphone or notification service is connected.',
+        scenarioLabel: 'Simulated dispatch state',
+        healthy: 'Acknowledged',
+        offline: 'All offline',
+        uncertain: 'No receipt',
+        screenNames: [
+          'Assistant home',
+          'Voice input',
+          'Task receipt',
+          'My workbench',
+          'Artifact detail',
+          'Memory & context',
+        ],
+        screenNotes: [
+          'One place to express intent. A sourced feed of artifacts, recaps and insights.',
+          'Capture natural speech. Review or edit the transcript before sending.',
+          'Name the task, computer and Agent. Let the user choose when to enter the workbench.',
+          'Organize tasks around a goal. Switch to a graph to inspect dependencies.',
+          'See the artifact first, then trace its origin or continue the work.',
+          'Separate confirmed memory from inference. Every item can be traced, corrected or forgotten.',
+        ],
+        rail: 'ONE CONTINUOUS EXPERIENCE<br>Express → Route → Work → Results',
+        assistant: 'My assistant',
+        workbench: 'My workbench',
+        online: '2 available',
+        noOnline: 'No computer online',
+        computers: 'Available computers',
+        memory: 'Memory & context',
+        greet: 'A thought? Leave it here.',
+        greetSub: 'An idea, a loose end, or something to get done.',
+        placeholder: "What's on your mind?",
+        continuity: 'Connected to your earlier context',
+        send: 'Hand it over',
+        voice: 'Voice input',
+        forYou: 'For you',
+        feedTime: 'Today · Nov 13',
+        filters: ['All', 'Artifacts', 'Insights', 'Recaps'],
+        designCover: 'One place.<br>Every idea.',
+        designTitle: 'Your first assistant design is ready to review',
+        artifactMeta: 'Task artifact · 09:12',
+        recapCover: 'Yesterday,<br>in focus.',
+        recapTitle: "Yesterday's progress, on one page",
+        recapNote: 'A recap you can build on',
+        recapMeta: 'Daily recap · 08:30',
+        insightCover: 'Maybe these<br>ideas connect.',
+        insightTitle: 'Voice, memory and routing may belong to one goal',
+        insightMeta: 'Unconfirmed insight · Why this',
+        reportCover: 'Memory begins<br>with evidence.',
+        reportTitle: 'Notes on memory and context compression',
+        reportMeta: 'Task artifact · Yesterday',
+        tabAssistant: 'My assistant',
+        tabWorkbench: 'My workbench',
+        latestReceipt: 'Assigned · iOS assistant design',
+        latestQueued: 'Waiting for a computer · iOS assistant design',
+        latestUnknown: 'Checking the receipt · No duplicate task',
+        back: 'Back',
+        close: 'Close',
+        voiceTitle: "Tell me what's on your mind",
+        listening: 'Listening · Demo',
+        voiceStopped: 'Recording stopped · Demo',
+        transcript:
+          "Design the iOS assistant<br>module first.<br><span class='faint'>Keep our earlier direction.<br>No chat interface.</span>",
+        request:
+          'Design the iOS assistant module first. Keep our earlier direction; no chat interface.',
+        associated: 'Related to “iOS assistant experience”',
+        editText: 'Edit text',
+        stop: 'Stop recording',
+        resume: 'Resume recording',
+        voiceHint: 'Tap to stop, then edit before sending',
+        voiceStoppedHint: 'Review the text, then hand it over',
+        typedLabel: 'Your thought',
+        receiptTitle: "It's in good hands.<br>Keep thinking.",
+        receiptSub:
+          'Mac mini accepted the task and returned a session ID.<br>Results will appear in For you.',
+        queuedTitle: 'Captured.<br>Waiting for a computer.',
+        queuedSub:
+          'No computer can run this task right now.<br>Your idea is kept in this demo; no task has been dispatched.',
+        unknownTitle: 'Checking first.<br>No duplicate dispatch.',
+        unknownSub:
+          'The request was sent, but no computer receipt arrived.<br>A second task will not be created automatically.',
+        running: 'In progress',
+        queued: 'Not assigned',
+        confirming: 'Receipt pending',
+        taskName: 'iOS assistant module design',
+        project: 'Agent Remote / iOS',
+        writable: 'Project accessible',
+        working: 'Preparing structure and key screens',
+        copy: 'Copy ID',
+        copied: 'Demo session ID copied',
+        copyUnavailable:
+          'Copy is unavailable. Select the ID to copy it manually.',
+        noSession: 'Session ID appears after a computer receipt',
+        routeReason: 'Why this computer?',
+        reasonText:
+          "Mac mini is online, can access the project, and has Qwen Code ready. It also continues the project's earlier environment. Availability is separate from the computer currently selected on the phone.",
+        viewWorkbench: 'View in workbench',
+        keepHere: 'Stay here for now',
+        noJump: "A new thought won't interrupt this work",
+        retryLookup: 'Check the receipt again',
+        lookupResult: 'Demo: still waiting for a receipt. No task was resent.',
+        waitOnline: 'Waiting for a computer',
+        queueNote:
+          'Project and Agent availability must be checked again when online.',
+        workTitle: 'One lasting home<br>for your assistant',
+        projectGoal: 'GOAL / iOS assistant experience',
+        taskCount: '1 in progress · 1 not started',
+        tree: 'Task tree',
+        graph: 'Graph',
+        goal: 'Shape the first assistant experience',
+        research: 'Map input and routing',
+        done: 'Completed',
+        design: 'iOS assistant module design',
+        implement: 'Build SwiftUI screens',
+        notStarted: 'Not started',
+        acceptance: 'Review on a real device',
+        later: 'Depends on implementation',
+        selected: 'Selected task',
+        selectionBody:
+          'Preparing home, voice input and dispatch receipt designs. Review the concept before deciding implementation scope.',
+        openSession: 'Open the linked session',
+        graphLegend: 'Solid: goal breakdown · Dashed: dependency',
+        detailTitle: 'Artifact',
+        detailHeadline: 'A lasting home for your assistant',
+        detailBody:
+          'The first design separates expression, work and results. You share an idea; your assistant connects the context and routes executable work to a suitable computer.',
+        provenanceTitle: 'From “iOS assistant module design”',
+        provenanceBody:
+          'Mac mini · Qwen Code<br>Generated for this example task · 09:12<br>Concept only; not implemented or validated',
+        openArtifact: 'Preview design artifact',
+        save: 'Save',
+        saved: 'Saved',
+        unsaved: 'Removed from saved items',
+        recapDetailTitle: "Yesterday's progress, on one page",
+        recapBody:
+          'Input and routing structure is complete. The assistant home design is in progress; SwiftUI implementation awaits design review. Next, review the transition from voice input to the dispatch receipt.',
+        recapSource: 'From 2 fictional task records',
+        recapSourceBody:
+          'Daily recap · 08:30<br>Summarized from task records, with links to the source tasks.',
+        insightDetailTitle: 'These ideas may share one goal',
+        insightBody:
+          'Voice, long-term memory and routing recur in these fictional inputs. They may all serve the goal of giving your assistant one lasting entry point. This is an inference awaiting confirmation.',
+        insightSource: 'Evidence: 3 fictional inputs',
+        insightSourceBody:
+          'Unconfirmed insight · No execution task created automatically<br>Accept, edit, or stop receiving this kind of suggestion.',
+        acceptInsight: 'Organize under one goal',
+        insightAccepted: 'Example tasks linked under the demo workbench goal',
+        reportHeadline: 'Memory begins with evidence',
+        reportBody:
+          'Separate raw input, working summaries and long-term memory. Compression frees up the current working context. Long-term memory keeps its sources, time and scope, and can be corrected when new evidence arrives.',
+        memoryHeading: 'Keep what matters.<br>Let you correct it.',
+        memoryIntro:
+          'Memory supports understanding. Each item should be traceable, editable and forgettable.',
+        confirmed: 'Confirmed memory',
+        preference: 'Work preference',
+        memoryFact:
+          'Review design drafts before deciding implementation scope.',
+        memoryScope: 'Scope: iOS assistant project',
+        memorySource: 'Source: fictional input · Today',
+        source: 'View source',
+        edit: 'Edit',
+        forget: 'Forget',
+        inference: 'An unconfirmed inference',
+        inferred: 'You may prefer browsing artifacts to follow progress.',
+        inferredSource:
+          'Evidence: feed and artifact previews appear in the fictional input. Not stored as long-term memory.',
+        confirm: 'Remember this preference',
+        dismiss: 'Dismiss',
+        memoryFooter:
+          'Compression reduces working context; evidence stays traceable.<br>Not every passing idea needs to become long-term memory.',
+        memoryEmpty: 'This memory was removed from the demo.',
+        memoryUpdated: 'Example memory updated',
+        memoryForgot: 'Example memory forgotten',
+        inferenceConfirmed: 'Preference added to demo memory',
+        inferenceDismissed: 'Inference dismissed',
+        sourceBody:
+          "Fictional source input:<br>“Show me the design draft first. I'll decide what to implement after reviewing it.”<br><br>This is design demonstration data.",
+        memoryEditor: 'Edit memory',
+        saveMemory: 'Save changes',
+        availableTitle: 'Available environments',
+        availableBody:
+          'Routing checks online status, project access and Agent capabilities. All data below is fictional.',
+        macBookDetail: 'Research project accessible · Codex ready',
+        miniDetail: 'Agent Remote accessible · Qwen Code ready',
+        offlineDetail: 'Offline · Not eligible for execution',
+        selectedComputer: 'Preferred for this project',
+        previewArtifactTitle: 'Design artifact preview',
+        previewArtifactBody:
+          'This demonstrates how an artifact is read. The product should open a real file; this example is not connected to a real task or file.',
+        sessionSheetTitle: 'Task session',
+        sessionSheetBody:
+          'Execution steps, artifacts and follow-up input belong here in the workbench. This example has no real execution log.',
+        addDetail: 'Add to this task',
+        detailAdded:
+          'Demo follow-up linked to the same task. Nothing sent to a computer.',
+        taskNotStarted: 'This work has not started. Review the design first.',
+        boardsHeading: 'From a thought to a visible result.',
+        boardsLede:
+          'Warm paper and forest green. Six screens show how the assistant captures, arranges and returns work.',
+        specTitle: 'An assistant for continuity.<br>A workbench for execution.',
+        specLede:
+          'This direction is worth pursuing. It puts long-term understanding and coordination at the center, organizing computers around user goals. The feed makes completed work easier to see and continue.',
+        flow: [
+          'Voice / text',
+          'Context & memory retrieval',
+          'Direct response / dispatch',
+          'Computer + Agent session',
+          'Artifacts & recaps',
+        ],
+        specSections: [
+          [
+            '01 / Three product layers',
+            '<p><b>Expression:</b> a single voice/text input on home. Respond with a brief receipt. If needed, ask one concrete clarification near the original input.</p><p><b>Execution:</b> the workbench owns task trees, dependencies, sessions, permissions and execution state. Receipts link to a specific computer, service run and session.</p><p><b>Review:</b> a sourced feed of artifacts, recaps and unconfirmed insights, with save, trace and continue actions.</p>',
+          ],
+          [
+            '02 / Memory and compression',
+            '<p>Continuous intake does not imply unlimited context. Keep raw input references, rolling project summaries, relevant evidence retrieval, and separately maintained long-term memory.</p><p>Memories carry source, time, scope and confirmation state; inference stays separate. Compression preserves goals, decisions, open work, task identities and key evidence. Retries retain request identity to avoid duplicate side effects.</p>',
+          ],
+          [
+            '03 / Explainable routing',
+            "<p>First decide whether execution is needed, then check availability, project access, Agent capabilities and load. Continuing the project environment is often preferable to arbitrary switching.</p><p>Available computers and the phone's current selection are separate concepts. Receipts show task name, computer and Agent, with session details on demand. Without an execution receipt, show unassigned or unconfirmed state.</p>",
+          ],
+          [
+            '04 / What the feed promises',
+            '<p>Borrow the ease of browsing: two-column covers, varied rhythm, concise titles and clear sources. Prioritize items needing attention and artifacts relevant to current goals.</p><p>Each item explains its origin, why it appears and what to do next. Insights await confirmation. Derived execution follows existing user authorization and settings. Recaps can be batched; users control notification timing and frequency.</p>',
+          ],
+          [
+            '05 / Tree first, graph when useful',
+            "<p>Keep complex relationships out of home. The workbench opens as a goal-based tree. The graph reveals cross-goal links and dependencies with explicit relation types.</p><p>Tasks may span computers, but every session retains its owner and identity. Opening a task selects its actual environment; changing the phone's selected computer must not mix sessions.</p>",
+          ],
+          [
+            '06 / A practical first release',
+            '<p>Start with text/voice intake, traceable and correctable memory, one-task receipts, deep links into the workbench, a task tree and a feed backed by real artifacts.</p><p>Add automatic multi-computer selection, daily recaps and unconfirmed insights next, followed by richer graphs and proactive derived tasks. The repository currently has project sessions and artifact previews; memory, proactive delivery and cross-computer orchestration remain future implementation. This draft validates structure and interaction only.</p>',
+          ],
+        ],
+      };
+      Object.assign(en, {
+        note: 'Project note',
+        clarify: 'Clarification',
+        noteTitle: 'Keep it here.<br>Come back later.',
+        noteRequest:
+          'Note: make the artifact covers on assistant home feel a little lighter.',
+        noteBody:
+          'Added to the iOS assistant project notes. This passing thought does not automatically become a long-term preference or start work on a computer.',
+        clarifyTitle: 'Just one more<br>piece of context.',
+        clarifyRequest: 'Add voice input to that design from earlier.',
+        clarifyBody:
+          'Should this extend “iOS assistant module design”, or start a new task?',
+        continueTask: 'Add to the existing task',
+        newTask: 'Start a new task',
+        noteStatus: 'Project note · Captured',
+        latestNote: 'Added to project notes · No execution',
+        latestClarify: 'One piece of context needed · Waiting for you',
+        linkedGoal: '3 fictional inputs linked to this goal',
+        reportSource: 'From “Memory and compression notes”',
+        reportSourceBody:
+          'MacBook Pro · Codex<br>Task artifact · Yesterday<br>Fictional notes, not research findings',
+      });
+      const params = new URLSearchParams(location.search);
+      const state = {
+        lang: params.get('lang') === 'en' ? 'en' : 'zh',
+        view:
+          params.get('view') === 'boards'
+            ? 'boards'
+            : params.get('view') === 'spec'
+              ? 'spec'
+              : 'preview',
+        screen: 0,
+        scenario: 'healthy',
+        filter: 0,
+        draft: '',
+        submitted: false,
+        graph: false,
+        listening: true,
+        editingVoice: false,
+        voiceDraft: '',
+        detail: 'design',
+        saved: false,
+        memoryRemoved: false,
+        memoryValue: null,
+        inferenceState: null,
+        sheet: null,
+        goalLinked: false,
+      };
+      const T = () => (state.lang === 'en' ? en : zh);
+      const escape = (v) =>
+        String(v).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              '&': '&amp;',
+              '<': '&lt;',
+              '>': '&gt;',
+              '"': '&quot;',
+              "'": '&#39;',
+            })[c],
+        );
+      const paths = {
+        spark:
+          '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/>',
+        brain:
+          '<path d="M9 4a3 3 0 0 0-5 3 4 4 0 0 0-1 7 4 4 0 0 0 6 5V4Zm6 0a3 3 0 0 1 5 3 4 4 0 0 1 1 7 4 4 0 0 1-6 5V4Z"/><path d="m4 8 3 2m-3 5 3-1m13-6-3 2m3 5-3-1"/>',
+        laptop:
+          '<rect x="4" y="4" width="16" height="12" rx="2"/><path d="m2 20 2-4h16l2 4H2Z"/>',
+        mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1m-6 7v3m-3 0h6"/>',
+        arrow: '<path d="M12 19V5m-5 5 5-5 5 5"/>',
+        right: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+        left: '<path d="m15 5-7 7 7 7"/>',
+        down: '<path d="m7 10 5 5 5-5"/>',
+        close: '<path d="m6 6 12 12M6 18 18 6"/>',
+        check: '<path d="m5 12 4 4L19 6"/>',
+        copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
+        folder: '<path d="M3 7V4h7l2 3h9v13H3V7Z"/>',
+        tree: '<rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/><path d="M12 7v5m-7 5v-5h14v5"/>',
+        graph:
+          '<circle cx="5" cy="5" r="3"/><circle cx="19" cy="7" r="3"/><circle cx="11" cy="19" r="3"/><path d="m8 5 8 1M6 8l4 8m3 0 5-6"/>',
+        save: '<path d="M6 3h12v18l-6-4-6 4V3Z"/>',
+        source: '<path d="M10 7H5v14h14v-5M14 3h7v7m0-7L10 14"/>',
+        signal: '<path d="M3 20v-3m5 3v-7m5 7V9m5 11V5"/>',
+        wifi: '<path d="M3 8a14 14 0 0 1 18 0M6 12a9 9 0 0 1 12 0m-9 4a4 4 0 0 1 6 0m-3 4h0"/>',
+        battery:
+          '<rect x="2" y="6" width="18" height="12" rx="3"/><path d="M23 10v4M5 9h11v6H5Z"/>',
+        clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+        pen: '<path d="m15 4 5 5M4 20l5-1L21 7l-4-4L5 15l-1 5Z"/>',
+        target:
+          '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+      };
+      const icon = (name) =>
+        `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.spark}</svg>`;
+      const button = (name, action, label, extra = '') =>
+        `<button class="icon-button ${extra}" data-action="${action}" aria-label="${escape(label)}">${icon(name)}</button>`;
+      const mini = () =>
+        '<div class="mini-ui" aria-hidden="true"><div class="mini-line"></div><div class="mini-line"></div><div class="mini-input"></div><div class="mini-tiles"><i></i><i></i></div></div>';
+      function topbar(title, back = false, extra = '') {
+        const t = T();
+        return `<header class="screen-header">${back ? button('left', 'home', t.back) : `<span class="screen-title">${title}</span>`}${back ? `<span class="back-title">${title}</span>` : ''}${extra || (back ? '<span style="width:44px"></span>' : `<div class="header-actions"><button class="online" data-action="computers"><i class="dot ${state.scenario === 'offline' ? 'amber' : ''}"></i>${state.scenario === 'offline' ? t.noOnline : t.online}</button>${button('brain', 'memory', t.memory)}</div>`)}</header>`;
+      }
+      function tabs(work = false) {
+        const t = T();
+        return `<nav class="tabbar" aria-label="${state.lang === 'zh' ? '主要导航' : 'Main navigation'}"><button data-action="home" class="${!work ? 'active' : ''}" ${!work ? 'aria-current="page"' : ''}>${icon('spark')}<span>${t.tabAssistant}</span></button><button data-action="workbench" class="${work ? 'active' : ''}" ${work ? 'aria-current="page"' : ''}>${icon('laptop')}<span>${t.tabWorkbench}</span></button></nav>`;
+      }
+      function cover(type) {
+        const t = T();
+        return `<div class="cover cover-${type}"><span class="cover-kicker">${t[type + 'Kicker']}</span><h3>${t[type + 'Cover']}</h3>${type === 'design' ? mini() : type === 'recap' ? `<span class="small-note">${t.recapNote}</span>` : type === 'insight' ? '<div class="insight-lines" aria-hidden="true"><i>01</i><b></b><i>02</i><b></b><i>03</i></div>' : '<div class="report-mark"></div>'}</div>`;
+      }
+      function card(type) {
+        const t = T();
+        return `<button class="feed-card" data-action="detail" data-value="${type}">${cover(type)}<h3 class="card-title">${t[type + 'Title']}</h3><p class="card-meta">${type === 'design' || type === 'report' ? '<i class="dot"></i>' : ''}${t[type === 'design' ? 'artifactMeta' : type + 'Meta']}</p></button>`;
+      }
+      function home() {
+        const t = T();
+        const lists =
+          state.filter === 1
+            ? [['design'], ['report']]
+            : state.filter === 2
+              ? [['insight'], []]
+              : state.filter === 3
+                ? [['recap'], []]
+                : [
+                    ['design', 'report'],
+                    ['recap', 'insight'],
+                  ];
+        return `${topbar(t.assistant)}<div class="scroll"><div class="home-top"><h1 class="greeting">${t.greet}</h1><p class="subtle">${t.greetSub}</p><div class="composer"><label class="sr-only" for="assistant-input">${t.typedLabel}</label><textarea id="assistant-input" data-input="draft" placeholder="${t.placeholder}">${escape(state.draft)}</textarea><div class="composer-bottom"><span class="composer-hint">${icon('spark')}${t.continuity}</span><div class="composer-actions">${button('mic', 'voice', t.voice, 'mic')}${button('arrow', 'send', t.send, 'send')}</div></div></div></div>${state.submitted ? `<button class="inline-receipt" data-action="receipt">${icon(state.scenario === 'healthy' ? 'check' : 'clock')}<span>${t[state.scenario === 'healthy' ? 'latestReceipt' : state.scenario === 'offline' ? 'latestQueued' : state.scenario === 'note' ? 'latestNote' : state.scenario === 'clarify' ? 'latestClarify' : 'latestUnknown']}</span>${icon('right')}</button>` : ''}<div class="feed-header"><h2>${t.forYou}</h2><span class="tiny-label">${t.feedTime}</span></div><div class="filters" role="group" aria-label="${t.forYou}">${t.filters.map((f, i) => `<button data-action="filter" data-value="${i}" class="${i === state.filter ? 'active' : ''}" aria-pressed="${i === state.filter}">${f}</button>`).join('')}</div><div class="feed">${lists.map((col) => `<div class="feed-column">${col.map(card).join('')}</div>`).join('')}</div></div>${tabs()}`;
+      }
+      function voice() {
+        const t = T();
+        return `${topbar(t.voiceTitle, true)}<div class="voice-body"><div class="voice-state"><i class="dot"></i>${state.listening ? t.listening : t.voiceStopped}</div>${state.editingVoice ? `<label class="sr-only" for="voice-edit">${t.editText}</label><textarea id="voice-edit" class="voice-edit" data-input="voiceDraft">${escape(state.voiceDraft || t.request)}</textarea>` : `<div class="transcript">${state.voiceDraft ? escape(state.voiceDraft) : t.transcript}</div>`}<span class="context-chip">${icon('folder')}${t.associated}</span><div class="voice-space"></div><div class="waveform" ${!state.listening ? 'style="opacity:.3"' : ''} aria-hidden="true">${[8, 14, 22, 17, 30, 41, 27, 46, 35, 49, 31, 43, 24, 38, 29, 19, 12, 22, 10].map((h) => `<i style="height:${h}px;${!state.listening ? 'animation:none;' : ''}"></i>`).join('')}</div><div class="voice-controls"><button class="text-button" data-action="editVoice">${t.editText}</button><button class="record-button" data-action="toggleVoice" aria-label="${state.listening ? t.stop : t.resume}">${state.listening ? '<i class="stop-square"></i>' : icon('mic')}</button><span style="width:65px"></span></div><p class="voice-caption">${state.listening ? t.voiceHint : t.voiceStoppedHint}</p><button class="primary" data-action="sendVoice">${t.send}${icon('right')}</button></div>`;
+      }
+      function receipt() {
+        if (state.scenario === 'note' || state.scenario === 'clarify')
+          return intakeResult();
+        const t = T(),
+          ok = state.scenario === 'healthy',
+          offline = state.scenario === 'offline';
+        return `${topbar(t.assistant, true)}<div class="scroll"><div class="receipt-hero"><div class="ack-icon">${icon(ok ? 'check' : 'clock')}</div><h2>${ok ? t.receiptTitle : offline ? t.queuedTitle : t.unknownTitle}</h2><p>${ok ? t.receiptSub : offline ? t.queuedSub : t.unknownSub}</p></div>${state.lastInput ? `<blockquote class="captured-input">${escape(state.lastInput)}</blockquote>` : ''}<article class="task-receipt"><div class="task-eyebrow"><i class="dot ${!ok ? 'amber' : ''}"></i>${ok ? t.running : offline ? t.queued : t.confirming}</div><h3>${t.taskName}</h3>${ok ? `<div class="receipt-row">${icon('laptop')}<span>Mac mini</span><small>${t.writable}</small></div><div class="receipt-row">${icon('spark')}<span>Qwen Code</span><small>${t.running}</small></div>` : ''}<div class="receipt-row">${icon('folder')}<span>${t.project}</span></div><div class="session-id">${ok ? `<span>${t.session}</span><button data-action="copy">ar-demo-ios-01 ${icon('copy')}</button>` : `<span>${t.noSession}</span>`}</div></article><div class="reason">${ok ? `<button data-action="reason">${icon('brain')}${t.routeReason}${icon('down')}</button>` : offline ? t.queueNote : t.unknownSub.replace('<br>', ' ')}</div></div><div class="bottom-actions">${ok ? `<button class="primary" data-action="workbench">${t.viewWorkbench}${icon('right')}</button>` : offline ? `<button class="primary" disabled>${t.waitOnline}</button>` : `<button class="primary" data-action="lookup">${t.retryLookup}</button>`}<button class="secondary" data-action="home">${t.keepHere}</button><p class="subtle">${t.noJump}</p></div>${tabs()}`;
+      }
+      function intakeResult() {
+        const t = T(),
+          note = state.scenario === 'note';
+        return `${topbar(t.assistant, true)}<div class="scroll"><div class="receipt-hero"><div class="ack-icon">${icon(note ? 'pen' : 'spark')}</div><h2>${note ? t.noteTitle : t.clarifyTitle}</h2><p>${note ? t.noteStatus : t.latestClarify}</p></div><blockquote class="captured-input">${escape(state.lastInput || (note ? t.noteRequest : t.clarifyRequest))}</blockquote><p class="intake-copy">${note ? t.noteBody : t.clarifyBody}</p>${note ? `<div class="context-chip" style="margin-left:24px">${icon('folder')}${t.associated}</div>` : `<div class="intake-choices"><button data-action="continueTask">${t.continueTask}</button><button data-action="newTask">${t.newTask}</button></div>`}</div><div class="bottom-actions"><button class="secondary" data-action="home">${t.keepHere}</button></div>${tabs()}`;
+      }
+      function treeNode(
+        title,
+        status,
+        selected = false,
+        computer = 'Mac mini',
+        agent = 'Qwen Code',
+        action = 'task',
+      ) {
+        const t = T();
+        return `<button class="tree-node ${selected ? 'selected' : ''}" data-action="${action}"><div class="node-top"><span>${title}</span><span class="node-status ${status === t.notStarted ? 'pending' : ''}">${status === t.running ? '<i class="dot"></i>' : ''}${status}</span></div><div class="node-meta">${icon('laptop')}${computer} · ${agent}</div></button>`;
+      }
+      function workbench() {
+        const t = T();
+        return `${topbar(t.workbench)}<div class="scroll"><div class="workbench-top"><div class="project-selector">${icon('folder')}${t.projectGoal}</div><h2>${t.workTitle}</h2><p class="subtle">${t.taskCount}</p>${state.goalLinked ? `<p class="linked-goal">${t.linkedGoal}</p>` : ''}<div class="segmented"><button class="${!state.graph ? 'active' : ''}" data-action="tree" aria-pressed="${!state.graph}">${icon('tree')}${t.tree}</button><button class="${state.graph ? 'active' : ''}" data-action="graph" aria-pressed="${state.graph}">${icon('graph')}${t.graph}</button></div></div>${state.graph ? `<div class="graph-wrap"><svg class="graph-lines" viewBox="0 0 365 298"><path d="M180 68v25H78v24m102-24h106v24"/><path d="M77 165v25h100v30m111-55v25H177" stroke-dasharray="4 5"/></svg><button class="graph-node root" data-action="goal">${t.goal}</button><button class="graph-node a" data-action="taskDone">${t.research}</button><button class="graph-node b" data-action="task">${t.design}</button><button class="graph-node c" data-action="notStarted">${t.implement}</button></div><p class="graph-legend">${t.graphLegend}</p>` : `<div class="tree"><div class="goal-node"><span class="goal-icon">${icon('target')}</span>${t.goal}</div><div class="tree-children">${treeNode(t.research, t.done, false, 'MacBook Pro', 'Codex', 'taskDone')}${treeNode(t.design, t.running, true)}${treeNode(t.implement, t.notStarted, false, 'Mac mini', 'Qwen Code', 'notStarted')}<div class="subtask">${icon('clock')}${t.acceptance} · ${t.later}</div></div></div>`}<div class="selection-panel"><span class="task-eyebrow"><i class="dot"></i>${t.selected} · Mac mini</span><h3>${t.design}</h3><p>${t.selectionBody}</p><button class="session-link" data-action="task">${t.openSession}${icon('right')}</button></div></div>${tabs(true)}`;
+      }
+      function detail() {
+        const t = T(),
+          type = state.detail;
+        const title =
+          type === 'recap'
+            ? t.recapDetailTitle
+            : type === 'insight'
+              ? t.insightDetailTitle
+              : type === 'report'
+                ? t.reportHeadline
+                : t.detailHeadline;
+        const body =
+          type === 'recap'
+            ? t.recapBody
+            : type === 'insight'
+              ? t.insightBody
+              : type === 'report'
+                ? t.reportBody
+                : t.detailBody;
+        return `${topbar(t.detailTitle, true, button('save', 'save', state.saved ? t.saved : t.save))}<div class="scroll">${type === 'design' ? `<div class="detail-hero"><span class="cover-kicker">${t.designKicker}</span><h2>${t.designCover}</h2>${mini()}</div>` : `<div style="padding:12px 21px 0">${cover(type)}</div>`}<div class="detail-text"><p class="card-meta">${t[type === 'design' ? 'artifactMeta' : type + 'Meta']}</p><h2>${title}</h2><p>${body}</p><div class="provenance"><b>${type === 'recap' ? t.recapSource : type === 'insight' ? t.insightSource : type === 'report' ? t.reportSource : t.provenanceTitle}</b>${type === 'recap' ? t.recapSourceBody : type === 'insight' ? t.insightSourceBody : type === 'report' ? t.reportSourceBody : t.provenanceBody}</div><button class="session-link" data-action="${type === 'insight' ? 'source' : 'workbench'}">${type === 'insight' ? t.source : t.openSession}${icon('right')}</button></div></div><div class="detail-actions"><button class="primary" data-action="${type === 'insight' ? 'acceptInsight' : type === 'recap' ? 'workbench' : 'artifact'}">${type === 'insight' ? t.acceptInsight : type === 'recap' ? t.viewWorkbench : t.openArtifact}${icon('right')}</button>${button('save', 'save', state.saved ? t.saved : t.save)}</div>`;
+      }
+      function memory() {
+        const t = T();
+        return `${topbar(t.memory, true)}<div class="scroll"><div class="memory-intro"><h2>${t.memoryHeading}</h2><p class="subtle">${t.memoryIntro}</p></div><section class="memory-section"><div class="section-heading"><span>${t.confirmed}</span><span class="tiny-label">${t.preference}</span></div>${state.memoryRemoved ? `<p class="subtle">${t.memoryEmpty}</p>` : `<article class="memory-entry"><h3>${escape(state.memoryValue || t.memoryFact)}</h3><p>${t.memoryScope}</p><button class="source text-button" data-action="source">${icon('source')}${t.memorySource}</button><div class="memory-tools"><button data-action="editMemory">${t.edit}</button><button data-action="forget">${t.forget}</button></div></article>`}${state.inferenceState === 'confirmed' ? `<article class="memory-entry"><h3>${t.inferred}</h3><p>${t.memoryScope}</p><p class="source">${t.confirmed} · ${t.memorySource}</p><div class="memory-tools"><button data-action="forgetInference">${t.forget}</button></div></article>` : ''}</section>${state.inferenceState ? '' : `<section class="memory-section"><div class="memory-inference"><span class="task-eyebrow">${icon('brain')}${t.inference}</span><h3>${t.inferred}</h3><p>${t.inferredSource}</p><div class="memory-tools"><button data-action="confirmInference">${t.confirm}</button><button data-action="dismissInference">${t.dismiss}</button></div></div></section>`}<div class="memory-footer">${t.memoryFooter}</div></div>`;
+      }
+      function sheet() {
+        const t = T(),
+          s = state.sheet;
+        if (!s) return '';
+        let title = '',
+          body = '';
+        if (s === 'computers') {
+          title = t.availableTitle;
+          body = `<p>${t.availableBody}</p>${[
+            ['Mac mini', t.miniDetail],
+            [t.macBook, t.macBookDetail],
+          ]
+            .map(
+              ([n, d], i) =>
+                `<div class="computer">${icon('laptop')}<div><h3>${n}</h3><p>${state.scenario === 'offline' ? t.offlineDetail : d}</p></div><small>${state.scenario === 'offline' ? t.queued : i === 0 ? t.selectedComputer : t.healthy}</small></div>`,
+            )
+            .join('')}`;
+        } else if (s === 'reason') {
+          title = t.routeReason;
+          body = `<p>${t.reasonText}</p>`;
+        } else if (s === 'source') {
+          title = t.source;
+          body = `<p>${state.detail === 'insight' && state.screen === 4 ? t.insightBody : t.sourceBody}</p>`;
+        } else if (s === 'editMemory') {
+          title = t.memoryEditor;
+          body = `<label class="sr-only" for="memory-edit">${t.memoryEditor}</label><input id="memory-edit" data-input="memoryEdit" value="${escape(state.memoryValue || t.memoryFact)}"><button class="primary" data-action="saveMemory">${t.saveMemory}</button>`;
+        } else if (s === 'artifact') {
+          title = t.previewArtifactTitle;
+          body = `<p>${t.previewArtifactBody}</p>${cover('design')}`;
+        } else {
+          title = t.sessionSheetTitle;
+          body = `<p class="task-eyebrow">${s === 'doneTask' ? 'MacBook Pro · Codex' : 'Mac mini · Qwen Code'}</p><h3>${s === 'doneTask' ? t.research : t.taskName}</h3><p>${t.sessionSheetBody}</p><p>Session · ${s === 'doneTask' ? 'ar-demo-research-01' : 'ar-demo-ios-01'}</p><label class="sr-only" for="task-followup">${t.addDetail}</label><input id="task-followup" data-input="followup" placeholder="${t.addDetail}"><button class="primary" data-action="addDetail">${t.addDetail}</button>`;
+        }
+        return `<div class="sheet-scrim"><section class="sheet" role="dialog" aria-modal="true" aria-label="${escape(title)}"><div class="sheet-handle"></div><div class="sheet-head"><h2>${title}</h2>${button('close', 'closeSheet', t.close)}</div>${body}</section></div>`;
+      }
+      const renderScreen = (index) =>
+        [home, voice, receipt, workbench, detail, memory][index]();
+      function phone(index, board = false) {
+        return `<div class="phone" data-screen="${index}"><div class="statusbar"><span>9:41</span><span class="island"></span><span class="status-icons">${icon('signal')}${icon('wifi')}${icon('battery')}</span></div><div class="phone-inner">${renderScreen(index)}${!board ? sheet() : ''}</div><span class="home-indicator"></span></div>`;
+      }
+      function render() {
+        const t = T();
+        document.documentElement.lang = state.lang === 'zh' ? 'zh-Hans' : 'en';
+        document.getElementById('app').innerHTML =
+          `<header class="review-header"><div class="brand"><span class="brand-mark">${icon('spark')}</span>${t.brand}</div><nav class="review-tabs" aria-label="${state.lang === 'zh' ? '设计稿视图' : 'Design views'}">${['preview', 'boards', 'spec'].map((v) => `<button class="${state.view === v ? 'active' : ''}" data-action="view" data-value="${v}" ${state.view === v ? 'aria-current="page"' : ''}>${t[v]}</button>`).join('')}</nav><div class="header-right"><span class="edition">${t.edition}</span><button class="lang" data-action="lang">${state.lang === 'zh' ? 'EN' : '中文'}</button></div></header>${state.view === 'preview' ? `<main class="preview"><div class="intro"><span class="eyebrow">${t.eyebrow}</span><h1>${t.headline}</h1><p class="lede">${t.lede}</p><div class="design-position"><h2>${String(state.screen + 1).padStart(2, '0')} / ${t.screenNames[state.screen]}</h2><p>${t.screenNotes[state.screen]}</p></div><div class="scenario" role="group" aria-label="${t.scenarioLabel}">${['healthy', 'offline', 'uncertain', 'note', 'clarify'].map((s) => `<button class="${state.scenario === s ? 'active' : ''}" data-action="scenario" data-value="${s}" aria-pressed="${state.scenario === s}">${t[s]}</button>`).join('')}</div><p class="demo-note">${t.demo}</p></div><div class="device-wrap"><div class="device-label"><span>01—06 / ${t.screenNames[state.screen]}</span><span>393 × 852</span></div>${phone(state.screen)}</div><nav class="screen-rail" aria-label="${state.lang === 'zh' ? '界面选择' : 'Screen selector'}">${t.screenNames.map((s, i) => `<button class="${state.screen === i ? 'active' : ''}" data-action="screen" data-value="${i}" ${state.screen === i ? 'aria-current="page"' : ''}><span class="rail-number">0${i + 1}</span>${s}</button>`).join('')}<div class="rail-rule"></div><p class="rail-caption">${t.rail}</p></nav></main>` : state.view === 'boards' ? `<main class="boards ${params.has('compact') ? 'compact' : ''}"><div class="boards-heading"><div><span class="eyebrow">SIX MOMENTS / ONE ASSISTANT</span><h1>${t.boardsHeading}</h1></div><p>${t.boardsLede}<br>${t.demo}</p></div><div class="boards-grid">${[0, 3, 4, 1, 2, 5].map((i) => `<article>${phone(i, true)}<div class="board-caption"><small>0${i + 1}</small>${t.screenNames[i]}</div><p class="board-note">${t.screenNotes[i]}</p></article>`).join('')}</div></main>` : `<main class="spec"><span class="eyebrow">PRODUCT LOGIC / DESIGN V1</span><h1>${t.specTitle}</h1><p class="spec-lede">${t.specLede}</p><div class="flow">${t.flow.map((s, i) => `${i ? '<b>→</b>' : ''}<span>${s}</span>`).join('')}</div><div class="spec-grid">${t.specSections.map(([h, p]) => `<section><h2>${h}</h2>${p}</section>`).join('')}</div></main>`}`;
+      }
+      let toastTimer;
+      function toast(message) {
+        const el = document.getElementById('toast');
+        el.className = 'toast';
+        el.textContent = message;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          el.className = '';
+          el.textContent = '';
+        }, 3200);
+      }
+      function go(index) {
+        state.screen = index;
+        state.view = 'preview';
+        state.sheet = null;
+        render();
+      }
+      document.addEventListener('input', (e) => {
+        const key = e.target.dataset.input;
+        if (key) state[key] = e.target.value;
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && state.sheet) {
+          state.sheet = null;
+          render();
+        }
+        if (e.key === 'Tab' && state.sheet) {
+          const controls = document.querySelectorAll(
+            '.sheet button:not(:disabled), .sheet input, .sheet textarea',
+          );
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last?.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first?.focus();
+          }
+        }
+      });
+      document.addEventListener('click', async (e) => {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const a = el.dataset.action,
+          v = el.dataset.value,
+          t = T();
+        const boardPhone = e.target.closest('.phone');
+        if (state.view === 'boards' && boardPhone) {
+          state.view = 'preview';
+          state.screen = Number(boardPhone.dataset.screen);
+        }
+        if (a === 'view') {
+          state.view = v;
+          state.sheet = null;
+          render();
+          return;
+        }
+        if (a === 'lang') {
+          state.lang = state.lang === 'zh' ? 'en' : 'zh';
+          render();
+          return;
+        }
+        if (a === 'screen') {
+          go(Number(v));
+          return;
+        }
+        if (a === 'home') {
+          go(0);
+          return;
+        }
+        if (a === 'voice') {
+          state.listening = true;
+          go(1);
+          return;
+        }
+        if (a === 'receipt') {
+          go(2);
+          return;
+        }
+        if (a === 'workbench') {
+          go(3);
+          return;
+        }
+        if (a === 'memory') {
+          go(5);
+          return;
+        }
+        if (a === 'scenario') {
+          state.scenario = v;
+          state.lastInput = '';
+          go(2);
+          return;
+        }
+        if (a === 'send' || a === 'sendVoice') {
+          if (
+            a === 'sendVoice' &&
+            state.editingVoice &&
+            !state.voiceDraft.trim()
+          ) {
+            document.querySelector('#voice-edit')?.focus();
+            return;
+          }
+          if (a === 'send' && !state.draft.trim()) {
+            const input = document.querySelector('#assistant-input');
+            input?.focus();
+            return;
+          }
+          state.lastInput =
+            a === 'sendVoice' ? state.voiceDraft || t.request : state.draft;
+          state.draft = '';
+          state.submitted = true;
+          state.listening = false;
+          go(2);
+          return;
+        }
+        if (a === 'filter') {
+          state.filter = Number(v);
+          render();
+          return;
+        }
+        if (a === 'editVoice') {
+          state.voiceDraft ||= t.request;
+          state.editingVoice = true;
+          state.listening = false;
+          render();
+          document.querySelector('#voice-edit')?.focus();
+          return;
+        }
+        if (a === 'toggleVoice') {
+          state.listening = !state.listening;
+          state.editingVoice = false;
+          render();
+          return;
+        }
+        if (a === 'copy') {
+          try {
+            await navigator.clipboard.writeText('ar-demo-ios-01');
+            toast(t.copied);
+          } catch {
+            toast(t.copyUnavailable);
+          }
+          return;
+        }
+        if (a === 'lookup') {
+          toast(t.lookupResult);
+          return;
+        }
+        if (a === 'tree' || a === 'graph') {
+          state.graph = a === 'graph';
+          render();
+          return;
+        }
+        if (a === 'detail') {
+          state.detail = v;
+          go(4);
+          return;
+        }
+        if (a === 'save') {
+          state.saved = !state.saved;
+          toast(state.saved ? t.saved : t.unsaved);
+          el.setAttribute('aria-pressed', String(state.saved));
+          return;
+        }
+        if (a === 'continueTask') {
+          state.sheet = 'task';
+          render();
+          toast(t.detailAdded);
+          return;
+        }
+        if (a === 'newTask') {
+          state.scenario = 'healthy';
+          state.submitted = true;
+          go(2);
+          return;
+        }
+        if (a === 'notStarted') {
+          toast(t.taskNotStarted);
+          return;
+        }
+        if (a === 'acceptInsight') {
+          state.goalLinked = true;
+          go(3);
+          toast(t.insightAccepted);
+          return;
+        }
+        if (a === 'goal') {
+          toast(t.goal);
+          return;
+        }
+        if (a === 'forget') {
+          state.memoryRemoved = true;
+          render();
+          toast(t.memoryForgot);
+          return;
+        }
+        if (a === 'saveMemory') {
+          state.memoryValue = (
+            state.memoryEdit ||
+            state.memoryValue ||
+            t.memoryFact
+          ).trim();
+          state.sheet = null;
+          render();
+          toast(t.memoryUpdated);
+          return;
+        }
+        if (a === 'confirmInference' || a === 'dismissInference') {
+          state.inferenceState =
+            a === 'confirmInference' ? 'confirmed' : 'dismissed';
+          render();
+          toast(
+            a === 'confirmInference'
+              ? t.inferenceConfirmed
+              : t.inferenceDismissed,
+          );
+          return;
+        }
+        if (a === 'forgetInference') {
+          state.inferenceState = 'dismissed';
+          render();
+          toast(t.memoryForgot);
+          return;
+        }
+        if (a === 'addDetail') {
+          if (!state.followup?.trim()) {
+            document.querySelector('#task-followup')?.focus();
+            return;
+          }
+          state.followup = '';
+          state.sheet = null;
+          render();
+          toast(t.detailAdded);
+          return;
+        }
+        if (a === 'closeSheet') {
+          state.sheet = null;
+          render();
+          return;
+        }
+        if (
+          [
+            'computers',
+            'reason',
+            'source',
+            'editMemory',
+            'artifact',
+            'task',
+            'taskDone',
+          ].includes(a)
+        ) {
+          state.sheet = a === 'taskDone' ? 'doneTask' : a;
+          render();
+          document.querySelector('.sheet .icon-button')?.focus();
+        }
+      });
+      render();
+    </script>
+  </body>
+</html>
