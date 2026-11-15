@@ -15,7 +15,7 @@
   <key>NSLocalNetworkUsageDescription</key><string>Connect to your paired Mac to submit agent tasks and review permission requests.</string>
   <key>NSCameraUsageDescription</key><string>Scan the pairing QR code displayed on your Mac.</string>
   <key>NSMicrophoneUsageDescription</key><string>Use the microphone for Omni Live calls or turn speech into editable text.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Recognize speech on this device for the assistant input field.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Recognize speech on this device for Workbench tasks.</string>
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsLocalNetworking</key><true/>
     <key>NSExceptionDomains</key><dict><key>0.0.0.0/0</key><dict>

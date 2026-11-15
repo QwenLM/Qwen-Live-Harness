@@ -1,7 +1,6 @@
 import SwiftUI
 
 private enum WorkbenchPage: Hashable {
-    case newConversation(context: UUID, id: UUID)
     case conversation(ConversationRoute)
 }
 
@@ -15,6 +14,20 @@ struct WorkbenchView: View {
     @State private var showPairing = false
     @State private var pairAfterListDismisses = false
     @State private var search = ""
+    @State private var firstRequestID: String?
+    @FocusState private var editing: Bool
+
+    private var confirmation: ConversationRoute? {
+        guard let route = model.confirmedStart, route.contextID == model.contextID,
+              route.conversationID == firstRequestID else { return nil }
+        return route
+    }
+
+    private var synchronizedRoute: ConversationRoute? {
+        guard let route = confirmation, let state = model.state, state.runId == route.runID,
+              state.tasks.contains(where: { $0.id == route.conversationID }) else { return nil }
+        return route
+    }
 
     private var conversations: [RemoteConversation] {
         (model.state?.conversations ?? []).filter { conversation in
@@ -30,28 +43,43 @@ struct WorkbenchView: View {
                 else { workbench }
             }
             .navigationTitle(tr("workbench"))
+            .bottomComposer {
+                if model.connection != nil, let state = model.state {
+                    WorkbenchComposer(contextID: model.contextID, state: state,
+                                      awaitingConfirmation: confirmation != nil, editing: $editing)
+                        .id(model.contextID)
+                }
+            }
             .navigationDestination(for: WorkbenchPage.self) { page in
                 switch page {
-                case .newConversation(let context, _):
-                    NewConversationView(contextID: context, openDraft: openDraft)
                 case .conversation(let route):
                     ConversationDetail(route: route, openDraft: openDraft)
                 }
             }
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(tr("done")) { editing = false }.accessibilityIdentifier("dismissTaskKeyboard")
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showComputers = true } label: { Label(tr("computers"), systemImage: "desktopcomputer") }
                         .accessibilityIdentifier("computersButton")
                 }
-                if model.connection != nil {
-                    ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: openDraft) { Label(tr("newConversation"), systemImage: "square.and.pencil") }
-                            .disabled(model.state == nil).accessibilityIdentifier("newConversation")
-                    }
-                }
             }
         }
-        .onChange(of: model.contextID) { _, _ in path = []; search = "" }
+        .onChange(of: model.contextID) { _, _ in
+            path = []; search = ""; editing = false
+            firstRequestID = model.pending?.conversationId == nil ? model.pending?.id : nil
+        }
+        .onReceive(model.$pending) { request in
+            if let request, request.conversationId == nil { firstRequestID = request.id }
+        }
+        .onChange(of: synchronizedRoute) { _, route in
+            openConfirmedConversation(route)
+        }
+        .onChange(of: path) { _, path in
+            if path.isEmpty { openConfirmedConversation(synchronizedRoute) }
+        }
         .onChange(of: requestedRoute, initial: true) { _, route in
             guard let route else { return }
             requestedRoute = nil
@@ -85,7 +113,13 @@ struct WorkbenchView: View {
     }
 
     private func openDraft() {
-        path.append(.newConversation(context: model.contextID, id: UUID()))
+        path = []; search = ""; editing = true
+    }
+
+    private func openConfirmedConversation(_ route: ConversationRoute?) {
+        guard path.isEmpty, let route else { return }
+        editing = false; firstRequestID = nil
+        path.append(.conversation(route))
     }
 
     private var workbench: some View {
@@ -110,9 +144,13 @@ struct WorkbenchView: View {
                     Text(tr("staleStateExplanation")).font(.footnote).foregroundStyle(.secondary)
                 }
             } footer: { Text(tr("macKeepsWorking")) }
-            Section {
-                Button(action: openDraft) { Label(tr("newConversation"), systemImage: "plus.bubble") }
-                    .disabled(model.state == nil).accessibilityIdentifier("newConversationCard")
+            if let confirmation {
+                Section {
+                    if confirmation.runID == model.state?.runId {
+                        Text(tr("syncingFirstMessage")).foregroundStyle(.secondary)
+                        Button(tr("retryConnection")) { Task { await model.refresh(expectedContext: model.contextID) } }
+                    } else { ErrorNote(text: tr("taskUnavailableHint")) }
+                }
             }
             if model.pending != nil { Section { PendingSubmissionNotice(contextID: model.contextID) } }
             if let error = model.actionError { Section { ErrorNote(text: error) } }
@@ -146,6 +184,7 @@ struct WorkbenchView: View {
             } else { Section { ProgressView(tr("loading")) } }
         }
         .searchable(text: $search, prompt: tr("searchConversations"))
+        .scrollDismissesKeyboard(.interactively)
         .refreshable { await model.refresh() }
     }
 }

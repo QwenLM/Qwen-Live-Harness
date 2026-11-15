@@ -4,7 +4,7 @@ import UIKit
 final class MobileFlowTests: XCTestCase {
     func testLiveKeySetupPersistsLocallyAndCanBeDeletedWithoutStartingACall() {
         let app = XCUIApplication(); app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]; app.launch()
-        app.buttons["assistantLive"].tap(); app.buttons["liveConfigure"].tap()
+        app.buttons["liveConfigure"].tap()
         let key = app.secureTextFields["liveAPIKey"], workspace = app.textFields["liveWorkspace"]
         XCTAssertTrue(key.waitForExistence(timeout: 10)); key.tap(); key.typeText("sk-fake-ios-ui-test-key")
         workspace.tap(); workspace.typeText("test-workspace")
@@ -14,10 +14,9 @@ final class MobileFlowTests: XCTestCase {
         app.navigationBars["Omni Live settings"].buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["Ready for Live"].waitForExistence(timeout: 5))
         app.terminate(); app.launchArguments = ["--uitesting-live-persist", "-AppleLanguages", "(en)"]; app.launch()
-        app.buttons["assistantLive"].tap()
         XCTAssertTrue(app.buttons["liveStart"].waitForExistence(timeout: 10)); XCTAssertTrue(app.buttons["liveStart"].isEnabled)
         capture(app, name: "Omni Live ready after reopening without a paired Mac")
-        app.buttons["Omni Live settings"].tap()
+        app.buttons["assistantLiveSettings"].tap()
         XCTAssertTrue(app.secureTextFields["liveAPIKey"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.textFields["liveWorkspace"].value as? String, "test-workspace")
         app.buttons["deleteLiveKey"].tap(); app.sheets.buttons["Delete local API key"].tap()
@@ -35,8 +34,7 @@ final class MobileFlowTests: XCTestCase {
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = link
         launchWorkbench(app); app.buttons["connectMac"].tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
-        app.buttons["newConversation"].tap()
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         app.buttons["runSettings"].tap()
         app.segmentedControls.buttons["Codex"].tap()
         app.buttons["closeRunSettings"].tap()
@@ -71,10 +69,8 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertEqual(elapsed.value as? String, duration)
         capture(app, name: "Completed duration stays fixed")
         app.tabBars.buttons["Assistant"].tap()
-        let recent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-' AND label CONTAINS %@", "artifacts: final outputs")).firstMatch
-        XCTAssertTrue(recent.waitForExistence(timeout: 10)); recent.tap()
-        XCTAssertTrue(app.buttons["artifact-report.md"].waitForExistence(timeout: 10))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).firstMatch.exists)
         app.tabBars.buttons["Feed"].tap()
         let report = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@", "report.md")).firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10))
@@ -97,7 +93,7 @@ final class MobileFlowTests: XCTestCase {
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = firstLink
         launchWorkbench(app)
         app.buttons["connectMac"].tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac A")
         sendAndWait(app, text: "permission: first computer", agent: "Qwen Code")
 
@@ -108,12 +104,12 @@ final class MobileFlowTests: XCTestCase {
         input.tap(); input.typeText(secondLink)
         if app.buttons["dismissPairingKeyboard"].exists { app.buttons["dismissPairingKeyboard"].tap() }
         app.buttons["connectMac"].tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac B")
         sendAndWait(app, text: "permission: second computer", agent: "Codex")
 
         app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; launchWorkbench(app)
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac B")
         app.buttons["computersButton"].tap()
         let first = computerRow(app, name: "Test Mac A"), second = computerRow(app, name: "Test Mac B")
@@ -122,7 +118,7 @@ final class MobileFlowTests: XCTestCase {
         screenshot.name = "Saved computers"; screenshot.lifetime = .keepAlways
         add(screenshot)
         first.tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Test Mac A")
         XCTAssertTrue(taskRow(app, text: "permission: first computer").waitForExistence(timeout: 10))
         XCTAssertFalse(taskRow(app, text: "permission: second computer").exists)
@@ -138,17 +134,22 @@ final class MobileFlowTests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'task-' AND label CONTAINS %@", text)).firstMatch
     }
     private func sendAndWait(_ app: XCUIApplication, text: String, agent: String) {
-        app.buttons["newConversation"].tap()
         let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["newConversation"].exists)
+        XCTAssertFalse(app.buttons["newConversationCard"].exists)
+        XCTAssertTrue(app.buttons["workbenchVoice"].isHittable)
         XCTAssertFalse(app.buttons["sendTask"].isEnabled)
         if text == "permission: first computer" {
-            capture(app, name: "Blank conversation with focused first-message composer")
-            input.typeText(text)
-            app.navigationBars.buttons.element(boundBy: 0).tap()
+            capture(app, name: "Workbench with its inline first-message composer")
+            input.tap(); input.typeText(text)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            XCTAssertLessThanOrEqual(app.buttons["sendTask"].frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+            app.buttons["dismissTaskKeyboard"].tap()
+            app.tabBars.buttons["Assistant"].tap()
+            XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
+            app.tabBars.buttons["Workbench"].tap()
             XCTAssertFalse(taskRow(app, text: text).exists)
-            app.buttons["newConversationCard"].tap()
             XCTAssertTrue(input.waitForExistence(timeout: 5))
             XCTAssertEqual(input.value as? String, text)
         }
@@ -202,10 +203,9 @@ final class MobileFlowTests: XCTestCase {
         app.launchEnvironment["QWEN_LIVE_PAIRING"] = pairing
         launchWorkbench(app)
         app.buttons["connectMac"].tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         for (agent, decision, outcome) in [("Qwen Code", "allowPermission", "completed"), ("Codex", "denyPermission", "cancelled")] {
-            let entry = agent == "Codex" ? "newConversation-ui-fixture" : "newConversation"
-            app.buttons[entry].tap()
+            if agent == "Codex" { app.buttons["newConversation-ui-fixture"].tap() }
             app.buttons["runSettings"].tap()
             app.segmentedControls.buttons[agent].tap()
             app.buttons["closeRunSettings"].tap()
@@ -244,76 +244,78 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
-        XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 10))
         app.open(url)
         XCTAssertTrue(app.buttons["connectMac"].waitForExistence(timeout: 10))
         app.buttons["connectMac"].tap()
-        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["activeComputerName"].label, "Mac · Approval fixture")
     }
 
-    func testPersonalTabsSaveLocallyWithoutInventingAnAssistantOrComputerResult() {
+    func testAssistantOpensVoiceDirectlyWithoutStartingCaptureOrInventingResults() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
-        XCTAssertTrue(app.buttons["workingFolderButton"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label), ["Assistant", "Workbench", "Feed", "Me"])
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 0)
-        XCTAssertTrue(app.staticTexts["assistantEmpty"].exists)
-        XCTAssertGreaterThanOrEqual(app.scrollViews.firstMatch.frame.width, app.frame.width - 1)
-        XCTAssertFalse(app.staticTexts["Three recent updates"].exists)
-        XCTAssertFalse(app.buttons["assistantSend"].exists)
-        XCTAssertTrue(app.navigationBars.buttons["assistantLive"].isHittable)
-        capture(app, name: "Empty assistant with the floating composer")
-        let input = app.descendants(matching: .any)["assistantInput"]
-        input.tap(); input.typeText("Keep this idea locally until the assistant is connected.")
-        XCTAssertTrue(app.buttons["assistantSend"].isHittable)
-        app.buttons["assistantSend"].tap()
-        XCTAssertTrue(app.staticTexts["assistantReceipt"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["assistantReceipt"].label.contains("No task has been dispatched"))
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 1)
-        XCTAssertTrue(app.staticTexts["Three recent updates"].exists)
-        XCTAssertFalse(app.staticTexts["assistantEmpty"].exists)
-        XCTAssertFalse(app.buttons["assistantSend"].exists)
-        XCTAssertFalse(app.buttons["sendFollowup"].exists)
+        XCTAssertTrue(app.staticTexts["assistantVoiceGreeting"].exists)
+        XCTAssertTrue(app.buttons["liveConfigure"].isHittable)
+        XCTAssertFalse(app.descendants(matching: .any)["assistantInput"].exists)
+        XCTAssertFalse(app.buttons["workingFolderButton"].exists)
         XCTAssertFalse(app.buttons["sendTask"].exists)
-        capture(app, name: "Assistant saves an input locally without a fake reply")
-        app.buttons["assistantLive"].tap()
-        XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["liveStart"].isEnabled)
-        XCTAssertTrue(app.buttons["liveConfigure"].exists)
-        app.buttons["closeLive"].tap()
+        XCTAssertFalse(app.buttons["liveHangUp"].exists)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 0)
+        XCTAssertFalse(app.staticTexts["liveAssistantTranscript"].exists)
+        capture(app, name: "Assistant opens directly into voice without a paired computer")
+        app.buttons["liveDetails"].tap()
+        XCTAssertTrue(app.staticTexts["Qwen3.8 Omni Flash Realtime"].waitForExistence(timeout: 5))
+        capture(app, name: "Voice privacy and diagnostics are available separately")
+        app.buttons["closeLiveDetails"].tap()
         app.tabBars.buttons["Feed"].tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-input.'")).firstMatch.waitForExistence(timeout: 5))
-        capture(app, name: "Feed shows real locally saved input")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-'")).count, 0)
         app.tabBars.buttons["Me"].tap()
         XCTAssertTrue(app.buttons["savedInputs"].waitForExistence(timeout: 5))
-        capture(app, name: "Personal settings")
-        app.terminate(); app.launchArguments = ["-AppleLanguages", "(en)"]; app.launch()
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 1)
-        app.tabBars.buttons["Me"].tap(); app.buttons["savedInputs"].tap()
-        XCTAssertTrue(app.staticTexts["Keep this idea locally until the assistant is connected."].waitForExistence(timeout: 5))
+        capture(app, name: "Existing personal data remains accessible in settings")
+        app.buttons["savedInputs"].tap()
+        XCTAssertTrue(app.staticTexts["No saved inputs yet"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Assistant"].tap()
+        XCTAssertEqual(app.staticTexts["liveStatus"].label, "Ready for Live")
+        XCTAssertFalse(app.buttons["liveHangUp"].exists)
+    }
+
+    func testChineseAssistantAtAccessibilityTextSize() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+                               "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["想聊些什么？"].waitForExistence(timeout: 10))
+        app.scrollViews.firstMatch.swipeUp()
+        XCTAssertTrue(app.buttons["liveConfigure"].isHittable)
+        XCTAssertLessThanOrEqual(app.staticTexts["liveStatus"].frame.maxY, app.buttons["liveConfigure"].frame.minY)
+        XCTAssertTrue(app.tabBars.buttons["工作台"].isHittable)
+        XCTAssertFalse(app.buttons["liveHangUp"].exists)
+        capture(app, name: "Chinese assistant with accessibility text size")
     }
 
     func testNativeThemeAcrossAppearanceChangesAndSheets() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
-        XCTAssertTrue(app.buttons["assistantVoice"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["liveConfigure"].waitForExistence(timeout: 10))
         for appearance in ["Light", "Dark", "Light"] {
             app.tabBars.buttons["Me"].tap()
             app.buttons["appearancePicker"].tap()
             app.buttons[appearance].tap()
             capture(app, name: "System settings background and green tint " + appearance)
             app.tabBars.buttons["Assistant"].tap()
-            assertGreenAccent(app.buttons["assistantLive"])
+            assertGreenAccent(app.buttons["liveConfigure"])
             capture(app, name: "Native assistant background and controls " + appearance)
-            app.buttons["assistantLive"].tap()
-            XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
-            capture(app, name: "Live sheet tint " + appearance)
-            app.buttons["closeLive"].tap()
-            assertGreenAccent(app.buttons["assistantLive"])
+            app.buttons["liveDetails"].tap()
+            XCTAssertTrue(app.buttons["closeLiveDetails"].waitForExistence(timeout: 5))
+            capture(app, name: "Voice details sheet tint " + appearance)
+            app.buttons["closeLiveDetails"].tap()
+            assertGreenAccent(app.buttons["liveConfigure"])
             app.tabBars.buttons["Workbench"].tap()
             capture(app, name: "Workbench tint after alert dismissal " + appearance)
         }

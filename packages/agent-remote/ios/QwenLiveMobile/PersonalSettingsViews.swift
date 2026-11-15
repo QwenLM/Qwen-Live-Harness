@@ -80,7 +80,20 @@ private struct SavedInputsView: View {
     @State private var selected: AssistantInput?
     var body: some View {
         List {
-            if assistant.inputs.isEmpty { ContentUnavailableView(tr("savedInputsEmpty"), systemImage: "tray") }
+            if !assistant.draft.isEmpty || !assistant.draftImages.isEmpty {
+                Section(tr("previousAssistantDraft")) {
+                    TextField(tr("assistantInputPlaceholder"), text: $assistant.draft, axis: .vertical)
+                    if !assistant.draftImages.isEmpty {
+                        ImageAttachmentStrip(images: assistant.draftImages, store: assistant.imageStore)
+                    }
+                    Button(tr("saveAssistantInput")) {
+                        if let input = assistant.saveInput(source: .text) { selected = input }
+                    }.accessibilityIdentifier("savePreviousAssistantDraft")
+                }
+            }
+            if assistant.inputs.isEmpty && assistant.draft.isEmpty && assistant.draftImages.isEmpty {
+                ContentUnavailableView(tr("savedInputsEmpty"), systemImage: "tray")
+            }
             ForEach(assistant.inputs) { input in
                 Button { selected = input } label: {
                     VStack(alignment: .leading, spacing: 7) {
