@@ -48,7 +48,7 @@ npm install -g ./agent-remote-0.1.0.tgz
 agent-remote --project "/absolute/path/to/project"
 ```
 
-The foreground gateway opens a private pairing page. Connect the iPhone and computer to the same local network, then scan or paste the link in the app and connect. QR generation uses Node.js and requires neither Xcode nor Swift. The default port is 47421; allow inbound connections and keep the computer awake.
+The foreground gateway opens a private pairing page. Scan or paste the link in the app and connect. For cellular access, configure a public hostname or IPv4 address as described below; local addresses require the same local network or a reachable VPN. QR generation uses Node.js and requires neither Xcode nor Swift. The default port is 47421; allow inbound connections and keep the computer awake.
 
 Only installed agents appear. Codex may download its ACP adapter through npm on first use. Execution uses the target computer's agent account and configuration.
 
@@ -98,7 +98,22 @@ agent-remote pair --no-open
 
 Codes are valid for fifteen minutes and are single-use. `pair` renews the code without restarting the service, interrupting work or revoking existing phone credentials.
 
-Pairing prefers a certificate-covered IPv4 address; `.local` names are a fallback because they may not resolve over a VPN. A VPN connection only works if it permits the iPhone to reach the displayed computer address and port (47421 by default). If connecting times out, check VPN routing and firewall access; VPN membership alone does not guarantee connectivity.
+For 5G/cellular access, set **Public hostname or IPv4** in the macOS app, or start/install the gateway with:
+
+```sh
+agent-remote --project "/path/project" --public-host remote.example.com
+# Or persist it in the login service:
+agent-remote service install --project "/path/project" --public-host remote.example.com
+agent-remote pair
+```
+
+`AGENT_REMOTE_PUBLIC_HOST` is also supported at startup; `--public-host` takes precedence. Enter only a DNS hostname or IPv4 address, without a scheme, port or path. The configured address is included in the TLS certificate and preferred by both the menu bar QR code and CLI pairing page. Later `pair` commands reuse the running gateway's address without repeating the option. Local IPv4, `.local` and simulator addresses remain fallbacks. Without a configured public host, pairing keeps its local-address preference.
+
+Public DNS endpoints using this gateway's private certificate may require an exact hostname exception in the iOS app's `NSExceptionDomains` configuration before rebuilding your own app; see [Apple's domain exception guidance](https://developer.apple.com/documentation/bundleresources/information-property-list/nsexceptionallowsinsecurehttploads). Keep the exception limited to that hostname rather than enabling global arbitrary loads. HTTPS, certificate pin, hostname and expiry validation remain mandatory. Public IPv4 addresses do not require a hostname-specific entry.
+
+Point DNS/DDNS to the computer's reachable public IP. If behind a router, forward the displayed TCP port (47421 by default) to the computer on the same port and allow it through the firewall. The gateway does not configure routers, DDNS or tunnels. A hostname alone cannot provide connectivity through an unreachable NAT/CGNAT. VPN access likewise requires a route to the displayed address and port.
+
+Changing the public host restarts an idle service from the macOS app; active tasks block the change. Adding a hostname or IP absent from the certificate renews the certificate, so pair the phone again using the new code. A stable DNS hostname keeps the pinned certificate valid across local IP changes. Clearing the setting returns to local pairing.
 
 Fresh installs use `~/.agent-remote/`. Existing certificates or credentials in `~/.qwen-live-harness/mobile/` select the legacy directory in place. HTTPS API, pairing payloads, iOS bundle ID and Keychain identifiers remain compatible. Do not clear credentials during migration. Finish old work before stopping the previous gateway; live sessions cannot transfer between processes.
 
@@ -142,7 +157,7 @@ The **+** attachment button selects images from Photos or Files in Assistant, ne
 
 Completed turns retain a fixed run duration. **Artifacts** below each reply previews images, Markdown and static HTML reported by the agent. Files must be inside the shared project folder (including resolved symlink targets); inline ACP images and embedded documents are also supported. Previews use the paired HTTPS connection and immutable snapshots, limited to 8 MB per file, 12 files / 16 MB per turn and 64 MB per service run. HTML scripts, external requests and navigation are disabled; text previews show at most 512,000 characters. Missing or out-of-project files show an explanation. Upgrade both the gateway and iOS app for previews; old services retain text-only results.
 
-This version supports local networks, without internet relay, background push or voice.
+Computer tasks use direct HTTPS over a reachable local network, VPN or configured public endpoint. No internet relay or background push is provided.
 
 ## Development, verification and extraction
 

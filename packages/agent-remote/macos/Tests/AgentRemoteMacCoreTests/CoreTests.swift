@@ -26,6 +26,13 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(snapshot.agents.first?.status, "ready")
         XCTAssertEqual(snapshot.agents.last?.installed, false)
         XCTAssertEqual(snapshot.permissionMode, "allow-all")
+        XCTAssertNil(snapshot.config.publicHost)
+    }
+    func testPublicPairingHostSurvivesConfigRoundTrip() throws {
+        let data = Data(#"{"version":1,"projects":["/fixture"],"port":47421,"ask":false,"launchAtLogin":true,"publicHost":"remote.example.test"}"#.utf8)
+        let config = try JSONDecoder().decode(DesktopConfig.self, from: data)
+        XCTAssertEqual(config.publicHost, "remote.example.test")
+        XCTAssertEqual(try JSONDecoder().decode(DesktopConfig.self, from: JSONEncoder().encode(config)), config)
     }
     func testMissingRuntimeDoesNotFallBackToSystemNode() async throws {
         let root = try directory(), bridge = GatewayBridge(bundle: root)

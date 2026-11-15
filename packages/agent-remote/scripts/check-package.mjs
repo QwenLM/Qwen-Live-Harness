@@ -100,6 +100,7 @@ try {
       bin + ':' + dirname(process.execPath) + ':' + (process.env['PATH'] ?? ''),
   };
   delete env.AGENT_REMOTE_DATA_DIR;
+  delete env.AGENT_REMOTE_PUBLIC_HOST;
   assert.equal(
     execFileSync(process.execPath, [cli, '--version'], {
       env,
@@ -117,12 +118,25 @@ try {
     pathToFileURL(join(installed, 'dist/pairing.js')).href
   );
   const { hostname } = await import('node:os');
-  const tls = await ensureMobileTLS(directory, localAddresses(), [hostname()]);
+  const publicHost = 'remote.example.test';
+  const tls = await ensureMobileTLS(directory, localAddresses(), [
+    hostname(),
+    publicHost,
+  ]);
   const token = randomBytes(32).toString('base64url');
   writeFileSync(join(directory, 'device-token'), token, { mode: 0o600 });
   child = spawn(
     process.execPath,
-    [cli, '--port', '0', '--project', temporary, '--no-open'],
+    [
+      cli,
+      '--port',
+      '0',
+      '--project',
+      temporary,
+      '--no-open',
+      '--public-host',
+      publicHost,
+    ],
     { env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   stopped = new Promise((resolve) => child.once('exit', resolve));
@@ -141,7 +155,10 @@ try {
       throw new Error('Packaged gateway exited: ' + logs);
     await delay(50);
   }
-  assert(logs.includes('Agent Remote ready'), 'gateway startup did not finish');
+  assert(
+    logs.includes('Agent Remote ready'),
+    'gateway startup did not finish: ' + logs,
+  );
   assert.equal(readFileSync(join(directory, 'device-token'), 'utf8'), token);
   assert.equal(
     new X509Certificate(readFileSync(join(directory, 'server-cert.pem')))
@@ -203,6 +220,7 @@ try {
   assert(link);
   const payload = JSON.parse(Buffer.from(link[1], 'base64url').toString());
   assert.equal(payload.version, 1);
+  assert.equal(payload.url, `https://${publicHost}:${port}`);
   assert.equal(
     payload.pin,
     createHash('sha256')

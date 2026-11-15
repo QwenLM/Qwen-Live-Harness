@@ -7,6 +7,7 @@ import AgentRemoteMacCore
 struct DashboardView: View {
     @ObservedObject var model: DesktopModel
     @State private var confirmStop = false
+    @State private var publicHost = ""
     private let green = Color(red: 0.12, green: 0.36, blue: 0.31)
 
     var body: some View {
@@ -60,6 +61,17 @@ struct DashboardView: View {
                     }.frame(maxWidth: .infinity).padding(10)
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tr("publicHost")).font(.headline)
+                    HStack {
+                        TextField("remote.example.com", text: $publicHost).textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("publicHost")
+                        Button(tr("savePublicHost")) { Task { await model.setPublicHost(publicHost) } }
+                            .disabled(model.busy || (model.snapshot?.activeTasks ?? 0) > 0 || publicHost == (model.snapshot?.config.publicHost ?? ""))
+                            .accessibilityIdentifier("savePublicHost")
+                    }
+                    Text(tr("publicHostHint")).font(.caption).foregroundStyle(.secondary)
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     Text(tr("agents")).font(.headline)
                     ForEach(model.snapshot?.agents ?? []) { agent in
@@ -116,6 +128,8 @@ struct DashboardView: View {
                 }
             }.padding(20)
         }.tint(green).frame(minWidth: 380, idealWidth: 390, maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { publicHost = model.snapshot?.config.publicHost ?? "" }
+            .onChange(of: model.snapshot?.config.publicHost) { publicHost = $0 ?? "" }
             .alert(tr("stopService"), isPresented: $confirmStop) {
                 Button(tr("stopService"), role: .destructive) { Task { await model.stop(confirmActive: true) } }
                 Button(tr("cancel"), role: .cancel) {}

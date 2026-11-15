@@ -26,6 +26,7 @@ export async function ensureMobileTLS(
   directory: string,
   addresses: readonly string[],
   hostnames: readonly string[] = ['localhost'],
+  requiredAddresses: readonly string[] = [],
 ) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (
@@ -34,7 +35,7 @@ export async function ensureMobileTLS(
   )
     throw new Error('TLS directory must be a real directory');
   chmodSync(directory, 0o700);
-  const ips = [...new Set(['127.0.0.1', ...addresses])];
+  const ips = [...new Set(['127.0.0.1', ...addresses, ...requiredAddresses])];
   if (ips.some((address) => isIP(address) !== 4))
     throw new Error('Invalid mobile TLS address');
   const names = [...new Set(['localhost', ...hostnames])].filter((name) =>
@@ -58,6 +59,9 @@ export async function ensureMobileTLS(
         certificate.keyUsage?.includes('1.3.6.1.5.5.7.3.1') === true &&
         Date.parse(certificate.validTo) > Date.now() + 86_400_000 &&
         certificate.checkIP('127.0.0.1') !== undefined &&
+        requiredAddresses.every(
+          (ip) => certificate.checkIP(ip) !== undefined,
+        ) &&
         // Stable DNS names survive Wi-Fi address changes without revoking a
         // phone's pinned certificate. IP-only installations still renew.
         (names.some((name) => name !== 'localhost') ||

@@ -2,6 +2,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { stateDirectory } from './state.js';
 import type { GatewayOptions } from './mobile/index.js';
+import { normalizePublicHost } from './pairing.js';
 
 export function parseOptions(args: string[]): GatewayOptions {
   const projects: string[] = [];
@@ -10,11 +11,13 @@ export function parseOptions(args: string[]): GatewayOptions {
     open = true,
     reset = false;
   let directory = process.env['AGENT_REMOTE_DATA_DIR'];
+  let publicHost = process.env['AGENT_REMOTE_PUBLIC_HOST'];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--project' && args[i + 1])
       projects.push(realpathSync(resolve(args[++i]!)));
     else if (arg === '--port' && args[i + 1]) port = Number(args[++i]);
+    else if (arg === '--public-host' && args[i + 1]) publicHost = args[++i];
     else if (arg === '--data-dir' && args[i + 1])
       directory = resolve(args[++i]!);
     else if (arg === '--ask') ask = true;
@@ -34,5 +37,7 @@ export function parseOptions(args: string[]): GatewayOptions {
     ask,
     open,
     reset,
+    publicHost:
+      publicHost === undefined ? undefined : normalizePublicHost(publicHost),
   };
 }

@@ -16,6 +16,7 @@ import {
   saveDesktopConfig,
   serviceFile,
   validateDesktopConfig,
+  gatewayOptions,
   configFromGateway,
 } from './desktop.js';
 import { gatewayServiceLabel, launchAgent } from './service.js';
@@ -105,9 +106,21 @@ it('saves desktop settings privately without touching a paired identity', () => 
     port: 47421,
     ask: false,
     launchAtLogin: true,
+    publicHost: 'remote.example.test',
   };
   saveDesktopConfig(path, config);
   expect(loadDesktopConfig(path, directory())).toEqual(config);
+  expect(gatewayOptions(config, path).publicHost).toBe('remote.example.test');
+  expect(
+    legacyConfig([
+      '/node',
+      '/cli.js',
+      '--project',
+      '/fixture',
+      '--public-host',
+      'remote.example.test',
+    ])?.publicHost,
+  ).toBe('remote.example.test');
   expect(readFileSync(join(path, 'device-token'), 'utf8')).toBe(
     'existing token',
   );
@@ -154,6 +167,16 @@ it('limits launchd management to its own namespace, including isolated fixture l
   expect(() => gatewayServiceLabel()).toThrow('Invalid Agent Remote');
 });
 it('rejects invalid ports and non-absolute paths before installing a service', () => {
+  expect(() =>
+    validateDesktopConfig({
+      version: 1,
+      projects: ['/project'],
+      port: 47421,
+      ask: false,
+      launchAtLogin: true,
+      publicHost: 'https://remote.example.test',
+    }),
+  ).toThrow();
   expect(() =>
     validateDesktopConfig({
       version: 1,

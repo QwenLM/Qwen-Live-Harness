@@ -84,6 +84,21 @@ final class DesktopModel: ObservableObject {
         let arguments = ["configure"] + panel.urls.flatMap { ["--project", $0.path] }
         Task { await perform { let _: OperationReply = try await self.bridge.request(arguments) } }
     }
+    func setPublicHost(_ host: String) async {
+        let wasOnline = online
+        await perform {
+            let _: OperationReply = try await self.bridge.request(["configure", "--public-host", host])
+            self.pairing = nil
+            if wasOnline {
+                for _ in 0..<15 {
+                    await self.refresh(force: true)
+                    if self.online { break }
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
+            }
+        }
+        if online && error == nil { await showPairing() }
+    }
     func setLogin(_ enabled: Bool) async {
         await perform {
             let _: OperationReply = try await self.bridge.request(["login", enabled ? "on" : "off"])

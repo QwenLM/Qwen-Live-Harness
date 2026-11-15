@@ -7,7 +7,10 @@
 "taskCounts" = "%d 个任务运行中 · 本次共 %d 个任务";
 "pairingQR" = "iPhone 配对二维码";
 "scanInPhone" = "在 iPhone 的 Agent Remote 中扫码";
-"pairingNetworkHint" = "使用同一局域网，或能访问此地址和端口的 VPN。连接超时时，请检查 VPN 路由和防火墙。";
+"pairingNetworkHint" = "通过 5G 连接时，请使用此端口可达的公网域名或 IP；局域网地址需要同一网络或可达的 VPN。";
+"publicHost" = "公网域名或 IPv4";
+"savePublicHost" = "保存";
+"publicHostHint" = "5G 配对优先使用此地址，需配置 DNS、端口转发和防火墙。保存会重启空闲服务；证书变化后需重新扫码。留空使用局域网配对。";
 "expiresMinutes" = "仅可使用一次 · %d 分钟内有效";
 "pairingExpired" = "配对码已过期，请点击下方生成新码。";
 "copied" = "已复制";

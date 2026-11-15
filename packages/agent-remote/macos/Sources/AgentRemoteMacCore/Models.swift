@@ -6,6 +6,7 @@ public struct DesktopConfig: Codable, Equatable {
     public var port: Int
     public var ask: Bool
     public var launchAtLogin: Bool
+    public var publicHost: String?
 }
 
 public struct AgentStatus: Decodable, Identifiable {

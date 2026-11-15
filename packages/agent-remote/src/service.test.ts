@@ -41,6 +41,7 @@ function setup() {
 it('uses explicit executable arguments and escaped project paths, without serializing account secrets', () => {
   const { options } = setup();
   options.projects = ['/a folder/<project>&"'];
+  options.publicHost = 'remote.example.test';
   const plist = launchAgent(
     options,
     '/installed/cli.js',
@@ -50,6 +51,9 @@ it('uses explicit executable arguments and escaped project paths, without serial
   expect(plist).toContain('<string>/node path/node</string>');
   expect(plist).toContain('/a folder/&lt;project&gt;&amp;&quot;');
   expect(plist).toContain('<key>KeepAlive</key><true/>');
+  expect(plist).toContain(
+    '<string>--public-host</string><string>remote.example.test</string>',
+  );
   expect(plist).not.toContain('--reset-pairing');
   expect(plist).not.toContain('--ask');
   expect(() => launchAgent({ ...options, reset: true })).toThrow(

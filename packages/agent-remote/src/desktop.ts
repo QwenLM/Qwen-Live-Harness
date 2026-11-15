@@ -11,14 +11,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, hostname, networkInterfaces } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { detectAgents } from './agent-detector.js';
 import { localRequest, type GatewayState } from './client.js';
 import { certificatePin, type GatewayOptions } from './mobile/index.js';
 import { gatewayServiceLabel, manageService } from './service.js';
 import { privateDirectory, stateDirectory } from './state.js';
-import { pairingUrls } from './pairing.js';
+import { localAddresses, normalizePublicHost, pairingUrls } from './pairing.js';
 
 export interface DesktopConfig {
   version: 1;
@@ -26,6 +26,7 @@ export interface DesktopConfig {
   port: number;
   ask: boolean;
   launchAtLogin: boolean;
+  publicHost?: string;
 }
 interface DesktopState extends GatewayState {
   projects: Array<{ id: string; name: string; path: string }>;
@@ -62,6 +63,12 @@ export function validateDesktopConfig(config: DesktopConfig): void {
     typeof config.launchAtLogin !== 'boolean'
   )
     throw new Error('Invalid desktop configuration');
+  if (
+    config.publicHost !== undefined &&
+    (typeof config.publicHost !== 'string' ||
+      normalizePublicHost(config.publicHost) !== config.publicHost)
+  )
+    throw new Error('Invalid public host');
 }
 
 export function legacyConfig(arguments_: unknown): DesktopConfig | undefined {
@@ -72,11 +79,14 @@ export function legacyConfig(arguments_: unknown): DesktopConfig | undefined {
     return undefined;
   const projects: string[] = [];
   let port = 47421;
+  let publicHost: string | undefined;
   for (let i = 0; i < arguments_.length; i++) {
     if (arguments_[i] === '--project' && arguments_[i + 1])
       projects.push(arguments_[++i]);
     else if (arguments_[i] === '--port' && arguments_[i + 1])
       port = Number(arguments_[++i]);
+    else if (arguments_[i] === '--public-host' && arguments_[i + 1])
+      publicHost = normalizePublicHost(arguments_[++i]);
   }
   if (!projects.length) return undefined;
   const config: DesktopConfig = {
@@ -85,6 +95,7 @@ export function legacyConfig(arguments_: unknown): DesktopConfig | undefined {
     port,
     ask: arguments_.includes('--ask'),
     launchAtLogin: true,
+    ...(publicHost ? { publicHost } : {}),
   };
   validateDesktopConfig(config);
   return config;
@@ -159,6 +170,7 @@ export function gatewayOptions(
     ask: config.ask,
     open: false,
     reset: false,
+    publicHost: config.publicHost,
   };
 }
 
@@ -214,20 +226,25 @@ export async function desktopCommand(args: string[]): Promise<unknown> {
       ? (JSON.parse(readFileSync(runtimeFile, 'utf8')) as {
           pid?: number;
           port?: number;
+          publicHost?: string;
         })
       : undefined;
-    const urls = Object.entries(networkInterfaces())
-      .filter(([name]) => /^(en|eth|wlan)/u.test(name))
-      .flatMap(([, values]) => values ?? [])
-      .filter(
-        (entry) =>
-          entry.family === 'IPv4' &&
-          !entry.internal &&
-          !entry.address.startsWith('169.254.'),
-      )
-      .map(
-        (entry) => `https://${entry.address}:${runtime?.port ?? config.port}`,
-      );
+    const urls = current
+      ? pairingUrls(
+          directory,
+          runtime?.port ?? config.port,
+          runtime?.publicHost,
+        )
+      : [
+          ...new Set([
+            ...(config.publicHost
+              ? [`https://${config.publicHost}:${config.port}`]
+              : []),
+            ...localAddresses().map(
+              (address) => `https://${address}:${config.port}`,
+            ),
+          ]),
+        ];
     return {
       version: 1,
       name: hostname(),
@@ -257,21 +274,21 @@ export async function desktopCommand(args: string[]): Promise<unknown> {
   }
   if (action === 'pair') {
     if (!current) throw new Error('Start the service before pairing');
+    const runtime = JSON.parse(
+      readFileSync(join(directory, 'runtime.json'), 'utf8'),
+    ) as { port: number; publicHost?: string };
+    const url = pairingUrls(directory, runtime.port, runtime.publicHost)[0];
+    if (!url)
+      throw new Error(
+        'No network address matches the service certificate. Restart the service.',
+      );
     const { code } = await localRequest<{ code: string }>(
       directory,
       '/v1/pairing',
       {},
       current.runId,
     );
-    const runtime = JSON.parse(
-      readFileSync(join(directory, 'runtime.json'), 'utf8'),
-    ) as { port: number };
     const pin = certificatePin(directory);
-    const url = pairingUrls(directory, runtime.port)[0];
-    if (!url)
-      throw new Error(
-        'No network address matches the service certificate. Restart the service.',
-      );
     const link = `qwenliveharness://pair?data=${Buffer.from(JSON.stringify({ version: 1, url, pin, code, name: hostname() })).toString('base64url')}`;
     return {
       link,
@@ -282,27 +299,42 @@ export async function desktopCommand(args: string[]): Promise<unknown> {
   }
   if (action === 'configure') {
     const projects: string[] = [];
+    let publicHost = config.publicHost;
     for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--public-host' && args[i + 1] !== undefined) {
+        publicHost = normalizePublicHost(args[++i]!);
+        continue;
+      }
       if (args[i] !== '--project' || !args[i + 1])
-        throw new Error('Use --project /absolute/path');
+        throw new Error(
+          'Use --project /absolute/path or --public-host hostname',
+        );
       const path = realpathSync(args[++i]!);
       if (!statSync(path).isDirectory())
         throw new Error('Choose a project folder');
       projects.push(path);
     }
-    if (!projects.length) throw new Error('Choose at least one project folder');
-    const next: DesktopConfig = { ...config, projects: [...new Set(projects)] };
-    if (JSON.stringify(next.projects) === JSON.stringify(config.projects)) {
+    const next: DesktopConfig = {
+      ...config,
+      projects: projects.length ? [...new Set(projects)] : config.projects,
+      publicHost,
+    };
+    if (!next.projects.length)
+      throw new Error('Choose at least one project folder');
+    if (
+      JSON.stringify(next.projects) === JSON.stringify(config.projects) &&
+      next.publicHost === config.publicHost
+    ) {
       saveDesktopConfig(directory, next);
       return { ok: true };
     }
     if (loaded() && !current)
       throw new Error(
-        'The service is loaded but its task state cannot be verified. Check logs or explicitly stop it before changing projects.',
+        'The service is loaded but its task state cannot be verified. Check logs or explicitly stop it before changing configuration.',
       );
     if (active(current))
       throw new Error(
-        'Tasks are running. Change project folders after they finish.',
+        'Tasks are running. Change configuration after they finish.',
       );
     // install performs its own fresh active-task check before replacing a job.
     if (current || loaded()) {

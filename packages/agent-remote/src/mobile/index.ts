@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
+import { isIP } from 'node:net';
 import { detectAgents } from '../agent-detector.js';
 import { AcpAdaptor } from '../adaptor/acp-adaptor.js';
 import { MobileTasks } from './tasks.js';
@@ -18,7 +19,11 @@ import { MobileServer } from './server.js';
 import { ensureMobileTLS } from './tls.js';
 import { privateDirectory } from '../state.js';
 import { claimInstance } from '../instance.js';
-import { localAddresses, pairingPage } from '../pairing.js';
+import {
+  localAddresses,
+  normalizePublicHost,
+  pairingPage,
+} from '../pairing.js';
 import { generateFeedPresentation } from './feed-presentation.js';
 
 export interface GatewayOptions {
@@ -28,6 +33,7 @@ export interface GatewayOptions {
   ask: boolean;
   open: boolean;
   reset: boolean;
+  publicHost?: string;
 }
 
 export async function startGateway(
@@ -42,14 +48,22 @@ export async function startGateway(
   )
     throw new Error('Select at least one project directory');
   const directory = options.directory;
+  const publicHost =
+    options.publicHost === undefined
+      ? undefined
+      : normalizePublicHost(options.publicHost);
   privateDirectory(directory);
   const release = await claimInstance(directory, options.port);
   let shutdown: (() => Promise<void>) | undefined;
   try {
     const { key, cert, pin, renewed } = await ensureMobileTLS(
       directory,
-      localAddresses(),
-      [hostname()],
+      [
+        ...localAddresses(),
+        ...(publicHost && isIP(publicHost) ? [publicHost] : []),
+      ],
+      [hostname(), ...(publicHost && !isIP(publicHost) ? [publicHost] : [])],
+      publicHost && isIP(publicHost) ? [publicHost] : [],
     );
     if (renewed)
       console.log(
@@ -134,7 +148,12 @@ export async function startGateway(
     const runtimePath = join(directory, 'runtime.json');
     writeFileSync(
       runtimePath,
-      JSON.stringify({ runId: tasks.runId, port, pid: process.pid }),
+      JSON.stringify({
+        runId: tasks.runId,
+        port,
+        pid: process.pid,
+        publicHost,
+      }),
       { mode: 0o600 },
     );
     const page = await pairingPage({
@@ -144,6 +163,7 @@ export async function startGateway(
       code: server.pairingCode,
       ask: options.ask,
       open: options.open,
+      publicHost,
     });
     console.log(
       `Agent Remote ready · Qwen YOLO / Codex Full Access: ${!options.ask}\nAgents: ${agents.map((agent) => agent.name).join(', ')}\nProjects: ${projects.join(', ')}\nPairing page: ${page}\nNew pairing code: agent-remote pair\nKeep the computer awake. Ctrl+C stops only this gateway's agents.`,

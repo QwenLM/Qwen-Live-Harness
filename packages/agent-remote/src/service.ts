@@ -51,6 +51,7 @@ export function launchAgent(
     String(options.port),
     '--data-dir',
     options.directory,
+    ...(options.publicHost ? ['--public-host', options.publicHost] : []),
     ...(options.ask ? ['--ask'] : []),
     ...options.projects.flatMap((project) => ['--project', project]),
   ];

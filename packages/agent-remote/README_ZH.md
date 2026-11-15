@@ -48,7 +48,7 @@ npm install -g ./agent-remote-0.1.0.tgz
 agent-remote --project "/absolute/path/to/project"
 ```
 
-这会在前台启动服务，并打开本机配对页面。手机与电脑连接同一局域网，在 App 扫描二维码或粘贴链接，再点击连接。二维码由 Node.js 生成；电脑接入服务不需要 Xcode 或 Swift。默认端口为 47421，电脑应保持唤醒，防火墙应允许服务入站。
+这会在前台启动服务，并打开本机配对页面。在 App 扫描二维码或粘贴链接，再点击连接。通过蜂窝网络连接时，请按下文配置公网域名或 IPv4；局域网地址需要同一局域网或可达的 VPN。二维码由 Node.js 生成；电脑接入服务不需要 Xcode 或 Swift。默认端口为 47421，电脑应保持唤醒，防火墙应允许服务入站。
 
 安装一个 Agent 就会出现一个选项，两个都安装会出现两个。Codex 首次执行时可能通过 npm 下载 ACP 适配器。任务使用目标电脑上的 Agent 账号与配置。
 
@@ -98,7 +98,22 @@ agent-remote pair --no-open
 
 配对码十五分钟有效、仅能使用一次。`pair` 可以在服务运行中生成新码，不重启服务、不打断任务，也不撤销已有手机凭据。
 
-配对优先使用证书覆盖的 IPv4 地址，`.local` 名称作为后备，因为 VPN 下可能无法解析。通过 VPN 连接时，需要允许 iPhone 访问界面显示的电脑地址和端口（默认 47421）。如果连接超时，请检查 VPN 路由和防火墙；仅接入同一个公司 VPN 并不保证网络互通。
+通过 5G／蜂窝网络连接时，在 macOS 应用中设置“公网域名或 IPv4”，或使用以下参数启动／安装服务：
+
+```sh
+agent-remote --project "/path/project" --public-host remote.example.com
+# 或持久保存到登录服务：
+agent-remote service install --project "/path/project" --public-host remote.example.com
+agent-remote pair
+```
+
+启动时也可使用 `AGENT_REMOTE_PUBLIC_HOST`，`--public-host` 优先。只填写 DNS 域名或 IPv4 地址，不包含协议、端口和路径。该地址会加入 TLS 证书，并由菜单栏二维码和命令行配对页面优先使用。后续 `pair` 会沿用运行中服务的地址，无需重复传参。局域网 IPv4、`.local` 和模拟器地址仍作为后备；没有配置公网地址时继续优先使用局域网地址。
+
+使用网关私有证书访问公网 DNS 域名时，可能需要在自行构建的 iOS App 的 `NSExceptionDomains` 配置中添加该域名的精确例外，参见 [Apple 的域名例外说明](https://developer.apple.com/documentation/bundleresources/information-property-list/nsexceptionallowsinsecurehttploads)。请将例外限定到该域名，不要开启全局任意加载。HTTPS、证书固定、主机名和有效期校验仍然必须通过。公网 IPv4 地址无需添加域名专属条目。
+
+DNS／DDNS 应指向电脑可达的公网 IP。电脑位于路由器后时，需要把界面显示的 TCP 端口（默认 47421）转发到电脑的相同端口，并允许防火墙入站。接入服务不会自动配置路由器、DDNS 或隧道；仅有域名无法穿透不可达的 NAT／运营商 CGNAT。VPN 连接同样需要能访问显示的地址和端口。
+
+在 macOS 应用中更改公网地址会重启空闲服务，活动任务会阻止更改。新增证书尚未覆盖的域名或 IP 时会更新证书，手机需使用新码重新配对。稳定 DNS 域名可在局域网 IP 变化时继续沿用固定证书。清空设置恢复局域网配对。
 
 新安装默认把状态存放在 `~/.agent-remote/`。如果发现旧版 `~/.qwen-live-harness/mobile/` 内已有证书或手机凭据，会继续原地使用这些文件。HTTPS API、配对链接格式、iOS Bundle ID 和钥匙串名称保持兼容；从旧版切换时不需要主动清空数据或重新配对。切换接入服务仍应先等旧任务结束，再停止旧进程，避免丢失运行中的会话。
 
@@ -142,7 +157,7 @@ open QwenLiveMobile.xcodeproj
 
 助手、新建会话和追问输入框的 **+** 附件按钮支持从相册或“文件”选择图片，保存或发送前可预览、移除，也支持只发图片。助手将图片保存在本地；工作台将最多 4 张优化后的 JPEG（每张 2 MB 以内）作为实际 ACP 图片块发送给支持图片输入的 Agent，待确认重试保留完全相同的内容。需要同时更新 App 和电脑接入服务。输入图片预览通过鉴权并校验服务运行归属的 HTTPS 接口读取；状态轮询不包含图片字节，电脑端仅在内存中保留，每次服务运行上限为 64 MB。导入限制与手机存储方式见 [iOS 指南](ios/README_ZH.md)。
 
-当前为局域网版，尚无公网中继、后台推送或语音。
+电脑任务通过可达的局域网、VPN 或已配置公网端点直接使用 HTTPS 连接，不提供公网中继或后台推送。
 
 ## 开发、验证和整体迁移
 

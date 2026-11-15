@@ -67,6 +67,54 @@ it('renews IP-only certificates when their address changes', async () => {
   expect(changed.pin).not.toBe(first.pin);
 });
 
+it('adds a public DNS name and keeps its pin when only the local address changes', async () => {
+  const path = await directory();
+  const original = await ensureMobileTLS(
+    path,
+    ['192.0.2.1'],
+    ['fixture.local'],
+  );
+  const publicTLS = await ensureMobileTLS(
+    path,
+    ['192.0.2.1'],
+    ['fixture.local', 'remote.example.test'],
+  );
+  expect(publicTLS.renewed).toBe(true);
+  expect(publicTLS.pin).not.toBe(original.pin);
+  expect(
+    new X509Certificate(publicTLS.cert).checkHost('remote.example.test'),
+  ).toBe('remote.example.test');
+  const changed = await ensureMobileTLS(
+    path,
+    ['192.0.2.2'],
+    ['fixture.local', 'remote.example.test'],
+  );
+  expect(changed.pin).toBe(publicTLS.pin);
+});
+
+it('renews for a required public IP even with an unchanged local DNS name', async () => {
+  const path = await directory();
+  const first = await ensureMobileTLS(path, ['192.0.2.1'], ['fixture.local']);
+  const changed = await ensureMobileTLS(
+    path,
+    ['192.0.2.1'],
+    ['fixture.local'],
+    ['203.0.113.8'],
+  );
+  expect(changed.renewed).toBe(true);
+  expect(changed.pin).not.toBe(first.pin);
+  expect(new X509Certificate(changed.cert).checkIP('203.0.113.8')).toBe(
+    '203.0.113.8',
+  );
+  const stable = await ensureMobileTLS(
+    path,
+    ['192.0.2.2'],
+    ['fixture.local'],
+    ['203.0.113.8'],
+  );
+  expect(stable.pin).toBe(changed.pin);
+});
+
 it('preserves obsolete TLS material before replacing it and refuses malformed SAN inputs', async () => {
   const path = await directory();
   await writeFile(join(path, 'server-key.pem'), 'previous key');

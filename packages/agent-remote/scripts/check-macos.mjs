@@ -128,7 +128,12 @@ try {
     pathToFileURL(join(resources, 'gateway/dist/mobile/tls.js')).href
   );
   const { hostname } = await import('node:os');
-  const tls = await ensureMobileTLS(directory, ['192.0.2.1'], [hostname()]);
+  const publicHost = 'remote.example.test';
+  const tls = await ensureMobileTLS(
+    directory,
+    ['192.0.2.1'],
+    [hostname(), publicHost],
+  );
   const token = randomBytes(32).toString('base64url');
   writeFileSync(join(directory, 'device-token'), token, { mode: 0o600 });
   writeFileSync(
@@ -139,6 +144,7 @@ try {
       port,
       ask: false,
       launchAtLogin: true,
+      publicHost,
     }),
     { mode: 0o600 },
   );
@@ -198,6 +204,8 @@ try {
       'base64url',
     ).toString(),
   );
+  assert.equal(payload.url, `https://${publicHost}:${port}`);
+  assert.equal(online.addresses[0], payload.url);
   assert.equal(
     (await call('/v1/pair', { code: payload.code })).value.token,
     token,
@@ -233,6 +241,8 @@ try {
     run(['snapshot']).config.projects[0],
     realpathSync(secondProject),
   );
+  assert.equal(run(['snapshot']).config.publicHost, publicHost);
+  assert.equal(run(['pair']).url, `https://${publicHost}:${port}`);
   const previous = run(['snapshot']);
   assert.equal(
     previous.totalTasks,
