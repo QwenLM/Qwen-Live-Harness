@@ -78,6 +78,7 @@ struct ComputerWorkspace: Codable {
     var conversationDrafts: [String: String]?
     var draftImages: [ImageAttachment]? = nil
     var conversationImages: [String: [ImageAttachment]]? = nil
+    var workingFolder: RemoteProject? = nil
 }
 
 struct ConversationRoute: Hashable {
@@ -94,6 +95,7 @@ struct RemoteState: Decodable {
     let projects: [RemoteProject]
     let tasks: [RemoteTask]
     let capabilities: RemoteCapabilities?
+    let directoryRoots: [RemoteProject]?
 
     var conversations: [RemoteConversation] {
         Dictionary(grouping: tasks, by: { $0.conversationId ?? $0.id }).map { id, turns in
@@ -108,7 +110,7 @@ struct RemoteState: Decodable {
     }
 }
 
-struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool?; let imageAttachments: Bool? }
+struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool?; let imageAttachments: Bool?; let directorySelection: Bool? }
 
 struct RemoteConversation: Identifiable {
     let id: String
@@ -125,11 +127,32 @@ struct RemoteBackend: Decodable, Identifiable {
     let imageInput: Bool?
 }
 
-struct RemoteProject: Decodable, Identifiable {
+struct RemoteProject: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let path: String
+    var rootId: String? = nil
+    var relativePath: String? = nil
 }
+
+struct RemoteDirectory: Decodable, Identifiable {
+    let name: String
+    let relativePath: String
+    var id: String { relativePath }
+}
+
+struct DirectoryListing: Decodable {
+    let runId: String
+    let rootId: String
+    let relativePath: String
+    let path: String
+    let parentPath: String?
+    let directories: [RemoteDirectory]
+    let nextCursor: Int?
+    let truncated: Bool
+}
+
+struct DirectorySelection: Decodable { let runId: String; let rootId: String; let project: RemoteProject }
 
 struct RemoteTask: Decodable, Identifiable {
     let id: String

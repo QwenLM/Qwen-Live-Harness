@@ -15,6 +15,7 @@ struct PersonalAgentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var voice = VoiceInputModel()
     let openActivity: (ActivityLink) -> Void
+    let openWorkbench: () -> Void
     @State private var latestSaved: UUID?
     @State private var selectedInput: AssistantInput?
     @State private var liveUnavailable = false
@@ -88,6 +89,7 @@ struct PersonalAgentView: View {
         let hasInput = !assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.draftImages.isEmpty
         let images = Binding(get: { assistant.draftImages }, set: { assistant.setDraftImages($0) })
         return VStack(alignment: .leading, spacing: 8) {
+            WorkingFolderButton(project: model.selectedProject, disabled: voice.phase != .idle, connectComputer: openWorkbench)
             if !images.wrappedValue.isEmpty {
                 ImageAttachmentStrip(images: images.wrappedValue, store: assistant.imageStore, remove: { image in
                     assistant.setDraftImages(assistant.draftImages.filter { $0.id != image.id })
@@ -102,8 +104,13 @@ struct PersonalAgentView: View {
                                       disabled: voice.phase != .idle)
                 Button {
                     if !hasInput { editing = true }
-                    else if let saved = assistant.saveInput(source: inputSource) {
-                        latestSaved = saved.id; inputSource = .text; editing = false
+                    else {
+                        let workspace = model.selectedComputer.flatMap { computer in
+                            model.selectedProject.map { AssistantWorkspaceContext(computerID: computer.id, computerName: computer.displayName, project: $0) }
+                        }
+                        if let saved = assistant.saveInput(source: inputSource, workspace: workspace) {
+                            latestSaved = saved.id; inputSource = .text; editing = false
+                        }
                     }
                 } label: {
                     Image(systemName: hasInput ? "arrow.up" : "keyboard")
@@ -184,6 +191,12 @@ struct SavedInputDetail: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             if !input.text.isEmpty { Text(input.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                             if !input.images.isEmpty { ImageAttachmentStrip(images: input.images, store: assistant.imageStore) }
+                            if let workspace = input.workspace {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Label(workspace.computerName, systemImage: "laptopcomputer")
+                                    Label(workspace.project.path, systemImage: "folder").textSelection(.enabled)
+                                }.font(.footnote).foregroundStyle(.secondary)
+                            }
                             Text(input.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
                             Text(tr("assistantInputPendingSummary")).font(.footnote).foregroundStyle(.secondary)
                             if !input.text.isEmpty {

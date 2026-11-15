@@ -27,7 +27,9 @@ struct WorkbenchView: View {
                 else { workbench }
             }
             .navigationTitle(tr("workbench"))
-            .navigationDestination(for: ConversationRoute.self) { ConversationDetail(route: $0) }
+            .navigationDestination(for: ConversationRoute.self) { route in
+                ConversationDetail(route: route, openConversation: { if $0.contextID == model.contextID { path.append($0) } })
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showComputers = true } label: { Label(tr("computers"), systemImage: "desktopcomputer") }
@@ -196,12 +198,6 @@ struct NewConversationView: View {
                 Section {
                     Label(model.selectedComputer?.displayName ?? "", systemImage: "laptopcomputer")
                     if let state = model.state {
-                        Picker(tr("project"), selection: $model.project) {
-                            ForEach(state.projects) { Text($0.name).tag($0.id) }
-                        }
-                        if let project = state.projects.first(where: { $0.id == model.project }) {
-                            Text(project.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
                         Picker(tr("agent"), selection: $model.backend) {
                             ForEach(state.backends) { Text($0.name).tag($0.id) }
                         }.pickerStyle(.segmented).accessibilityIdentifier("backendPicker")
@@ -210,6 +206,8 @@ struct NewConversationView: View {
                     }
                 }
                 Section {
+                    WorkingFolderButton(project: model.selectedProject)
+                    if !model.workingFolderAvailable { ErrorNote(text: tr("directory_unavailable")) }
                     TextEditor(text: $model.draft).frame(minHeight: 150).focused($editing).accessibilityIdentifier("taskInput")
                     if !model.draftImages.isEmpty {
                         ImageAttachmentStrip(images: model.draftImages, store: model.imageStore,
@@ -241,7 +239,7 @@ struct NewConversationView: View {
                         }
                     } label: {
                         HStack { Spacer(); if model.busy { ProgressView() } else { Text(tr("startConversation")) }; Spacer() }
-                    }.disabled(model.busy || model.pending != nil || importingImage || model.state == nil || model.connectionError != nil || model.backend.isEmpty || model.project.isEmpty || (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.draftImages.isEmpty))
+                    }.disabled(model.busy || model.pending != nil || importingImage || model.state == nil || model.connectionError != nil || model.backend.isEmpty || !model.workingFolderAvailable || (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.draftImages.isEmpty))
                         .accessibilityIdentifier("sendTask")
                 }
             }

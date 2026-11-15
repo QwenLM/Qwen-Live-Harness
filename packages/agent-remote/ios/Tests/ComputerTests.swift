@@ -86,6 +86,91 @@ final class ComputerTests: XCTestCase {
         return try json(value)
     }
 
+    private func folderState(_ name: String = "fixture", run: String = "same-run", selected: [RemoteProject] = []) throws -> Data {
+        var value = try JSONSerialization.jsonObject(with: state(name, run: run)) as! [String: Any]
+        value["capabilities"] = ["directorySelection": true]
+        value["directoryRoots"] = value["projects"]
+        value["projects"] = (value["projects"] as! [[String: Any]]) + (try JSONSerialization.jsonObject(with: JSONEncoder().encode(selected)) as! [[String: Any]])
+        return try json(value)
+    }
+
+    func testWorkingFolderSurvivesComputerSwitchAndRelaunchAndRequiresExplicitReselectionAfterRestart() async throws {
+        let a = computer("a"), b = computer("b"), preferences = defaults(), storage = store([a, b])
+        let child = RemoteProject(id: "selected-child", name: "Child", path: "/fixture/a/Child", rootId: "shared-project", relativePath: "Child")
+        var registered = false, run = "same-run"
+        let apiA = StubAPI { path, _, _ in
+            if path == "v1/directories/select" {
+                registered = true
+                return try self.json(["runId": run, "rootId": "shared-project", "project": JSONSerialization.jsonObject(with: JSONEncoder().encode(child))])
+            }
+            return try self.folderState("a", run: run, selected: registered ? [child] : [])
+        }
+        let apiB = StubAPI { _, _, _ in try self.folderState("b") }
+        let factory: (MacConnection) -> any RemoteAPI = { $0.pin == a.connection.pin ? apiA : apiB }
+        let model = AppModel(storage: storage, defaults: preferences, makeAPI: factory)
+        await model.refresh(); model.draft = "Keep this draft"; let context = model.contextID
+        let picked = try await model.chooseDirectory(rootID: "shared-project", path: "Child", expectedContext: context, runID: run)
+        XCTAssertEqual(picked, child); XCTAssertEqual(model.selectedProject, child); XCTAssertTrue(model.workingFolderAvailable)
+        XCTAssertEqual(model.draft, "Keep this draft"); XCTAssertNil(model.pending)
+        XCTAssertTrue(model.selectComputer(b.id)); await model.refresh()
+        XCTAssertEqual(model.selectedProject?.path, "/fixture/b")
+        XCTAssertFalse(model.chooseProject(child, expectedContext: context, runID: run))
+        XCTAssertTrue(model.selectComputer(a.id)); XCTAssertEqual(model.selectedProject, child)
+        let reopened = AppModel(storage: storage, defaults: preferences, makeAPI: factory)
+        XCTAssertEqual(reopened.selectedProject, child); XCTAssertEqual(reopened.draft, "Keep this draft")
+        registered = false; run = "new-run"; await reopened.refresh()
+        XCTAssertEqual(reopened.selectedProject, child); XCTAssertFalse(reopened.workingFolderAvailable)
+        await reopened.submit(expectedContext: reopened.contextID)
+        XCTAssertFalse(apiA.calls.contains(where: { $0.path == "v1/tasks" })); XCTAssertNil(reopened.pending)
+        XCTAssertEqual(reopened.draft, "Keep this draft")
+        _ = try await reopened.chooseDirectory(rootID: "shared-project", path: "Child", expectedContext: reopened.contextID, runID: run)
+        XCTAssertTrue(reopened.workingFolderAvailable)
+    }
+
+    func testLateDirectoryResponsesCannotCrossComputerOrRunAndCannotClearNewDraft() async throws {
+        for selection in [false, true] {
+            for switchComputer in [false, true] {
+                let a = computer("a"), b = computer("b"), gate = ReplyGate()
+                var run = "same-run"
+                let apiA = StubAPI { path, _, _ in path == "v1/state" ? try self.folderState("a", run: run) : await gate.wait() }
+                let apiB = StubAPI { _, _, _ in try self.folderState("b") }
+                let model = AppModel(storage: store([a, b]), defaults: defaults(), makeAPI: { $0.pin == a.connection.pin ? apiA : apiB })
+                await model.refresh(); let context = model.contextID
+                let loading = Task {
+                    if selection { _ = try await model.chooseDirectory(rootID: "shared-project", path: "Child", expectedContext: context, runID: "same-run") }
+                    else { _ = try await model.listDirectories(rootID: "shared-project", path: "", expectedContext: context, runID: "same-run") }
+                }
+                await waitFor { gate.waiting }
+                if switchComputer { XCTAssertTrue(model.selectComputer(b.id)) } else { run = "new-run" }
+                await model.refresh(); model.draft = "New context draft"
+                gate.resolve(try json(["runId": "same-run", "rootId": "shared-project", "path": "/fixture/a", "relativePath": "",
+                    "directories": [], "truncated": false, "project": ["id": "unexpected-child", "name": "Child", "path": "/fixture/a/Child"]]))
+                do { try await loading.value; XCTFail("A stale folder reply cannot be applied") }
+                catch is CancellationError { }
+                XCTAssertNotEqual(model.project, "unexpected-child"); XCTAssertEqual(model.draft, "New context draft"); XCTAssertFalse(model.busy)
+            }
+        }
+    }
+
+    func testDirectoryReplyIdentitiesAndUnsharedRootsAreRejectedBeforeChangingSelection() async throws {
+        let a = computer("a")
+        let api = StubAPI { path, _, _ in
+            if path == "v1/state" { return try self.folderState() }
+            return try self.json(["runId": "wrong-run", "rootId": "shared-project", "path": "/wrong", "relativePath": "",
+                "directories": [], "truncated": false, "project": ["id": "unexpected", "name": "Wrong", "path": "/wrong"]])
+        }
+        let model = AppModel(storage: store([a]), defaults: defaults(), makeAPI: { _ in api })
+        await model.refresh(); let context = model.contextID, original = model.selectedProject
+        do { _ = try await model.listDirectories(rootID: "shared-project", path: "", expectedContext: context, runID: "same-run"); XCTFail("Wrong run cannot display folders") }
+        catch MobileFailure.invalidResponse { }
+        do { _ = try await model.chooseDirectory(rootID: "shared-project", path: "", expectedContext: context, runID: "same-run"); XCTFail("Wrong run cannot select a folder") }
+        catch MobileFailure.invalidResponse { }
+        let calls = api.calls.count
+        do { _ = try await model.listDirectories(rootID: "unshared", path: "", expectedContext: context, runID: "same-run"); XCTFail("Unknown root cannot be browsed") }
+        catch { }
+        XCTAssertEqual(api.calls.count, calls); XCTAssertEqual(model.selectedProject, original); XCTAssertFalse(model.busy)
+    }
+
     func testImageOnlyRetriesKeepTheExactBytesAcrossComputerSwitchAndRelaunchWithoutClearingNewDraftImages() async throws {
         let a = computer("a"), b = computer("b"), preferences = defaults(), storage = store([a, b]), images = imageStore()
         let sent = try image(images), replacement = try image(images)

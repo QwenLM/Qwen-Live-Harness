@@ -31,7 +31,7 @@ struct MainView: View {
     @State private var unavailable = false
     var body: some View {
         TabView(selection: $destination) {
-            NavigationStack { PersonalAgentView(openActivity: openActivity) }
+            NavigationStack { PersonalAgentView(openActivity: openActivity, openWorkbench: { destination = .workbench }) }
                 .tabItem { Label(tr("assistant"), systemImage: "sparkles") }.tag(Destination.assistant)
             WorkbenchView(showAssistant: { destination = .assistant }, showWorkbench: { destination = .workbench },
                           requestedRoute: $requestedRoute, requestedPairingURL: $requestedPairingURL)

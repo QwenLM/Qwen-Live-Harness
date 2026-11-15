@@ -14,7 +14,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var pairingTargetID: UUID?
     @Published var draft = "" { didSet { saveCurrentWorkspace() } }
     @Published var backend = "" { didSet { saveCurrentWorkspace() } }
-    @Published var project = "" { didSet { saveCurrentWorkspace() } }
+    @Published var project = "" { didSet {
+        if !restoring {
+            workingFolder = state?.projects.first { $0.id == project } ?? (workingFolder?.id == project ? workingFolder : nil)
+            saveCurrentWorkspace()
+        }
+    } }
+    @Published private(set) var workingFolder: RemoteProject?
+    var selectedProject: RemoteProject? { state?.projects.first { $0.id == project } ?? (workingFolder?.id == project ? workingFolder : nil) }
+    var workingFolderAvailable: Bool { state?.projects.contains(where: { $0.id == project }) == true }
     @Published private(set) var busy = false
     @Published private(set) var connecting = false
     @Published private(set) var connectionError: String?
@@ -110,6 +118,7 @@ final class AppModel: ObservableObject {
         draft = workspace.draft; backend = workspace.backend; project = workspace.project; pending = workspace.pending
         conversationDrafts = workspace.conversationDrafts ?? [:]
         draftImages = workspace.draftImages ?? []; conversationImages = workspace.conversationImages ?? [:]
+        workingFolder = workspace.workingFolder
         restoring = false
     }
 
@@ -196,7 +205,9 @@ final class AppModel: ObservableObject {
             guard contextID == current, sequence > appliedSequence, next.version == 1 else { return }
             appliedSequence = sequence; state = next; connectionError = nil; lastUpdated = Date()
             if !next.backends.contains(where: { $0.id == backend }) { backend = next.backends.first?.id ?? "" }
-            if !next.projects.contains(where: { $0.id == project }) { project = next.projects.first?.id ?? "" }
+            if let selected = next.projects.first(where: { $0.id == project }) {
+                workingFolder = selected; saveCurrentWorkspace()
+            } else if workingFolder?.id != project { project = next.projects.first?.id ?? "" }
             if let pending, next.runId == pending.runId,
                next.tasks.contains(where: { matches($0, submission: pending) }),
                let owner = selectedComputerID { acknowledge(pending, owner: owner) }
@@ -212,6 +223,51 @@ final class AppModel: ObservableObject {
             await refresh(expectedContext: current)
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
         }
+    }
+
+    @discardableResult
+    func chooseProject(_ project: RemoteProject, expectedContext: UUID, runID: String) -> Bool {
+        guard contextID == expectedContext, state?.runId == runID, !busy, pending == nil,
+              state?.projects.contains(project) == true else { return false }
+        self.project = project.id
+        return true
+    }
+
+    func listDirectories(rootID: String, path: String, cursor: Int? = nil, expectedContext: UUID, runID: String) async throws -> DirectoryListing {
+        guard contextID == expectedContext, state?.runId == runID, let api,
+              state?.capabilities?.directorySelection == true,
+              state?.directoryRoots?.contains(where: { $0.id == rootID }) == true else {
+            throw MobileFailure.remote(409, "directory_unavailable")
+        }
+        var body: [String: Any] = ["rootId": rootID, "path": path]
+        if let cursor { body["cursor"] = cursor }
+        let reply: DirectoryListing = try await api.request("v1/directories/list", body: body, runId: runID)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard reply.runId == runID, reply.rootId == rootID, reply.relativePath == path, reply.directories.count <= 100,
+              Set(reply.directories.map(\.id)).count == reply.directories.count else { throw MobileFailure.invalidResponse }
+        return reply
+    }
+
+    func chooseDirectory(rootID: String, path: String, expectedContext: UUID, runID: String, expectedPath: String? = nil) async throws -> RemoteProject {
+        guard contextID == expectedContext, state?.runId == runID, let api, !busy, pending == nil,
+              state?.capabilities?.directorySelection == true,
+              state?.directoryRoots?.contains(where: { $0.id == rootID }) == true else {
+            throw MobileFailure.remote(409, "directory_unavailable")
+        }
+        let operation = UUID(); actionOperation = operation; busy = true
+        defer { if actionOperation == operation { busy = false; actionOperation = nil } }
+        let reply: DirectorySelection = try await api.request("v1/directories/select", body: ["rootId": rootID, "path": path], runId: runID)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard reply.runId == runID, reply.rootId == rootID, !reply.project.id.isEmpty,
+              expectedPath == nil || reply.project.path == expectedPath else { throw MobileFailure.invalidResponse }
+        await refresh(expectedContext: expectedContext)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard state?.projects.contains(reply.project) == true else { throw MobileFailure.invalidResponse }
+        project = reply.project.id
+        return reply.project
     }
 
     @discardableResult
@@ -232,7 +288,8 @@ final class AppModel: ObservableObject {
                 runId: state.runId, conversationId: conversationID,
                 attachments: images(conversationID: conversationID, runID: state.runId))
         } else {
-            guard state.backends.contains(where: { $0.id == backend }), state.projects.contains(where: { $0.id == project }) else { return nil }
+            guard workingFolderAvailable else { actionError = tr("directory_unavailable"); return nil }
+            guard state.backends.contains(where: { $0.id == backend }) else { return nil }
             submission = PendingSubmission(id: UUID().uuidString.lowercased(), backend: backend, project: project,
                 text: draft.trimmingCharacters(in: .whitespacesAndNewlines), runId: state.runId,
                 attachments: draftImages)
@@ -376,7 +433,7 @@ final class AppModel: ObservableObject {
     private func saveCurrentWorkspace() -> Bool {
         guard !restoring, let id = selectedComputerID else { return true }
         workspaces[id.uuidString] = ComputerWorkspace(draft: draft, backend: backend, project: project, pending: pending,
-            conversationDrafts: conversationDrafts, draftImages: draftImages, conversationImages: conversationImages)
+            conversationDrafts: conversationDrafts, draftImages: draftImages, conversationImages: conversationImages, workingFolder: selectedProject)
         return persistWorkspaces()
     }
 

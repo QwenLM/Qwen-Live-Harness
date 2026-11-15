@@ -146,6 +146,30 @@ export class MobileServer {
     // Mutations are bound to the Mac process that the phone actually observed.
     if (req.headers['x-live-run-id'] !== this.tasks.runId)
       throw new MobileError(409, 'server_restarted');
+    if (
+      req.method === 'POST' &&
+      ['/v1/directories/list', '/v1/directories/select'].includes(req.url ?? '')
+    ) {
+      const input = await body(req);
+      if (
+        typeof input['rootId'] !== 'string' ||
+        typeof input['path'] !== 'string' ||
+        (input['cursor'] !== undefined && typeof input['cursor'] !== 'number')
+      )
+        throw new MobileError(400, 'invalid_directory');
+      this.reply(
+        res,
+        200,
+        req.url === '/v1/directories/list'
+          ? await this.tasks.directories(
+              input['rootId'],
+              input['path'],
+              input['cursor'] as number | undefined,
+            )
+          : await this.tasks.selectDirectory(input['rootId'], input['path']),
+      );
+      return;
+    }
     const artifact =
       /^\/v1\/tasks\/([a-f0-9-]{36})\/(artifacts|attachments)\/([a-f0-9-]{36})$/u.exec(
         req.url ?? '',

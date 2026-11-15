@@ -8,7 +8,14 @@ struct AssistantInput: Codable, Identifiable, Equatable {
     let createdAt: Date
     let source: Source
     var attachments: [ImageAttachment]? = nil
+    var workspace: AssistantWorkspaceContext? = nil
     var images: [ImageAttachment] { attachments ?? [] }
+}
+
+struct AssistantWorkspaceContext: Codable, Equatable {
+    let computerID: UUID
+    let computerName: String
+    let project: RemoteProject
 }
 
 enum MobileAppearance: String, Codable, CaseIterable, Identifiable {
@@ -82,7 +89,7 @@ final class AssistantModel: ObservableObject {
     }
 
     @discardableResult
-    func saveInput(source: AssistantInput.Source) -> AssistantInput? {
+    func saveInput(source: AssistantInput.Source, workspace: AssistantWorkspaceContext? = nil) -> AssistantInput? {
         guard canWrite else { return nil }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !draftImages.isEmpty else { return nil }
@@ -92,7 +99,7 @@ final class AssistantModel: ObservableObject {
         do { for image in draftImages { _ = try imageStore.read(image) } }
         catch { self.error = tr("attachment_unavailable"); return nil }
         let input = AssistantInput(id: UUID(), text: text, createdAt: Date(), source: source,
-                                   attachments: draftImages.isEmpty ? nil : draftImages)
+                                   attachments: draftImages.isEmpty ? nil : draftImages, workspace: workspace)
         let next = [input] + inputs
         guard write(inputs: next, draft: "", draftImages: []) else { return nil }
         restoring = true; inputs = next; draft = ""; draftImages = []; restoring = false

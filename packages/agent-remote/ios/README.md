@@ -20,6 +20,8 @@ Tap **+** in Assistant, a new workbench conversation or a follow-up to choose an
 
 Workbench keeps its existing project lists and forms. Follow-ups retain the same owned agent session, with separate per-turn results, approvals and cancellation. Assistant and Feed links open the existing conversation only when computer, context, service run and task identities match. Drafts remain isolated by computer, service run and conversation. Upgrade the gateway together with the app for multi-turn support. Computer-service restarts do not restore old sessions.
 
+The **Working folder** row above each input shows the current computer folder. Tap it to browse shared roots, open subfolders, go to the parent folder, search the loaded folder names and confirm **Use this folder**. Selections are remembered separately for each computer and become the actual working directory of a new agent session. In an existing conversation, choosing a different folder opens a new-conversation form; the original session and its draft keep their folder. Assistant saves the chosen computer and folder with its device-local input without dispatching a task. Only directories shared through the computer app or `--project` can be browsed; symlinks cannot leave those roots. Older gateways still allow selecting their configured folders. After a gateway restart, a previously selected subfolder requires explicit reselection before sending, and drafts remain intact.
+
 Finished turns show a fixed run duration. Open **Artifacts** below a reply to preview images, Markdown or static HTML. Preview support requires the updated gateway and app; see the [gateway guide](../README.md#ios-app) for supported files and limits.
 
 Simulator example:

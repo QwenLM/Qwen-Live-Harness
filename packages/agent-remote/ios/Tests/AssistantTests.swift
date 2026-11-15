@@ -44,6 +44,22 @@ final class AssistantTests: XCTestCase {
         XCTAssertEqual(storage.data(forKey: AssistantModel.storageKey), damaged)
     }
 
+    func testSavedWorkingFolderRemainsLocalContextAndSurvivesRelaunch() throws {
+        let storage = defaults(), model = AssistantModel(defaults: defaults())
+        let project = RemoteProject(id: "shared", name: "Work", path: "/fixture/Work")
+        let workspace = AssistantWorkspaceContext(computerID: UUID(), computerName: "Fixture computer", project: project)
+        let capture = AssistantModel(defaults: storage)
+        capture.draft = "Keep this note with its working folder"
+        let saved = try XCTUnwrap(capture.saveInput(source: .text, workspace: workspace))
+        XCTAssertEqual(saved.workspace, workspace)
+        XCTAssertEqual(AssistantModel(defaults: storage).inputs.first?.workspace, workspace)
+        XCTAssertNil(storage.data(forKey: "computerWorkspaces.v1"))
+        let item = try XCTUnwrap(PersonalActivity.recent(state: nil, computerID: nil, contextID: UUID(), inputs: [saved]).first)
+        XCTAssertNil(item.link)
+        model.draft = "Without a working folder"
+        XCTAssertNil(model.saveInput(source: .text)?.workspace)
+    }
+
     func testWhitespaceAndOversizedInputNeverCreateAnItemOrClearItsDraft() {
         let model = AssistantModel(defaults: defaults())
         model.draft = " \n "

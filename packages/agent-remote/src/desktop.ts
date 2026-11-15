@@ -29,6 +29,20 @@ export interface DesktopConfig {
 }
 interface DesktopState extends GatewayState {
   projects: Array<{ id: string; name: string; path: string }>;
+  directoryRoots?: Array<{ id: string; name: string; path: string }>;
+}
+
+export function configFromGateway(
+  config: DesktopConfig,
+  state?: DesktopState,
+): DesktopConfig {
+  const roots = state?.directoryRoots ?? state?.projects ?? [];
+  if (config.projects.length || !roots.length) return config;
+  return {
+    ...config,
+    projects: roots.map((project) => project.path),
+    ask: state?.permissionMode !== 'allow-all',
+  };
 }
 export function serviceFile(home = homedir()): string {
   return join(home, 'Library/LaunchAgents', gatewayServiceLabel() + '.plist');
@@ -189,12 +203,7 @@ export async function desktopCommand(args: string[]): Promise<unknown> {
     directory,
     '/v1/state',
   ).catch(() => undefined);
-  if (!config.projects.length && current?.projects.length)
-    config = {
-      ...config,
-      projects: current.projects.map((project) => project.path),
-      ask: current.permissionMode !== 'allow-all',
-    };
+  config = configFromGateway(config, current);
   if (action === 'snapshot') {
     const agents = detectAgents({
       names: ['qwen', 'codex'],

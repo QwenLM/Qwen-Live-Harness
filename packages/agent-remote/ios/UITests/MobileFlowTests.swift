@@ -108,6 +108,11 @@ final class MobileFlowTests: XCTestCase {
     }
     private func sendAndWait(_ app: XCUIApplication, text: String, agent: String) {
         app.buttons["newConversation"].tap()
+        XCTAssertTrue(app.buttons["workingFolderButton"].waitForExistence(timeout: 10))
+        app.buttons["workingFolderButton"].tap()
+        XCTAssertTrue(app.buttons["useWorkingFolder"].waitForExistence(timeout: 10))
+        app.buttons["useWorkingFolder"].tap()
+        XCTAssertTrue(app.segmentedControls.buttons[agent].waitForExistence(timeout: 10))
         app.segmentedControls.buttons[agent].tap()
         let input = app.textViews["taskInput"]; input.tap(); input.typeText(text)
         app.buttons["sendTask"].tap()
@@ -200,6 +205,7 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
+        XCTAssertTrue(app.buttons["workingFolderButton"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label), ["Assistant", "Workbench", "Feed", "Me"])
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 0)

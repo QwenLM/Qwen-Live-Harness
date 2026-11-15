@@ -1,5 +1,12 @@
 import { afterEach, beforeAll, afterAll, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  symlink,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,6 +182,7 @@ it.each(['qwen', 'codex'])(
       conversationTurns: true,
       artifactPreviews: true,
       imageAttachments: true,
+      directorySelection: true,
     });
     const first = {
       id: randomUUID(),
@@ -317,6 +325,151 @@ it.each(['qwen', 'codex'])(
     ).toBe(400);
   },
 );
+
+it.each(['qwen', 'codex'])(
+  'selects %s working directories over HTTPS and keeps follow-ups in their original folder',
+  async (backend) => {
+    const { tasks, call, headers } = await setup('allow-all');
+    const child = 'work-' + randomUUID(),
+      other = 'other-' + randomUUID();
+    await Promise.all([
+      mkdir(join(directory, child)),
+      mkdir(join(directory, other)),
+    ]);
+    const request = { rootId: 'fixture', path: child };
+    expect((await call('/v1/directories/list', request)).status).toBe(401);
+    expect(
+      (
+        await call('/v1/directories/list', request, {
+          ...headers,
+          'x-live-run-id': 'stale',
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await call('/v1/directories/list', request, {
+          ...headers,
+          origin: 'https://untrusted.example',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await call('/v1/directories/list', { ...request, path: '..' }, headers))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await call(
+          '/v1/directories/list',
+          { ...request, cursor: 'bad' },
+          headers,
+        )
+      ).status,
+    ).toBe(400);
+    const listing = await call('/v1/directories/list', request, headers);
+    expect(listing.value).toMatchObject({
+      runId: tasks.runId,
+      rootId: 'fixture',
+      relativePath: child,
+      parentPath: '',
+      directories: [],
+    });
+    const selection = await call('/v1/directories/select', request, headers);
+    expect(selection.status).toBe(200);
+    const project = selection.value['project'] as { id: string; path: string };
+    expect(project.path).toBe(await realpath(join(directory, child)));
+    expect(tasks.snapshot().tasks).toHaveLength(0);
+    expect(tasks.snapshot().directoryRoots).toHaveLength(1);
+    const input = {
+      id: randomUUID(),
+      backend,
+      project: project.id,
+      text: 'cwd: verify the selected working folder',
+    };
+    expect((await call('/v1/tasks', input, headers)).status).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    expect(tasks.snapshot().tasks[0]!.output).toContain(
+      'workspace: ' + project.path,
+    );
+    const next = await call(
+      '/v1/directories/select',
+      { ...request, path: other },
+      headers,
+    );
+    const secondProject = next.value['project'] as { id: string; path: string };
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          {
+            ...input,
+            id: randomUUID(),
+            conversationId: input.id,
+            project: secondProject.id,
+          },
+          headers,
+        )
+      ).status,
+    ).toBe(409);
+    expect((await call('/v1/tasks', input, headers)).status).toBe(202);
+    expect(tasks.snapshot().tasks).toHaveLength(1);
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { ...input, id: randomUUID(), project: secondProject.id },
+          headers,
+        )
+      ).status,
+    ).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    expect(tasks.snapshot().tasks[0]!.output).toContain(
+      'workspace: ' + secondProject.path,
+    );
+    expect(tasks.snapshot().tasks[1]!.project).toBe(project.id);
+  },
+);
+
+it('rejects a selected directory replaced before admission without sending a prompt', async () => {
+  const { tasks, call, headers } = await setup('allow-all');
+  const name = 'replace-' + randomUUID(),
+    folder = join(directory, name);
+  await mkdir(folder);
+  const selection = await call(
+    '/v1/directories/select',
+    { rootId: 'fixture', path: name },
+    headers,
+  );
+  const project = selection.value['project'] as { id: string };
+  await rename(folder, folder + '-previous');
+  await symlink(directory, folder);
+  expect(
+    (
+      await call(
+        '/v1/tasks',
+        {
+          id: randomUUID(),
+          backend: 'qwen',
+          project: project.id,
+          text: 'cwd: must not run',
+        },
+        headers,
+      )
+    ).status,
+  ).toBe(202);
+  await vi.waitFor(() =>
+    expect(tasks.snapshot().tasks[0]!.status).toBe('failed'),
+  );
+  expect(tasks.snapshot().tasks[0]!.events.at(-1)?.text).toBe(
+    'directory_changed',
+  );
+  expect(tasks.snapshot().tasks[0]!.output).toBe('');
+});
 
 it('requires pairing and run identity, rejects browsers and does not expose desktop control', async () => {
   const { tasks, server, call, headers } = await setup();

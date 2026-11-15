@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  symlink,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   BackendAdaptor,
   BackendEvent,
@@ -64,8 +74,14 @@ class FakeAdaptor implements BackendAdaptor {
 }
 
 const services: MobileTasks[] = [];
+const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(services.splice(0).map((service) => service.close()));
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
   vi.restoreAllMocks();
 });
 function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
@@ -97,6 +113,53 @@ const permission: BackendEvent = {
 };
 
 describe('mobile task ownership', () => {
+  it('keeps completed results but refuses artifact collection after a selected folder is replaced', async () => {
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'mobile-owned-folder-')),
+    );
+    directories.push(directory);
+    const folder = join(directory, 'work');
+    await mkdir(folder);
+    const qwen = new FakeAdaptor('qwen');
+    const service = new MobileTasks(new Map([['qwen', qwen]]), [
+      { id: 'root', name: 'Fixture', path: directory },
+    ]);
+    services.push(service);
+    const selected = await service.selectDirectory('root', 'work');
+    service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: selected.project.id,
+      text: 'Collect result',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'artifact',
+      jobRef: 'job-1',
+      source: {
+        type: 'inline',
+        mimeType: 'text/markdown',
+        data: Buffer.from('# Result').toString('base64'),
+      },
+    });
+    await rename(folder, folder + '-old');
+    await symlink(directory, folder);
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Real completed output',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.artifactsPending).toBe(false),
+    );
+    expect(service.snapshot().tasks[0]).toMatchObject({
+      status: 'completed',
+      output: 'Real completed output',
+      artifacts: [],
+      artifactNotice: 'artifact_unavailable',
+    });
+  });
+
   const image = () => ({
     id: randomUUID(),
     name: 'test.png',

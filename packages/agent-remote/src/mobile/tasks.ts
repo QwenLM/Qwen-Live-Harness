@@ -14,6 +14,10 @@ import type {
 } from '../adaptor/types.js';
 import { artifactReferences } from '../adaptor/artifact-content.js';
 import { MobileArtifacts, type MobileArtifact } from './artifacts.js';
+import { MobileError } from './errors.js';
+import { MobileProjects, type MobileProject } from './projects.js';
+export { MobileError } from './errors.js';
+export type { MobileProject } from './projects.js';
 import {
   redactPermissionText,
   stripControlSequences,
@@ -23,21 +27,6 @@ import {
   type PermissionBrokerMode,
   type PendingPermission,
 } from '../permissions/permission-broker.js';
-
-export class MobileError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string,
-  ) {
-    super(code);
-  }
-}
-
-export interface MobileProject {
-  id: string;
-  name: string;
-  path: string;
-}
 
 export type MobileTaskStatus =
   | 'starting'
@@ -208,12 +197,17 @@ export class MobileTasks {
   private readonly artifacts = new MobileArtifacts();
   private artifactSourceBytes = 0;
   private imageBytes = 0;
+  private readonly projectCatalog: MobileProjects;
+  get projects(): readonly MobileProject[] {
+    return this.projectCatalog.projects;
+  }
 
   constructor(
     private readonly adaptors: ReadonlyMap<string, BackendAdaptor>,
-    readonly projects: readonly MobileProject[],
+    projects: readonly MobileProject[],
     options: { permissionMode?: PermissionBrokerMode } = {},
   ) {
+    this.projectCatalog = new MobileProjects(projects);
     this.permissionMode = options.permissionMode ?? 'ask';
     this.broker = new PermissionBroker({
       adaptorFor: (handle) => {
@@ -260,6 +254,7 @@ export class MobileTasks {
         conversationTurns: true,
         artifactPreviews: true,
         imageAttachments: true,
+        directorySelection: true,
       },
       backends: [...this.adaptors.keys()].map((id) => ({
         id,
@@ -270,6 +265,7 @@ export class MobileTasks {
           : {}),
       })),
       projects: this.projects,
+      directoryRoots: this.projectCatalog.roots,
       tasks: [...this.tasks.values()].map((task) => this.view(task)).reverse(),
     };
   }
@@ -443,6 +439,20 @@ export class MobileTasks {
       .catch(() => {});
   }
 
+  async directories(rootId: string, path: string, cursor?: number) {
+    return {
+      runId: this.runId,
+      ...(await this.projectCatalog.list(rootId, path, cursor)),
+    };
+  }
+
+  async selectDirectory(rootId: string, path: string) {
+    if (this.closed) throw new MobileError(503, 'service_stopping');
+    const project = await this.projectCatalog.select(rootId, path);
+    if (this.closed) throw new MobileError(503, 'service_stopping');
+    return { runId: this.runId, rootId, project };
+  }
+
   attachment(taskId: string, imageId: string) {
     const task = this.tasks.get(taskId);
     const image = task?.images.find((entry) => entry.metadata.id === imageId);
@@ -488,6 +498,7 @@ export class MobileTasks {
       }
       if (task.images.length && !adaptor.capabilities().imageInput)
         throw new MobileError(400, 'image_input_unsupported');
+      this.projectCatalog.validate(project);
       // Follow-ups retain the exact owned backend handle. Never replace an
       // expired session with a fresh one or replay the earlier instructions.
       task.handle ??= await adaptor.createSession({
@@ -720,8 +731,15 @@ export class MobileTasks {
         (entry) => entry.id === task.view.project,
       )!;
       this.track(
-        this.artifacts
-          .collect(task.view.id, project.path, task.artifactSources)
+        Promise.resolve()
+          .then(() => {
+            this.projectCatalog.validate(project);
+            return this.artifacts.collect(
+              task.view.id,
+              project.path,
+              task.artifactSources,
+            );
+          })
           .then((result) => {
             if (!this.closed && this.tasks.get(task.view.id) === task) {
               task.view.artifacts = result.artifacts;

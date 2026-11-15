@@ -3,10 +3,12 @@ import SwiftUI
 struct ConversationDetail: View {
     @EnvironmentObject private var model: AppModel
     let route: ConversationRoute
+    let openConversation: (ConversationRoute) -> Void
     private struct StopTarget { let task: RemoteTask; let runID: String }
     @State private var stopTarget: StopTarget?
     @State private var showStop = false
     @State private var importingImage = false
+    @State private var newFolder: RemoteProject?
     @FocusState private var editing: Bool
 
     private var conversation: RemoteConversation? {
@@ -27,6 +29,9 @@ struct ConversationDetail: View {
         .navigationTitle(tr("conversation"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .sheet(item: $newFolder) { _ in
+            NewConversationView { route in newFolder = nil; openConversation(route) }
+        }
         .confirmationDialog(tr("stopTurn"), isPresented: $showStop, titleVisibility: .visible, presenting: stopTarget) { target in
             Button(tr("stopTurn"), role: .destructive) {
                 Task { await model.control(task: target.task, expectedContext: route.contextID, expectedRunID: target.runID) }
@@ -82,6 +87,10 @@ struct ConversationDetail: View {
             model.connectionError == nil && !importingImage && (!binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.wrappedValue.isEmpty)
         let agent = state.backends.first { $0.id == conversation.first.backend }?.name ?? conversation.first.backend
         return VStack(alignment: .leading, spacing: 8) {
+            WorkingFolderButton(project: state.projects.first { $0.id == conversation.first.project }) { project in
+                if project.id != conversation.first.project { editing = false; newFolder = project }
+            }
+            Text(tr("conversationFolderHint")).font(.caption2).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
                 if !images.wrappedValue.isEmpty {
                     ImageAttachmentStrip(images: images.wrappedValue, store: model.imageStore,
@@ -181,6 +190,9 @@ private struct ConversationTurn: View {
             }
             if task.status == "failed", task.events.last?.text == "image_input_unsupported" {
                 ErrorNote(text: tr("image_input_unsupported"))
+            }
+            if task.status == "failed", task.events.last?.text == "directory_changed" {
+                ErrorNote(text: tr("directory_changed"))
             }
             ArtifactList(task: task, contextID: contextID, runID: runID)
             ForEach(task.permissions) { permission in

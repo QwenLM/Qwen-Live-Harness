@@ -16,6 +16,7 @@ import {
   saveDesktopConfig,
   serviceFile,
   validateDesktopConfig,
+  configFromGateway,
 } from './desktop.js';
 import { gatewayServiceLabel, launchAgent } from './service.js';
 
@@ -58,6 +59,42 @@ it('imports projects, fixed port and approval policy from an existing CLI regist
     legacyConfig(['/node', '/cli.js', '--project', '/project', '--ask'])?.ask,
   ).toBe(true);
   expect(legacyConfig(['unrelated command'])).toBeUndefined();
+});
+it('imports only explicitly shared roots and preserves saved configuration and legacy gateway behavior', () => {
+  const root = { id: 'root', name: 'Root', path: '/shared' };
+  const child = { id: 'child', name: 'Child', path: '/shared/child' };
+  const config = {
+    version: 1 as const,
+    projects: [] as string[],
+    port: 47421,
+    ask: true,
+    launchAtLogin: false,
+  };
+  const current = {
+    runId: 'run',
+    tasks: [],
+    backends: [],
+    permissionMode: 'allow-all',
+    projects: [root, child],
+    directoryRoots: [root],
+  };
+  expect(configFromGateway(config, current)).toEqual({
+    ...config,
+    projects: ['/shared'],
+    ask: false,
+  });
+  const saved = { ...config, projects: ['/saved'] };
+  expect(configFromGateway(saved, current)).toBe(saved);
+  expect(
+    configFromGateway(config, {
+      ...current,
+      projects: [root],
+      directoryRoots: undefined,
+    }),
+  ).toEqual({ ...config, projects: ['/shared'], ask: false });
+  expect(configFromGateway(config, { ...current, directoryRoots: [] })).toBe(
+    config,
+  );
 });
 it('saves desktop settings privately without touching a paired identity', () => {
   const path = directory();

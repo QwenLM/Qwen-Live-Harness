@@ -69,6 +69,7 @@ const drainDelayMs = Number.parseInt(
 const askingModeId = advertisedModes[0];
 let currentModeId = askingModeId;
 let sessionCounter = 0;
+const sessionDirectories = new Map();
 
 /** No advertised modes (legacy fixture) always asks. */
 function asksForApproval() {
@@ -100,8 +101,9 @@ new AgentSideConnection(
       return {};
     },
 
-    async newSession() {
+    async newSession(params) {
       const sessionId = `fake-${++sessionCounter}`;
+      sessionDirectories.set(sessionId, params.cwd);
       // Flip the client's mid-turn latch before any prompt. Fire-and-forget:
       // this must not hold up the session/new reply.
       if (drainsPerTurn > 0) {
@@ -142,6 +144,19 @@ new AgentSideConnection(
         .filter((block) => block.type === 'text')
         .map((block) => block.text)
         .join(' ');
+
+      if (text.includes('cwd:')) {
+        await connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: 'workspace: ' + sessionDirectories.get(sessionId) + '\n',
+            },
+          },
+        });
+      }
 
       await connection.sessionUpdate({
         sessionId,
