@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 coverage/
+.macos-signing-identity
 ios/build/
 ios/build-device/
 ios/*.xcodeproj/

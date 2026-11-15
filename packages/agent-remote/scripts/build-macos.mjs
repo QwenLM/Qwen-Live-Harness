@@ -203,7 +203,13 @@ run('/usr/bin/iconutil', [
   '-o',
   join(resources, 'AppIcon.icns'),
 ]);
-const identity = process.env['AGENT_REMOTE_SIGN_IDENTITY'] ?? '-';
+const localIdentity = join(root, '.macos-signing-identity');
+const identity =
+  process.env['AGENT_REMOTE_SIGN_IDENTITY'] ??
+  (existsSync(localIdentity)
+    ? readFileSync(localIdentity, 'utf8').trim()
+    : '-');
+if (!identity) throw new Error('The macOS app signing identity is empty.');
 const signing = [
   '--force',
   '--sign',

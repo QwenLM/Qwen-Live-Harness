@@ -28,7 +28,9 @@ npm run package:macos -- --skip-build
 
 构建时会校验固定版本的官方 Node 下载文件，生成通用二进制。`check:macos` 把完整应用移到临时目录，使用替身 Agent 和独立凭据，验证配对、免审批、项目切换、登录配置和真实 launchd 异常重启；不调用个人模型账号，也不改变实际服务。
 
-本地构建使用临时签名（ad hoc），安装包没有 Apple 开发者签名，也未公证。另一台电脑可能拦截下载的副本。正式公开分发仍需 Developer ID Application／Installer 证书和 Apple 公证。可用 `AGENT_REMOTE_SIGN_IDENTITY`、`AGENT_REMOTE_INSTALLER_IDENTITY` 选择已安装的签名证书；公证是独立的分发步骤。
+本地构建默认使用临时签名（ad hoc）。想让应用和网关在后续构建中沿用同一签名，可以用 `security find-identity -v -p codesigning` 查到 Apple Development 签名证书的 SHA-1 指纹，将它写入本 README 同目录下的 `.macos-signing-identity`。这项设置仅保存在本地。单次构建可用 `AGENT_REMOTE_SIGN_IDENTITY` 覆盖。首次访问「桌面」等受保护目录时，macOS 会请求授权。
+
+默认生成的安装包未签名，在另一台 Mac 上可能被拦截。正式公开分发需要 Developer ID Application／Installer 证书和 Apple 公证。可用 `AGENT_REMOTE_SIGN_IDENTITY`、`AGENT_REMOTE_INSTALLER_IDENTITY` 选择分发证书。
 
 ## 在另一台电脑安装
 

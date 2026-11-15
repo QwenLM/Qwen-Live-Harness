@@ -28,7 +28,9 @@ npm run package:macos -- --skip-build
 
 The build verifies pinned official Node downloads and produces universal binaries. `check:macos` relocates the complete app, uses fake agents and private credentials, and tests pairing, automatic approval, project changes, login configuration and launchd crash recovery. It does not call model accounts or change your real service.
 
-Local builds use ad hoc app signing; the installer is unsigned and not notarized by Apple. macOS may block downloaded copies on another computer. Public distribution still needs Developer ID Application/Installer certificates and notarization. Optional `AGENT_REMOTE_SIGN_IDENTITY` and `AGENT_REMOTE_INSTALLER_IDENTITY` select installed signing certificates; notarization is a separate distribution step.
+Local builds default to ad hoc app signing. To keep the app and gateway signing identity stable across rebuilds, put the SHA-1 fingerprint of your Apple Development signing certificate in `.macos-signing-identity` next to this README. You can find it with `security find-identity -v -p codesigning`. This setting stays in your checkout. `AGENT_REMOTE_SIGN_IDENTITY` overrides it for a single build. macOS asks for consent when the app first accesses a protected folder such as Desktop.
+
+The default installer is unsigned and may be blocked on another Mac. Public distribution requires Developer ID Application and Installer certificates and Apple notarization. Use `AGENT_REMOTE_SIGN_IDENTITY` and `AGENT_REMOTE_INSTALLER_IDENTITY` to select the distribution identities.
 
 ## Install on another computer
 
