@@ -2,7 +2,6 @@ import SwiftUI
 
 struct WorkbenchView: View {
     @EnvironmentObject private var model: AppModel
-    let showAssistant: () -> Void
     let showWorkbench: () -> Void
     @Binding var requestedRoute: ConversationRoute?
     @Binding var requestedPairingURL: URL?
@@ -113,14 +112,8 @@ struct WorkbenchView: View {
                 }
             } footer: { Text(tr("macKeepsWorking")) }
             Section {
-                Button(action: showAssistant) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack { Text(tr("personalTeaser")).foregroundStyle(.primary); Spacer(); Text(tr("assistantServicePendingShort")).font(.caption).foregroundStyle(.secondary) }
-                            Text(tr("personalTeaserDetail")).font(.caption).foregroundStyle(.secondary)
-                        }
-                    } icon: { Image(systemName: "sparkles") }
-                }
+                Button { showNewConversation = true } label: { Label(tr("newConversation"), systemImage: "plus.bubble") }
+                    .disabled(model.state == nil).accessibilityIdentifier("newConversationCard")
             }
             if model.pending != nil { Section { PendingSubmissionNotice(contextID: model.contextID) } }
             if let error = model.actionError { Section { ErrorNote(text: error) } }
@@ -148,9 +141,6 @@ struct WorkbenchView: View {
                 }
                 if conversations.isEmpty {
                     ContentUnavailableView(search.isEmpty ? tr("noConversations") : tr("noSearchResults"), systemImage: "bubble.left.and.bubble.right", description: Text(tr("noConversationsHint")))
-                }
-                Section {
-                    Button { showNewConversation = true } label: { Label(tr("newConversation"), systemImage: "plus.bubble") }
                 }
             } else { Section { ProgressView(tr("loading")) } }
         }

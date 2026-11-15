@@ -38,7 +38,7 @@ struct MainView: View {
         TabView(selection: $destination) {
             NavigationStack { PersonalAgentView(openActivity: openActivity, openWorkbench: { destination = .workbench }) }
                 .tabItem { Label(tr("assistant"), systemImage: "sparkles") }.tag(Destination.assistant)
-            WorkbenchView(showAssistant: { destination = .assistant }, showWorkbench: { destination = .workbench },
+            WorkbenchView(showWorkbench: { destination = .workbench },
                           requestedRoute: $requestedRoute, requestedPairingURL: $requestedPairingURL)
                 .tabItem { Label(tr("workbench"), systemImage: "laptopcomputer") }.tag(Destination.workbench)
             NavigationStack { PersonalFeedView(openActivity: openActivity) }
