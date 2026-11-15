@@ -20,6 +20,8 @@ struct PersonalSettingsView: View {
                 }.padding(.vertical, 12)
             }.listRowBackground(Color.clear)
             Section(tr("preferences")) {
+                NavigationLink { OmniLiveSettingsView() } label: { Label(tr("liveConfigure"), systemImage: "waveform") }
+                    .accessibilityIdentifier("omniLiveSettings")
                 Picker(tr("appearance"), selection: $assistant.appearance) {
                     ForEach(MobileAppearance.allCases) { Text($0.label).tag($0) }
                 }.accessibilityIdentifier("appearancePicker")
@@ -98,6 +100,7 @@ private struct PersonalPrivacyView: View {
         List {
             Section(tr("savedInputs")) { Text(tr("assistantLocalPrivacy")) }
             Section(tr("voiceInput")) { Text(tr("dictationPrivacy")) }
+            Section("Omni Live") { Text(tr("liveKeyLocalDetail")); Text(tr("livePrivacy")) }
             Section(tr("personalMemory")) { Text(tr("personalServicesPending")) }
             Section(tr("computers")) { Text(tr("computerPrivacy")) }
             Section {

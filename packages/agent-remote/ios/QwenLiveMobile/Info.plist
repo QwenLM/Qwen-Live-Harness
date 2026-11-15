@@ -14,7 +14,7 @@
   <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
   <key>NSLocalNetworkUsageDescription</key><string>Connect to your paired Mac to submit agent tasks and review permission requests.</string>
   <key>NSCameraUsageDescription</key><string>Scan the pairing QR code displayed on your Mac.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Turn your speech into editable text on this device.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Use the microphone for Omni Live calls or turn speech into editable text.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Recognize speech on this device for the assistant input field.</string>
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsLocalNetworking</key><true/>

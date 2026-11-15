@@ -2,6 +2,7 @@ import SwiftUI
 
 enum PersonalStyle {
     static let accent = Color("AccentColor")
+    static let surface = Color(uiColor: .secondarySystemGroupedBackground)
     static let background = Color(uiColor: .systemGroupedBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
 }
@@ -15,7 +16,7 @@ struct PersonalAgentView: View {
     let openWorkbench: () -> Void
     @State private var latestSaved: UUID?
     @State private var selectedInput: AssistantInput?
-    @State private var liveUnavailable = false
+    @State private var showLive = false
     @State private var inputSource = AssistantInput.Source.text
     @State private var voiceTask: Task<Void, Never>?
     @State private var importingImage = false
@@ -75,9 +76,7 @@ struct PersonalAgentView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .sheet(item: $selectedInput) { input in SavedInputDetail(inputID: input.id) }
-        .alert(tr("liveNotConnected"), isPresented: $liveUnavailable) {
-            Button(tr("done"), role: .cancel) {}
-        } message: { Text(tr("liveNotConnectedDetail")) }
+        .sheet(isPresented: $showLive) { OmniLiveView() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { stopVoice() } }
         .onDisappear { stopVoice() }
     }
@@ -138,10 +137,10 @@ struct PersonalAgentView: View {
                 }.accessibilityLabel(tr(voice.phase == .idle ? "voiceInput" : "stopVoiceInput"))
                     .accessibilityIdentifier("assistantVoice")
                 Rectangle().fill(Color(uiColor: .separator)).frame(width: 0.5, height: 26).padding(.bottom, 9)
-                Button { editing = false; liveUnavailable = true } label: {
+                Button { stopVoice(); editing = false; showLive = true } label: {
                     Label("Live", systemImage: "waveform").font(.subheadline).fixedSize().frame(minHeight: 44).padding(.horizontal, 4)
                 }.disabled(voice.phase != .idle).accessibilityIdentifier("assistantLive")
-                    .accessibilityHint(tr("liveNotConnected"))
+                    .accessibilityLabel("Omni Live")
             }
             .padding(8).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
             .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Color(uiColor: .separator).opacity(0.2), lineWidth: 0.5))

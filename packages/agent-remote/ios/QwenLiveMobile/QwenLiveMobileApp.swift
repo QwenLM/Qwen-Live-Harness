@@ -9,13 +9,14 @@ private struct PollIdentity: Equatable {
 struct QwenLiveMobileApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var assistant = AssistantModel()
+    @StateObject private var liveSettings = OmniLiveSettings()
     @Environment(\.scenePhase) private var scenePhase
     init() {
         UIWindow.appearance().tintColor = UIColor(named: "AccentColor")
     }
     var body: some Scene {
         WindowGroup {
-            MainView().environmentObject(model).environmentObject(assistant)
+            MainView().environmentObject(model).environmentObject(assistant).environmentObject(liveSettings)
                 .tint(PersonalStyle.accent)
                 .accentColor(PersonalStyle.accent)
                 .preferredColorScheme(assistant.appearance == .system ? nil : assistant.appearance == .dark ? .dark : .light)

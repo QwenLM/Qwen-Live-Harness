@@ -2,6 +2,29 @@ import XCTest
 import UIKit
 
 final class MobileFlowTests: XCTestCase {
+    func testLiveKeySetupPersistsLocallyAndCanBeDeletedWithoutStartingACall() {
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]; app.launch()
+        app.buttons["assistantLive"].tap(); app.buttons["liveConfigure"].tap()
+        let key = app.secureTextFields["liveAPIKey"], workspace = app.textFields["liveWorkspace"]
+        XCTAssertTrue(key.waitForExistence(timeout: 10)); key.tap(); key.typeText("sk-fake-ios-ui-test-key")
+        workspace.tap(); workspace.typeText("test-workspace")
+        app.buttons["saveLiveConfiguration"].tap()
+        XCTAssertTrue(app.staticTexts["Saved on this iPhone"].waitForExistence(timeout: 5))
+        capture(app, name: "Own API key stored locally without displaying the saved value")
+        app.navigationBars["Omni Live settings"].buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["Ready for Live"].waitForExistence(timeout: 5))
+        app.terminate(); app.launchArguments = ["--uitesting-live-persist", "-AppleLanguages", "(en)"]; app.launch()
+        app.buttons["assistantLive"].tap()
+        XCTAssertTrue(app.buttons["liveStart"].waitForExistence(timeout: 10)); XCTAssertTrue(app.buttons["liveStart"].isEnabled)
+        capture(app, name: "Omni Live ready after reopening without a paired Mac")
+        app.buttons["Omni Live settings"].tap()
+        XCTAssertTrue(app.secureTextFields["liveAPIKey"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields["liveWorkspace"].value as? String, "test-workspace")
+        app.buttons["deleteLiveKey"].tap(); app.sheets.buttons["Delete local API key"].tap()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["deleteLiveKey"])
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed)
+    }
+
     func testArtifactPreviewsAndFinishedDuration() throws {
         guard let fixture = Bundle(for: Self.self).url(forResource: "artifacts", withExtension: "json"),
               let data = try? Data(contentsOf: fixture),
@@ -226,8 +249,10 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["sendTask"].exists)
         capture(app, name: "Assistant saves an input locally without a fake reply")
         app.buttons["assistantLive"].tap()
-        XCTAssertTrue(app.alerts["Live is not connected yet"].waitForExistence(timeout: 5))
-        app.alerts.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["liveStart"].isEnabled)
+        XCTAssertTrue(app.buttons["liveConfigure"].exists)
+        app.buttons["closeLive"].tap()
         app.tabBars.buttons["Feed"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-input.'")).firstMatch.waitForExistence(timeout: 5))
         capture(app, name: "Feed shows real locally saved input")
@@ -254,9 +279,9 @@ final class MobileFlowTests: XCTestCase {
             assertGreenAccent(app.buttons["assistantLive"])
             capture(app, name: "Native assistant background and controls " + appearance)
             app.buttons["assistantLive"].tap()
-            XCTAssertTrue(app.alerts["Live is not connected yet"].waitForExistence(timeout: 5))
-            capture(app, name: "Alert tint " + appearance)
-            app.alerts.buttons["Done"].tap()
+            XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
+            capture(app, name: "Live sheet tint " + appearance)
+            app.buttons["closeLive"].tap()
             assertGreenAccent(app.buttons["assistantLive"])
             app.tabBars.buttons["Workbench"].tap()
             capture(app, name: "Workbench tint after alert dismissal " + appearance)
