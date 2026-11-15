@@ -38,7 +38,7 @@ final class PinnedSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskD
 }
 
 protocol RemoteAPI {
-    func request<T: Decodable>(_ path: String, body: [String: String]?, runId: String?) async throws -> T
+    func request<T: Decodable>(_ path: String, body: [String: Any]?, runId: String?) async throws -> T
 }
 
 extension RemoteAPI {
@@ -61,7 +61,7 @@ final class MobileAPI: RemoteAPI {
     }
     deinit { session.invalidateAndCancel() }
 
-    func request<T: Decodable>(_ path: String, body: [String: String]? = nil, runId: String? = nil) async throws -> T {
+    func request<T: Decodable>(_ path: String, body: [String: Any]? = nil, runId: String? = nil) async throws -> T {
         let base = URL(string: connection.url)!
         // ATS permits the paired private IPv4 certificate, but this client
         // never permits plaintext HTTP, redirects or an unpinned certificate.

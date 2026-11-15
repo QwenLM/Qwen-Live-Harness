@@ -20,6 +20,7 @@ struct PersonalAgentView: View {
     @State private var liveUnavailable = false
     @State private var inputSource = AssistantInput.Source.text
     @State private var voiceTask: Task<Void, Never>?
+    @State private var importingImage = false
     @FocusState private var editing: Bool
 
     private var recent: [PersonalActivity] {
@@ -84,22 +85,31 @@ struct PersonalAgentView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let hasInput = !assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.draftImages.isEmpty
+        let images = Binding(get: { assistant.draftImages }, set: { assistant.setDraftImages($0) })
+        return VStack(alignment: .leading, spacing: 8) {
+            if !images.wrappedValue.isEmpty {
+                ImageAttachmentStrip(images: images.wrappedValue, store: assistant.imageStore, remove: { image in
+                    assistant.setDraftImages(assistant.draftImages.filter { $0.id != image.id })
+                })
+            }
             if voice.phase != .idle {
                 Label(tr(voice.phase == .authorizing ? "dictationAuthorizing" : "dictationListening"), systemImage: "waveform")
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
             HStack(alignment: .bottom, spacing: 4) {
+                ImageAttachmentPicker(images: images, importing: $importingImage, store: assistant.imageStore,
+                                      disabled: voice.phase != .idle)
                 Button {
-                    if assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { editing = true }
+                    if !hasInput { editing = true }
                     else if let saved = assistant.saveInput(source: inputSource) {
                         latestSaved = saved.id; inputSource = .text; editing = false
                     }
                 } label: {
-                    Image(systemName: assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "keyboard" : "arrow.up")
+                    Image(systemName: hasInput ? "arrow.up" : "keyboard")
                         .font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44)
-                }.disabled(voice.phase != .idle)
-                    .accessibilityLabel(tr(assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "textInput" : "saveAssistantInput"))
+                }.disabled(voice.phase != .idle || importingImage)
+                    .accessibilityLabel(tr(hasInput ? "saveAssistantInput" : "textInput"))
                     .accessibilityIdentifier("assistantSend")
                 TextField(tr("assistantInputPlaceholder"), text: Binding(get: { assistant.draft }, set: {
                     assistant.draft = $0; inputSource = .text
@@ -172,14 +182,17 @@ struct SavedInputDetail: View {
                         VStack(alignment: .leading, spacing: 20) {
                             Label(tr("assistantSavedInput"), systemImage: input.source == .voice ? "mic" : "tray")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(input.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            if !input.text.isEmpty { Text(input.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                            if !input.images.isEmpty { ImageAttachmentStrip(images: input.images, store: assistant.imageStore) }
                             Text(input.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
                             Text(tr("assistantInputPendingSummary")).font(.footnote).foregroundStyle(.secondary)
-                            Button {
-                                UIPasteboard.general.string = input.text; copied = true
-                            } label: { Label(tr(copied ? "copiedInput" : "copyInput"), systemImage: "doc.on.doc") }
-                                .frame(minHeight: 44)
-                            ShareLink(item: input.text).frame(minHeight: 44)
+                            if !input.text.isEmpty {
+                                Button {
+                                    UIPasteboard.general.string = input.text; copied = true
+                                } label: { Label(tr(copied ? "copiedInput" : "copyInput"), systemImage: "doc.on.doc") }
+                                    .frame(minHeight: 44)
+                                ShareLink(item: input.text).frame(minHeight: 44)
+                            }
                             Button(tr("deleteSavedInput"), role: .destructive) { confirmDelete = true }.frame(minHeight: 44)
                         }.padding(24)
                     }

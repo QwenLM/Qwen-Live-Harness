@@ -6,6 +6,7 @@ struct ConversationDetail: View {
     private struct StopTarget { let task: RemoteTask; let runID: String }
     @State private var stopTarget: StopTarget?
     @State private var showStop = false
+    @State private var importingImage = false
     @FocusState private var editing: Bool
 
     private var conversation: RemoteConversation? {
@@ -38,7 +39,7 @@ struct ConversationDetail: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(conversation.first.request).font(.title3.weight(.semibold)).lineLimit(2).textSelection(.enabled)
+                        Text(conversation.first.requestTitle).font(.title3.weight(.semibold)).lineLimit(2).textSelection(.enabled)
                         Text(contextLabel(conversation, state: state)).font(.caption).foregroundStyle(.secondary)
                     }
                     if let error = model.connectionError {
@@ -74,11 +75,18 @@ struct ConversationDetail: View {
             set: { model.setConversationDraft($0, conversationID: conversation.id, runID: state.runId, expectedContext: route.contextID) }
         )
         let supported = state.capabilities?.conversationTurns == true
+        let images = Binding(get: { model.images(conversationID: conversation.id, runID: state.runId) }, set: {
+            model.setImages($0, expectedContext: route.contextID, conversationID: conversation.id, runID: state.runId)
+        })
         let canSend = supported && conversation.canContinue && !model.busy && model.pending == nil &&
-            model.connectionError == nil && !binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            model.connectionError == nil && !importingImage && (!binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.wrappedValue.isEmpty)
         let agent = state.backends.first { $0.id == conversation.first.backend }?.name ?? conversation.first.backend
         return VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
+                if !images.wrappedValue.isEmpty {
+                    ImageAttachmentStrip(images: images.wrappedValue, store: model.imageStore,
+                                         remove: model.busy || model.pending != nil ? nil : { image in images.wrappedValue.removeAll { $0.id == image.id } })
+                }
                 if !supported {
                     composerNotice(tr("updateGateway"))
                 } else if conversation.latest.terminal && !conversation.canContinue {
@@ -91,6 +99,11 @@ struct ConversationDetail: View {
                     .accessibilityIdentifier("conversationInput")
                     .accessibilityHint(tr(conversation.latest.terminal ? "sameConversationHint" : "draftWhileWorking"))
                 HStack(spacing: 12) {
+                    if state.capabilities?.imageAttachments == true {
+                        ImageAttachmentPicker(images: images, importing: $importingImage, store: model.imageStore,
+                            disabled: model.busy || model.pending != nil || state.backends.first(where: { $0.id == conversation.first.backend })?.imageInput == false)
+                            .id(route.contextID.uuidString + state.runId + conversation.id)
+                    }
                     Label(agent, systemImage: "terminal").font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(1).padding(.leading, 4)
                     if !conversation.latest.terminal { StatusBadge(status: conversation.latest.status) }
@@ -142,13 +155,19 @@ private struct ConversationTurn: View {
     let task: RemoteTask
     let contextID: UUID
     let runID: String
+    @State private var previewImage: ImageAttachment?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Spacer(minLength: 24)
-                Text(task.request).textSelection(.enabled).padding(12)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+                VStack(alignment: .leading, spacing: 8) {
+                    if !task.request.isEmpty { Text(task.request).textSelection(.enabled) }
+                    ForEach(task.attachments ?? []) { image in
+                        Button { previewImage = image } label: { Label(image.name, systemImage: "photo") }
+                            .frame(minHeight: 44).accessibilityIdentifier("sentImage-" + image.id)
+                    }
+                }.padding(12).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
             }
             HStack {
                 Label(model.state?.backends.first(where: { $0.id == task.backend })?.name ?? task.backend, systemImage: "terminal")
@@ -159,6 +178,9 @@ private struct ConversationTurn: View {
             if !task.output.isEmpty {
                 Text(task.output).font(.body).textSelection(.enabled).accessibilityIdentifier("taskOutput")
                 if task.outputTruncated { Text(tr("outputTruncated")).font(.caption).foregroundStyle(.secondary) }
+            }
+            if task.status == "failed", task.events.last?.text == "image_input_unsupported" {
+                ErrorNote(text: tr("image_input_unsupported"))
             }
             ArtifactList(task: task, contextID: contextID, runID: runID)
             ForEach(task.permissions) { permission in
@@ -187,6 +209,11 @@ private struct ConversationTurn: View {
             }.font(.footnote).tint(.secondary)
             Divider()
         }.accessibilityElement(children: .contain).accessibilityIdentifier("turn-\(task.id)")
+            .sheet(item: $previewImage) { image in
+                InputImagePreview(name: image.name) {
+                    try await model.loadInputImage(image, taskID: task.id, expectedContext: contextID, runID: runID)
+                }
+            }
     }
 
     @ViewBuilder private func permissionButtons(_ permission: RemotePermission) -> some View {

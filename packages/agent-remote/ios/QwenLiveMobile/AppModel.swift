@@ -22,6 +22,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var pending: PendingSubmission?
     @Published private(set) var conversationDrafts: [String: String] = [:]
+    @Published private(set) var draftImages: [ImageAttachment] = []
+    @Published private(set) var conversationImages: [String: [ImageAttachment]] = [:]
+    let imageStore: ImageAttachmentStore
     var selectedComputer: SavedComputer? { computers.first { $0.id == selectedComputerID } }
     var connection: MacConnection? { selectedComputer?.connection }
 
@@ -39,8 +42,9 @@ final class AppModel: ObservableObject {
     private let workspaceKey = "computerWorkspaces.v1"
 
     init(storage: any ConnectionPersistence = ConnectionStore(), defaults: UserDefaults = .standard,
+         imageStore: ImageAttachmentStore = ImageAttachmentStore(),
          makeAPI: @escaping (MacConnection) -> any RemoteAPI = { MobileAPI($0) }) {
-        self.storage = storage; self.defaults = defaults; self.makeAPI = makeAPI
+        self.storage = storage; self.defaults = defaults; self.makeAPI = makeAPI; self.imageStore = imageStore
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--uitesting") {
             // Only the simulator test launch resets credentials; normal launches
@@ -105,6 +109,7 @@ final class AppModel: ObservableObject {
         restoring = true
         draft = workspace.draft; backend = workspace.backend; project = workspace.project; pending = workspace.pending
         conversationDrafts = workspace.conversationDrafts ?? [:]
+        draftImages = workspace.draftImages ?? []; conversationImages = workspace.conversationImages ?? [:]
         restoring = false
     }
 
@@ -134,7 +139,9 @@ final class AppModel: ObservableObject {
         catch { actionError = tr("computerSaveFailed"); return }
         if pairingTargetID == id { cancelPairing() }
         computers = next
-        workspaces.removeValue(forKey: id.uuidString); persistWorkspaces()
+        let removedImages = workspaceImages(workspaces[id.uuidString])
+        workspaces.removeValue(forKey: id.uuidString)
+        if persistWorkspaces() { removeUnusedImages(removedImages) }
         if selectedComputerID == id { activate(selection) }
     }
 
@@ -222,20 +229,29 @@ final class AppModel: ObservableObject {
             }
             submission = PendingSubmission(id: UUID().uuidString.lowercased(), backend: conversation.first.backend,
                 project: conversation.first.project, text: conversationDraft(conversationID: conversationID, runID: state.runId).trimmingCharacters(in: .whitespacesAndNewlines),
-                runId: state.runId, conversationId: conversationID)
+                runId: state.runId, conversationId: conversationID,
+                attachments: images(conversationID: conversationID, runID: state.runId))
         } else {
             guard state.backends.contains(where: { $0.id == backend }), state.projects.contains(where: { $0.id == project }) else { return nil }
             submission = PendingSubmission(id: UUID().uuidString.lowercased(), backend: backend, project: project,
-                text: draft.trimmingCharacters(in: .whitespacesAndNewlines), runId: state.runId)
+                text: draft.trimmingCharacters(in: .whitespacesAndNewlines), runId: state.runId,
+                attachments: draftImages)
         }
-        guard !submission.text.isEmpty else { return nil }
+        guard !submission.text.isEmpty || submission.attachments?.isEmpty == false else { return nil }
+        if submission.attachments?.isEmpty == false {
+            guard state.capabilities?.imageAttachments == true else { actionError = tr("updateGatewayImages"); return nil }
+            guard state.backends.first(where: { $0.id == submission.backend })?.imageInput != false else {
+                actionError = tr("image_input_unsupported"); return nil
+            }
+        }
         pending = submission
         guard saveCurrentWorkspace() else { actionError = tr("pendingSaveFailed"); return nil }
         let operation = UUID(); actionOperation = operation; busy = true; actionError = nil
         defer { if actionOperation == operation { busy = false; actionOperation = nil } }
         do {
-            var body = ["id": submission.id, "backend": submission.backend, "project": submission.project, "text": submission.text]
+            var body: [String: Any] = ["id": submission.id, "backend": submission.backend, "project": submission.project, "text": submission.text]
             if let conversationID = submission.conversationId { body["conversationId"] = conversationID }
+            if let attachments = submission.attachments, !attachments.isEmpty { body["attachments"] = try imageStore.payload(attachments) }
             let receipt: RemoteTask = try await api.request("v1/tasks", body: body, runId: submission.runId)
             guard matches(receipt, submission: submission) else { throw MobileFailure.invalidResponse }
             acknowledge(submission, owner: owner)
@@ -249,7 +265,8 @@ final class AppModel: ObservableObject {
 
     private func matches(_ task: RemoteTask, submission: PendingSubmission) -> Bool {
         task.id == submission.id && task.backend == submission.backend && task.project == submission.project && task.request == submission.text &&
-        (task.conversationId ?? task.id) == (submission.conversationId ?? submission.id)
+        (task.conversationId ?? task.id) == (submission.conversationId ?? submission.id) &&
+        (task.attachments ?? []) == (submission.attachments ?? [])
     }
 
     func conversationDraft(conversationID: String, runID: String) -> String {
@@ -262,6 +279,21 @@ final class AppModel: ObservableObject {
         saveCurrentWorkspace()
     }
 
+    func images(conversationID: String, runID: String) -> [ImageAttachment] {
+        conversationImages[runID + ":" + conversationID] ?? []
+    }
+
+    func setImages(_ images: [ImageAttachment], expectedContext: UUID, conversationID: String? = nil, runID: String? = nil) {
+        guard contextID == expectedContext, images.count <= ImageAttachmentStore.maxCount else { return }
+        let removed: [ImageAttachment]
+        if let conversationID, let runID {
+            guard state?.runId == runID else { return }
+            let key = runID + ":" + conversationID
+            removed = conversationImages[key] ?? []; conversationImages[key] = images
+        } else { removed = draftImages; draftImages = images }
+        if saveCurrentWorkspace() { removeUnusedImages(removed) }
+    }
+
     func retryPending(expectedContext: UUID) async {
         guard let pending else { return }
         await submit(expectedContext: expectedContext, conversationID: pending.conversationId)
@@ -270,19 +302,45 @@ final class AppModel: ObservableObject {
     private func acknowledge(_ submission: PendingSubmission, owner: UUID) {
         guard var workspace = workspaces[owner.uuidString], workspace.pending?.id == submission.id else { return }
         workspace.pending = nil
+        let submittedImages = submission.attachments ?? []
         if let conversationID = submission.conversationId {
             let key = submission.runId + ":" + conversationID
             if workspace.conversationDrafts?[key]?.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text {
                 workspace.conversationDrafts?.removeValue(forKey: key)
             }
+            if workspace.conversationImages?[key] == submittedImages { workspace.conversationImages?.removeValue(forKey: key) }
         } else if workspace.draft.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text { workspace.draft = "" }
-        workspaces[owner.uuidString] = workspace; persistWorkspaces()
+        if submission.conversationId == nil && workspace.draftImages == submittedImages { workspace.draftImages = [] }
+        workspaces[owner.uuidString] = workspace
+        if persistWorkspaces() { removeUnusedImages(submittedImages) }
         if owner == selectedComputerID {
-            restoring = true; pending = nil; draft = workspace.draft; conversationDrafts = workspace.conversationDrafts ?? [:]; restoring = false
+            restoring = true; pending = nil; draft = workspace.draft; conversationDrafts = workspace.conversationDrafts ?? [:]
+            draftImages = workspace.draftImages ?? []; conversationImages = workspace.conversationImages ?? [:]; restoring = false
         }
     }
 
-    func clearPending() { pending = nil; saveCurrentWorkspace() }
+    func clearPending() {
+        let images = pending?.attachments ?? []
+        pending = nil
+        if saveCurrentWorkspace() { removeUnusedImages(images) }
+    }
+
+    func loadInputImage(_ image: ImageAttachment, taskID: String, expectedContext: UUID, runID: String) async throws -> Data {
+        guard contextID == expectedContext, state?.runId == runID, let api,
+              UUID(uuidString: taskID) != nil, UUID(uuidString: image.id) != nil,
+              (1...ImageAttachmentStore.maxBytes).contains(image.size),
+              state?.tasks.first(where: { $0.id == taskID })?.attachments?.contains(image) == true else {
+            throw MobileFailure.remote(409, "attachment_unavailable")
+        }
+        let content: ArtifactContent = try await api.request("v1/tasks/\(taskID)/attachments/\(image.id)", body: nil, runId: runID)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard content.id == image.id, content.taskId == taskID, content.runId == runID, content.mimeType == image.mimeType,
+              content.data.utf8.count <= 4 * ((ImageAttachmentStore.maxBytes + 2) / 3),
+              let data = Data(base64Encoded: content.data), data.count == image.size,
+              ImageAttachmentStore.digest(data) == image.sha256 else { throw MobileFailure.invalidResponse }
+        return data
+    }
 
     func loadArtifact(_ artifact: RemoteArtifact, taskID: String, expectedContext: UUID, runID: String) async throws -> Data {
         guard contextID == expectedContext, let api, state?.runId == runID,
@@ -317,7 +375,8 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func saveCurrentWorkspace() -> Bool {
         guard !restoring, let id = selectedComputerID else { return true }
-        workspaces[id.uuidString] = ComputerWorkspace(draft: draft, backend: backend, project: project, pending: pending, conversationDrafts: conversationDrafts)
+        workspaces[id.uuidString] = ComputerWorkspace(draft: draft, backend: backend, project: project, pending: pending,
+            conversationDrafts: conversationDrafts, draftImages: draftImages, conversationImages: conversationImages)
         return persistWorkspaces()
     }
 
@@ -325,5 +384,14 @@ final class AppModel: ObservableObject {
     private func persistWorkspaces() -> Bool {
         do { defaults.set(try JSONEncoder().encode(workspaces), forKey: workspaceKey); return true }
         catch { return false }
+    }
+
+    private func workspaceImages(_ workspace: ComputerWorkspace?) -> [ImageAttachment] {
+        (workspace?.draftImages ?? []) + (workspace?.pending?.attachments ?? []) + (workspace?.conversationImages ?? [:]).values.flatMap { $0 }
+    }
+
+    private func removeUnusedImages(_ images: [ImageAttachment]) {
+        let retained = Set(workspaces.values.flatMap { workspaceImages($0) }.map(\.id))
+        for image in images where !retained.contains(image.id) { imageStore.remove(image) }
     }
 }

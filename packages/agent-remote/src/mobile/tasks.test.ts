@@ -13,12 +13,14 @@ class FakeAdaptor implements BackendAdaptor {
   queues = new Map<string, AsyncEventQueue<BackendEvent>>();
   sessions: BackendHandle[] = [];
   promptCalls = 0;
+  supportsImages = false;
+  prompts: ContentBlock[][] = [];
   early: BackendEvent[] = [];
   constructor(readonly name: string) {}
   capabilities() {
     return {
       steering: 'none' as const,
-      imageInput: false,
+      imageInput: this.supportsImages,
       permissionForwarding: true,
       proactiveSpeak: false,
       sessionList: false,
@@ -37,6 +39,7 @@ class FakeAdaptor implements BackendAdaptor {
   }
   async prompt(handle: BackendHandle, _blocks: readonly ContentBlock[]) {
     this.promptCalls++;
+    this.prompts.push([..._blocks]);
     for (const event of this.early) this.emit(event, handle);
     return { status: 'accepted' as const, jobRef: `job-${this.promptCalls}` };
   }
@@ -94,6 +97,231 @@ const permission: BackendEvent = {
 };
 
 describe('mobile task ownership', () => {
+  const image = () => ({
+    id: randomUUID(),
+    name: 'test.png',
+    mimeType: 'image/png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+  });
+
+  it('delivers image-only and mixed follow-ups to the exact owned session and deduplicates all image bytes', async () => {
+    const { service, qwen } = setup();
+    qwen.supportsImages = true;
+    const attachment = image();
+    const input = {
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      text: '',
+      attachments: [attachment],
+    };
+    const first = service.submit(input);
+    service.submit(input);
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    expect(qwen.prompts[0]).toEqual([
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        name: 'test.png',
+        data: Buffer.from(attachment.data, 'base64'),
+      },
+    ]);
+    expect(first.attachments?.[0]).toMatchObject({
+      id: attachment.id,
+      size: Buffer.from(attachment.data, 'base64').length,
+    });
+    expect(JSON.stringify(service.snapshot())).not.toContain(attachment.data);
+    for (const changed of [
+      [],
+      [{ ...attachment, id: randomUUID() }],
+      [{ ...attachment, name: 'changed.png' }],
+      [
+        {
+          ...attachment,
+          data: Buffer.concat([
+            Buffer.from(attachment.data, 'base64'),
+            Buffer.from('changed'),
+          ]).toString('base64'),
+        },
+      ],
+    ]) {
+      expect(() => service.submit({ ...input, attachments: changed })).toThrow(
+        changed.length ? 'idempotency_conflict' : 'invalid_task',
+      );
+    }
+    const bytes = service.attachment(first.id, attachment.id);
+    expect(bytes).toMatchObject({
+      id: attachment.id,
+      taskId: first.id,
+      runId: service.runId,
+      data: attachment.data,
+    });
+    expect(() => service.attachment(randomUUID(), attachment.id)).toThrow(
+      'attachment_unavailable',
+    );
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Seen image',
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    service.submit({
+      ...input,
+      id: randomUUID(),
+      conversationId: first.id,
+      text: 'Compare this image',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    expect(qwen.sessions).toHaveLength(1);
+    expect(qwen.prompts[1]?.[0]).toEqual({
+      type: 'text',
+      text: 'Compare this image',
+    });
+    expect(qwen.prompts[1]?.[1]).toEqual(qwen.prompts[0]?.[0]);
+  });
+
+  it('rejects malformed, oversized, duplicate and non-image attachments before creating work', () => {
+    const { service, qwen } = setup();
+    const valid = image();
+    for (const attachments of [
+      null,
+      {},
+      [null],
+      [valid, valid],
+      Array.from({ length: 5 }, image),
+      [{ ...valid, id: '../private' }],
+      [{ ...valid, name: '../private.png' }],
+      [{ ...valid, mimeType: 'image/svg+xml' }],
+      [{ ...valid, data: 'invalid' }],
+      [{ ...valid, data: 'aGVsbG8=' }],
+      [{ ...valid, data: valid.data + '\n' }],
+      [
+        {
+          ...valid,
+          data: Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64'),
+        },
+      ],
+    ]) {
+      expect(() =>
+        service.submit({
+          id: randomUUID(),
+          backend: 'qwen',
+          project: 'project',
+          text: 'Review',
+          attachments,
+        }),
+      ).toThrow();
+    }
+    expect(service.snapshot().tasks).toHaveLength(0);
+    expect(qwen.promptCalls).toBe(0);
+  });
+
+  it('checks negotiated image capability before creating a session and never drops an image silently', async () => {
+    const { service, qwen } = setup();
+    service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      text: 'Review',
+      attachments: [image()],
+    });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('failed'),
+    );
+    expect(qwen.sessions).toHaveLength(0);
+    expect(qwen.promptCalls).toBe(0);
+    expect(service.snapshot().tasks[0]!.events.at(-1)?.text).toContain(
+      'image_input_unsupported',
+    );
+    expect(
+      service.snapshot().backends.find((backend) => backend.id === 'qwen')
+        ?.imageInput,
+    ).toBe(false);
+    expect(() =>
+      service.submit({
+        id: randomUUID(),
+        backend: 'qwen',
+        project: 'project',
+        text: 'Review',
+        attachments: [image()],
+      }),
+    ).toThrow('image_input_unsupported');
+  });
+
+  it('bounds retained image bytes without counting retries or blocking text-only tasks', async () => {
+    const { service, qwen } = setup();
+    qwen.supportsImages = true;
+    const sample = image();
+    const data = Buffer.alloc(2 * 1024 * 1024);
+    Buffer.from(sample.data, 'base64').copy(data);
+    const encoded = data.toString('base64');
+    let last!: Parameters<MobileTasks['submit']>[0];
+    for (let turn = 1; turn <= 8; turn++) {
+      last = {
+        id: randomUUID(),
+        backend: 'qwen',
+        project: 'project',
+        text: '',
+        attachments: Array.from({ length: 4 }, () => ({
+          ...sample,
+          id: randomUUID(),
+          data: encoded,
+        })),
+      };
+      service.submit(last);
+      await vi.waitFor(() => expect(qwen.promptCalls).toBe(turn));
+      qwen.emit({
+        type: 'turn_complete',
+        jobRef: 'job-' + turn,
+        summary: 'Seen',
+      });
+      await vi.waitFor(() =>
+        expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+      );
+    }
+    expect(() => service.submit(last)).not.toThrow();
+    expect(() => service.submit({ ...last, id: randomUUID() })).toThrow(
+      'attachment_limit',
+    );
+    expect(() =>
+      service.submit({
+        ...last,
+        id: randomUUID(),
+        text: 'Text still works',
+        attachments: [],
+      }),
+    ).not.toThrow();
+  });
+
+  it('cancels image work during preflight without delivering bytes or creating a replacement session', async () => {
+    const { service, qwen } = setup();
+    qwen.supportsImages = true;
+    let ready!: () => void;
+    qwen.preflight.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          ready = resolve;
+        }),
+    );
+    const task = service.submit({
+      id: randomUUID(),
+      backend: 'qwen',
+      project: 'project',
+      text: '',
+      attachments: [image()],
+    });
+    await vi.waitFor(() => expect(ready).toBeTypeOf('function'));
+    await service.cancel(task.id);
+    ready();
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('cancelled'),
+    );
+    expect(qwen.sessions).toHaveLength(0);
+    expect(qwen.promptCalls).toBe(0);
+  });
+
   it('bounds early artifact bursts without interrupting the owned task', async () => {
     const { service, qwen, submit } = setup();
     const source = {

@@ -82,7 +82,7 @@ private struct SavedInputsView: View {
             ForEach(assistant.inputs) { input in
                 Button { selected = input } label: {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text(input.text).foregroundStyle(.primary).lineLimit(2)
+                        Text(input.text.isEmpty ? tr("imageInput") : input.text).foregroundStyle(.primary).lineLimit(2)
                         Text(input.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 5)
                 }

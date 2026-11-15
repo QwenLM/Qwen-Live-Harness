@@ -7,6 +7,8 @@ struct AssistantInput: Codable, Identifiable, Equatable {
     let text: String
     let createdAt: Date
     let source: Source
+    var attachments: [ImageAttachment]? = nil
+    var images: [ImageAttachment] { attachments ?? [] }
 }
 
 enum MobileAppearance: String, Codable, CaseIterable, Identifiable {
@@ -36,6 +38,7 @@ final class AssistantModel: ObservableObject {
     private struct Snapshot: Codable {
         var version = 1
         var draft = ""
+        var draftImages: [ImageAttachment]? = nil
         var inputs: [AssistantInput] = []
         var favorites: Set<String> = []
         var appearance = MobileAppearance.system
@@ -43,17 +46,19 @@ final class AssistantModel: ObservableObject {
     }
 
     @Published var draft = "" { didSet { persist() } }
+    @Published private(set) var draftImages: [ImageAttachment] = []
     @Published private(set) var inputs: [AssistantInput] = []
     @Published private(set) var favorites: Set<String> = []
     @Published var appearance = MobileAppearance.system { didSet { persist() } }
     @Published var dictationLanguage = DictationLanguage.system { didSet { persist() } }
     @Published private(set) var error: String?
     private let defaults: UserDefaults
+    let imageStore: ImageAttachmentStore
     private var restoring = true
     private var canWrite = true
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    init(defaults: UserDefaults = .standard, imageStore: ImageAttachmentStore = ImageAttachmentStore()) {
+        self.defaults = defaults; self.imageStore = imageStore
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--uitesting") {
             defaults.removeObject(forKey: Self.storageKey)
@@ -66,6 +71,7 @@ final class AssistantModel: ObservableObject {
                     throw MobileFailure.invalidResponse
                 }
                 draft = saved.draft; inputs = saved.inputs; favorites = saved.favorites
+                draftImages = saved.draftImages ?? []
                 appearance = saved.appearance; dictationLanguage = saved.dictationLanguage
             } catch {
                 // Preserve unreadable data instead of replacing it with an empty list.
@@ -79,22 +85,34 @@ final class AssistantModel: ObservableObject {
     func saveInput(source: AssistantInput.Source) -> AssistantInput? {
         guard canWrite else { return nil }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
+        guard !text.isEmpty || !draftImages.isEmpty else { return nil }
         guard text.count <= 20_000, inputs.count < 500 else {
             error = tr(text.count > 20_000 ? "assistantInputTooLong" : "assistantStorageFull"); return nil
         }
-        let input = AssistantInput(id: UUID(), text: text, createdAt: Date(), source: source)
+        do { for image in draftImages { _ = try imageStore.read(image) } }
+        catch { self.error = tr("attachment_unavailable"); return nil }
+        let input = AssistantInput(id: UUID(), text: text, createdAt: Date(), source: source,
+                                   attachments: draftImages.isEmpty ? nil : draftImages)
         let next = [input] + inputs
-        guard write(inputs: next, draft: "") else { return nil }
-        restoring = true; inputs = next; draft = ""; restoring = false
+        guard write(inputs: next, draft: "", draftImages: []) else { return nil }
+        restoring = true; inputs = next; draft = ""; draftImages = []; restoring = false
         error = nil
         return input
     }
 
     func deleteInput(_ id: UUID) {
+        let removed = input(id)?.images ?? []
         let next = inputs.filter { $0.id != id }
         guard write(inputs: next, draft: draft) else { return }
         inputs = next
+        for image in removed where !draftImages.contains(image) && !next.contains(where: { $0.images.contains(image) }) { imageStore.remove(image) }
+    }
+
+    func setDraftImages(_ images: [ImageAttachment]) {
+        guard images.count <= ImageAttachmentStore.maxCount, write(inputs: inputs, draft: draft, draftImages: images) else { return }
+        let removed = draftImages.filter { !images.contains($0) }
+        draftImages = images
+        for image in removed where !inputs.contains(where: { $0.images.contains(image) }) { imageStore.remove(image) }
     }
 
     func toggleFavorite(_ id: String) {
@@ -111,10 +129,10 @@ final class AssistantModel: ObservableObject {
         _ = write(inputs: inputs, draft: draft)
     }
 
-    private func write(inputs: [AssistantInput], draft: String, favorites: Set<String>? = nil) -> Bool {
+    private func write(inputs: [AssistantInput], draft: String, favorites: Set<String>? = nil, draftImages: [ImageAttachment]? = nil) -> Bool {
         guard canWrite else { return false }
         do {
-            let saved = Snapshot(draft: draft, inputs: inputs, favorites: favorites ?? self.favorites,
+            let saved = Snapshot(draft: draft, draftImages: draftImages ?? self.draftImages, inputs: inputs, favorites: favorites ?? self.favorites,
                                  appearance: appearance, dictationLanguage: dictationLanguage)
             defaults.set(try JSONEncoder().encode(saved), forKey: Self.storageKey)
             return true
@@ -156,7 +174,7 @@ struct PersonalActivity: Identifiable {
 
     var symbol: String {
         switch content {
-        case .input: return "tray"
+        case .input(let input): return input.images.isEmpty ? "tray" : "photo"
         case .task(let task): return task.status == "completed" ? "checkmark" : task.terminal ? "exclamationmark" : "clock"
         case .artifact(let artifact, _): return artifact.kind == "image" ? "photo" : artifact.kind == "html" ? "globe" : "doc.text"
         }
@@ -185,14 +203,14 @@ struct PersonalActivity: Identifiable {
                     for artifact in task.artifacts ?? [] {
                         foundArtifact = true
                         items.append(Self(id: link.id + "." + Data(artifact.id.utf8).base64EncodedString(), title: artifact.name,
-                                          summary: conversation.first.request, date: date(task), link: link, content: .artifact(artifact, task)))
+                                          summary: conversation.first.requestTitle, date: date(task), link: link, content: .artifact(artifact, task)))
                     }
                 }
                 let task = conversation.latest
                 if !foundArtifact && task.terminal {
                     let link = ActivityLink(computerID: computerID, contextID: contextID, runID: state.runId,
                                             conversationID: conversation.id, taskID: task.id)
-                    items.append(Self(id: link.id, title: conversation.first.request, summary: summary(task),
+                    items.append(Self(id: link.id, title: conversation.first.requestTitle, summary: summary(task),
                                       date: date(task), link: link, content: .task(task)))
                 }
             }
@@ -206,12 +224,12 @@ struct PersonalActivity: Identifiable {
             let task = conversation.latest
             let link = ActivityLink(computerID: computerID, contextID: contextID, runID: state.runId,
                                     conversationID: conversation.id, taskID: task.id)
-            return Self(id: link.id, title: conversation.first.request, summary: summary(task),
+            return Self(id: link.id, title: conversation.first.requestTitle, summary: summary(task),
                         date: date(task), link: link, content: .task(task))
         }
     }
     private static func local(_ input: AssistantInput) -> Self {
-        Self(id: "input." + input.id.uuidString, title: input.text, summary: tr("assistantInputPendingSummary"),
+        Self(id: "input." + input.id.uuidString, title: input.text.isEmpty ? tr("imageInput") : input.text, summary: tr("assistantInputPendingSummary"),
              date: input.createdAt, link: nil, content: .input(input))
     }
     private static func date(_ task: RemoteTask) -> Date { Date(timeIntervalSince1970: task.updatedAt / 1000) }

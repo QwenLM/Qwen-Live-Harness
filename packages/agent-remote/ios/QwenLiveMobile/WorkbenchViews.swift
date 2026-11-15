@@ -155,7 +155,7 @@ private struct ConversationRow: View {
     let conversation: RemoteConversation
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(conversation.first.request).font(.body.weight(.medium)).lineLimit(2)
+            Text(conversation.first.requestTitle).font(.body.weight(.medium)).lineLimit(2)
             HStack(alignment: .firstTextBaseline) {
                 Text(model.state?.backends.first(where: { $0.id == conversation.first.backend })?.name ?? conversation.first.backend)
                     .foregroundStyle(.secondary)
@@ -187,6 +187,7 @@ struct NewConversationView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @FocusState private var editing: Bool
+    @State private var importingImage = false
     let onStarted: (ConversationRoute) -> Void
 
     var body: some View {
@@ -210,6 +211,22 @@ struct NewConversationView: View {
                 }
                 Section {
                     TextEditor(text: $model.draft).frame(minHeight: 150).focused($editing).accessibilityIdentifier("taskInput")
+                    if !model.draftImages.isEmpty {
+                        ImageAttachmentStrip(images: model.draftImages, store: model.imageStore,
+                            remove: model.busy || model.pending != nil ? nil : { image in
+                                model.setImages(model.draftImages.filter { $0.id != image.id }, expectedContext: model.contextID)
+                            })
+                    }
+                    if model.state?.capabilities?.imageAttachments == true {
+                        HStack {
+                            let context = model.contextID
+                            ImageAttachmentPicker(images: Binding(get: { model.draftImages }, set: { model.setImages($0, expectedContext: context) }),
+                                importing: $importingImage, store: model.imageStore,
+                                disabled: model.busy || model.pending != nil || model.state?.backends.first(where: { $0.id == model.backend })?.imageInput == false)
+                                .id(context)
+                            Text(tr("imageAttachmentHint")).font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if model.state != nil { Text(tr("updateGatewayImages")).font(.caption).foregroundStyle(.secondary) }
                 } header: { Text(tr("request")) } footer: { Text(tr("newConversationHint")) }
                 if model.pending != nil { Section { PendingSubmissionNotice(contextID: model.contextID) } }
                 if let error = model.actionError { Section { ErrorNote(text: error) } }
@@ -224,7 +241,7 @@ struct NewConversationView: View {
                         }
                     } label: {
                         HStack { Spacer(); if model.busy { ProgressView() } else { Text(tr("startConversation")) }; Spacer() }
-                    }.disabled(model.busy || model.pending != nil || model.state == nil || model.connectionError != nil || model.backend.isEmpty || model.project.isEmpty || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.disabled(model.busy || model.pending != nil || importingImage || model.state == nil || model.connectionError != nil || model.backend.isEmpty || model.project.isEmpty || (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.draftImages.isEmpty))
                         .accessibilityIdentifier("sendTask")
                 }
             }

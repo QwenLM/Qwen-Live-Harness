@@ -29,6 +29,7 @@
 // FAKE_ACP_DRAIN_DELAY_MS spaces the pulls out.
 
 import process from 'node:process';
+import { createHash } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { Writable, Readable } from 'node:stream';
 import {
@@ -149,6 +150,24 @@ new AgentSideConnection(
           content: { type: 'text', text: `echo: ${text}` },
         },
       });
+
+      for (const image of params.prompt.filter(
+        (block) => block.type === 'image',
+      )) {
+        const digest = createHash('sha256')
+          .update(Buffer.from(image.data, 'base64'))
+          .digest('hex');
+        await connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: '\nimage received: ' + image.mimeType + ' sha256:' + digest,
+            },
+          },
+        });
+      }
 
       if (text.includes('artifacts:')) {
         // Display fixtures only: no filesystem access, account or model call.

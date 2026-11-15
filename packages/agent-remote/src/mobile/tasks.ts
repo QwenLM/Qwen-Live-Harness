@@ -4,12 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   BackendAdaptor,
   BackendEvent,
   BackendHandle,
   ArtifactSource,
+  ContentBlock,
 } from '../adaptor/types.js';
 import { artifactReferences } from '../adaptor/artifact-content.js';
 import { MobileArtifacts, type MobileArtifact } from './artifacts.js';
@@ -66,6 +67,7 @@ export interface MobileTask {
   backend: string;
   project: string;
   request: string;
+  attachments?: MobileImage[];
   status: MobileTaskStatus;
   createdAt: number;
   updatedAt: number;
@@ -82,6 +84,7 @@ export interface MobileTask {
 
 interface OwnedTask {
   view: MobileTask;
+  images: Array<{ metadata: MobileImage; data: Buffer }>;
   handle?: BackendHandle;
   jobRef?: string;
   buffered: BackendEvent[];
@@ -102,6 +105,80 @@ const TERMINAL = new Set<MobileTaskStatus>([
 ]);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const MAX_OUTPUT = 16_384;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_RETAINED_IMAGE_BYTES = 64 * 1024 * 1024;
+
+export interface MobileImage {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+}
+
+function decodeImages(value: unknown): OwnedTask['images'] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 4)
+    throw new MobileError(400, 'invalid_attachment');
+  const ids = new Set<string>();
+  return value.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new MobileError(400, 'invalid_attachment');
+    const image = entry as Record<string, unknown>;
+    const { id, name, mimeType, data } = image;
+    if (
+      typeof data === 'string' &&
+      data.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3)
+    )
+      throw new MobileError(413, 'attachment_too_large');
+    if (
+      typeof id !== 'string' ||
+      !UUID.test(id) ||
+      id !== id.toLowerCase() ||
+      ids.has(id) ||
+      typeof name !== 'string' ||
+      !name.trim() ||
+      name.length > 128 ||
+      /[/\\]/u.test(name) ||
+      [...name].some(
+        (character) =>
+          character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+      ) ||
+      typeof mimeType !== 'string' ||
+      !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) ||
+      typeof data !== 'string' ||
+      !data.length ||
+      data.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/u.test(data)
+    )
+      throw new MobileError(400, 'invalid_attachment');
+    const bytes = Buffer.from(data, 'base64');
+    if (bytes.length > MAX_IMAGE_BYTES)
+      throw new MobileError(413, 'attachment_too_large');
+    const signature =
+      mimeType === 'image/jpeg'
+        ? bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+        : mimeType === 'image/png'
+          ? bytes
+              .subarray(0, 8)
+              .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+          : bytes.toString('ascii', 0, 4) === 'RIFF' &&
+            bytes.toString('ascii', 8, 12) === 'WEBP';
+    if (!signature || bytes.toString('base64') !== data)
+      throw new MobileError(400, 'invalid_attachment');
+    ids.add(id);
+    return {
+      metadata: {
+        id,
+        name,
+        mimeType,
+        size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+      data: bytes,
+    };
+  });
+}
 function clean(value: string, limit = MAX_OUTPUT): string {
   return stripControlSequences(redactPermissionText(value)).slice(-limit);
 }
@@ -115,7 +192,7 @@ function completePermission(request: PendingPermission): boolean {
   }
 }
 
-/** Text-only task ownership, independent of voice calls and their authority. */
+/** Task ownership, independent of voice calls and their authority. */
 export class MobileTasks {
   readonly runId = randomUUID();
   private readonly tasks = new Map<string, OwnedTask>();
@@ -130,6 +207,7 @@ export class MobileTasks {
   private closed = false;
   private readonly artifacts = new MobileArtifacts();
   private artifactSourceBytes = 0;
+  private imageBytes = 0;
 
   constructor(
     private readonly adaptors: ReadonlyMap<string, BackendAdaptor>,
@@ -178,11 +256,18 @@ export class MobileTasks {
       version: 1,
       runId: this.runId,
       permissionMode: this.permissionMode,
-      capabilities: { conversationTurns: true, artifactPreviews: true },
+      capabilities: {
+        conversationTurns: true,
+        artifactPreviews: true,
+        imageAttachments: true,
+      },
       backends: [...this.adaptors.keys()].map((id) => ({
         id,
         name: id === 'qwen' ? 'Qwen Code' : id === 'codex' ? 'Codex' : id,
         status: this.backendStates.get(id) ?? 'available',
+        ...(this.backendStates.get(id) === 'ready'
+          ? { imageInput: this.adaptors.get(id)!.capabilities().imageInput }
+          : {}),
       })),
       projects: this.projects,
       tasks: [...this.tasks.values()].map((task) => this.view(task)).reverse(),
@@ -227,6 +312,9 @@ export class MobileTasks {
       })),
       events: [...task.view.events],
       artifacts: task.view.artifacts.map((artifact) => ({ ...artifact })),
+      ...(task.images.length
+        ? { attachments: task.images.map((image) => ({ ...image.metadata })) }
+        : {}),
     };
   }
 
@@ -245,13 +333,15 @@ export class MobileTasks {
     project: string;
     text: string;
     conversationId?: string;
+    attachments?: unknown;
   }): MobileTask {
     if (this.closed) throw new MobileError(503, 'service_stopping');
+    const images = decodeImages(input.attachments);
     if (
       !UUID.test(input.id) ||
       (input.conversationId !== undefined &&
         !UUID.test(input.conversationId)) ||
-      !input.text.trim() ||
+      (!input.text.trim() && !images.length) ||
       input.text.length > 16_000
     )
       throw new MobileError(400, 'invalid_task');
@@ -263,7 +353,9 @@ export class MobileTasks {
         existing.view.backend !== input.backend ||
         existing.view.conversationId !== conversationId ||
         existing.view.project !== input.project ||
-        existing.view.request !== input.text.trim()
+        existing.view.request !== input.text.trim() ||
+        JSON.stringify(existing.images.map((image) => image.metadata)) !==
+          JSON.stringify(images.map((image) => image.metadata))
       )
         throw new MobileError(409, 'idempotency_conflict');
       return this.view(existing);
@@ -271,6 +363,18 @@ export class MobileTasks {
     const adaptor = this.adaptors.get(input.backend);
     const project = this.projects.find((entry) => entry.id === input.project);
     if (!adaptor || !project) throw new MobileError(404, 'target_not_found');
+    if (
+      images.length &&
+      this.backendStates.get(input.backend) === 'ready' &&
+      !adaptor.capabilities().imageInput
+    )
+      throw new MobileError(400, 'image_input_unsupported');
+    const imageBytes = images.reduce(
+      (sum, image) => sum + image.data.length,
+      0,
+    );
+    if (this.imageBytes + imageBytes > MAX_RETAINED_IMAGE_BYTES)
+      throw new MobileError(429, 'attachment_limit');
     let previous: OwnedTask | undefined;
     if (input.conversationId !== undefined) {
       const root = this.tasks.get(conversationId);
@@ -297,6 +401,7 @@ export class MobileTasks {
       throw new MobileError(429, 'task_limit');
     const now = Date.now();
     const task: OwnedTask = {
+      images,
       view: {
         id,
         conversationId,
@@ -325,6 +430,7 @@ export class MobileTasks {
       ...(previous?.handle ? { handle: previous.handle } : {}),
     };
     this.tasks.set(id, task);
+    this.imageBytes += imageBytes;
     this.event(task, 'status', 'Connecting to the agent');
     this.track(this.begin(task, adaptor, project));
     return this.view(task);
@@ -335,6 +441,19 @@ export class MobileTasks {
     void operation
       .finally(() => this.operations.delete(operation))
       .catch(() => {});
+  }
+
+  attachment(taskId: string, imageId: string) {
+    const task = this.tasks.get(taskId);
+    const image = task?.images.find((entry) => entry.metadata.id === imageId);
+    if (!image) throw new MobileError(404, 'attachment_unavailable');
+    return {
+      id: imageId,
+      taskId,
+      runId: this.runId,
+      mimeType: image.metadata.mimeType,
+      data: image.data.toString('base64'),
+    };
   }
 
   private async prepare(adaptor: BackendAdaptor): Promise<void> {
@@ -367,6 +486,8 @@ export class MobileTasks {
         this.finish(task, 'cancelled', 'Stopped before submission');
         return;
       }
+      if (task.images.length && !adaptor.capabilities().imageInput)
+        throw new MobileError(400, 'image_input_unsupported');
       // Follow-ups retain the exact owned backend handle. Never replace an
       // expired session with a fresh one or replay the earlier instructions.
       task.handle ??= await adaptor.createSession({
@@ -379,9 +500,17 @@ export class MobileTasks {
       }
       this.track(this.pump(task, adaptor));
       task.attempted = true;
-      const receipt = await adaptor.prompt(task.handle, [
-        { type: 'text', text: task.view.request },
-      ]);
+      const blocks: ContentBlock[] = task.view.request
+        ? [{ type: 'text', text: task.view.request }]
+        : [];
+      for (const image of task.images)
+        blocks.push({
+          type: 'image',
+          mimeType: image.metadata.mimeType,
+          data: image.data,
+          name: image.metadata.name,
+        });
+      const receipt = await adaptor.prompt(task.handle, blocks);
       if (this.closed || TERMINAL.has(task.view.status)) return;
       if (receipt.status === 'rejected' || !receipt.jobRef) {
         this.finish(

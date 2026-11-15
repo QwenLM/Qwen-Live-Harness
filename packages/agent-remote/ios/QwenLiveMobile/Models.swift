@@ -76,6 +76,8 @@ struct ComputerWorkspace: Codable {
     var project = ""
     var pending: PendingSubmission?
     var conversationDrafts: [String: String]?
+    var draftImages: [ImageAttachment]? = nil
+    var conversationImages: [String: [ImageAttachment]]? = nil
 }
 
 struct ConversationRoute: Hashable {
@@ -106,7 +108,7 @@ struct RemoteState: Decodable {
     }
 }
 
-struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool? }
+struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool?; let imageAttachments: Bool? }
 
 struct RemoteConversation: Identifiable {
     let id: String
@@ -120,6 +122,7 @@ struct RemoteBackend: Decodable, Identifiable {
     let id: String
     let name: String
     let status: String
+    let imageInput: Bool?
 }
 
 struct RemoteProject: Decodable, Identifiable {
@@ -136,6 +139,8 @@ struct RemoteTask: Decodable, Identifiable {
     let backend: String
     let project: String
     let request: String
+    let attachments: [ImageAttachment]?
+    var requestTitle: String { request.isEmpty && attachments?.isEmpty == false ? tr("imageInput") : request }
     let status: String
     let createdAt: Double
     let updatedAt: Double
@@ -196,6 +201,7 @@ struct PendingSubmission: Codable {
     let text: String
     let runId: String
     var conversationId: String? = nil
+    var attachments: [ImageAttachment]? = nil
 }
 
 enum MobileFailure: LocalizedError {

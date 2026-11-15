@@ -15,14 +15,17 @@ function equal(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(
+  req: IncomingMessage,
+  limit = 32_768,
+): Promise<Record<string, unknown>> {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json')
     throw new MobileError(415, 'json_required');
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += Buffer.byteLength(chunk);
-    if (size > 32_768) throw new MobileError(413, 'request_too_large');
+    if (size > limit) throw new MobileError(413, 'request_too_large');
     chunks.push(Buffer.from(chunk));
   }
   let parsed: unknown;
@@ -144,11 +147,17 @@ export class MobileServer {
     if (req.headers['x-live-run-id'] !== this.tasks.runId)
       throw new MobileError(409, 'server_restarted');
     const artifact =
-      /^\/v1\/tasks\/([a-f0-9-]{36})\/artifacts\/([a-f0-9-]{36})$/u.exec(
+      /^\/v1\/tasks\/([a-f0-9-]{36})\/(artifacts|attachments)\/([a-f0-9-]{36})$/u.exec(
         req.url ?? '',
       );
     if (req.method === 'GET' && artifact) {
-      this.reply(res, 200, this.tasks.artifact(artifact[1]!, artifact[2]!));
+      this.reply(
+        res,
+        200,
+        artifact[2] === 'attachments'
+          ? this.tasks.attachment(artifact[1]!, artifact[3]!)
+          : this.tasks.artifact(artifact[1]!, artifact[3]!),
+      );
       return;
     }
     if (req.method === 'POST' && req.url === '/v1/pairing') {
@@ -163,7 +172,11 @@ export class MobileServer {
       return;
     }
     if (req.method === 'POST' && req.url === '/v1/tasks') {
-      const input = await body(req);
+      const input = await body(req, 12 * 1024 * 1024);
+      const fields = { ...input };
+      delete fields['attachments'];
+      if (Buffer.byteLength(JSON.stringify(fields)) > 32_768)
+        throw new MobileError(413, 'request_too_large');
       if (
         !['id', 'backend', 'project', 'text'].every(
           (key) => typeof input[key] === 'string',
@@ -180,6 +193,9 @@ export class MobileServer {
           backend: input['backend'] as string,
           project: input['project'] as string,
           text: input['text'] as string,
+          ...(input['attachments'] !== undefined
+            ? { attachments: input['attachments'] }
+            : {}),
           ...(typeof input['conversationId'] === 'string'
             ? { conversationId: input['conversationId'] }
             : {}),

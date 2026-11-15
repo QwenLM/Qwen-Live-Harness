@@ -171,7 +171,11 @@ it.each(['qwen', 'codex'])(
     const { tasks, call, headers } = await setup('allow-all');
     expect(
       (await call('/v1/state', undefined, headers)).value['capabilities'],
-    ).toEqual({ conversationTurns: true, artifactPreviews: true });
+    ).toEqual({
+      conversationTurns: true,
+      artifactPreviews: true,
+      imageAttachments: true,
+    });
     const first = {
       id: randomUUID(),
       backend,
@@ -219,6 +223,98 @@ it.each(['qwen', 'codex'])(
       ).status,
     ).toBe(409);
     expect(tasks.snapshot().tasks).toHaveLength(2);
+  },
+);
+
+it.each(['qwen', 'codex'])(
+  'delivers %s input images through HTTPS and ACP without exposing bytes in state or replaying retries',
+  async (backend) => {
+    const { tasks, call, headers } = await setup('allow-all');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+      'base64',
+    );
+    const image = {
+      id: randomUUID(),
+      name: 'input.png',
+      mimeType: 'image/png',
+      data: Buffer.concat([png, Buffer.alloc(40_000)]).toString('base64'),
+    };
+    const input = {
+      id: randomUUID(),
+      backend,
+      project: 'fixture',
+      text: '',
+      attachments: [image],
+    };
+    expect((await call('/v1/tasks', input)).status).toBe(401);
+    expect(
+      (await call('/v1/tasks', input, { ...headers, 'x-live-run-id': 'stale' }))
+        .status,
+    ).toBe(409);
+    expect(
+      (
+        await call('/v1/tasks', input, {
+          ...headers,
+          origin: 'https://untrusted.example',
+        })
+      ).status,
+    ).toBe(403);
+    expect(tasks.snapshot().tasks).toHaveLength(0);
+    const receipt = await call('/v1/tasks', input, headers);
+    expect(receipt.status).toBe(202);
+    expect((await call('/v1/tasks', input, headers)).status).toBe(202);
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    const task = tasks.snapshot().tasks[0]!;
+    expect(task.output).toContain(
+      'image received: image/png sha256:' + task.attachments![0]!.sha256,
+    );
+    expect(
+      JSON.stringify((await call('/v1/state', undefined, headers)).value),
+    ).not.toContain(image.data);
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { ...input, attachments: [{ ...image, name: 'different.png' }] },
+          headers,
+        )
+      ).status,
+    ).toBe(409);
+    expect(tasks.snapshot().tasks).toHaveLength(1);
+    const path = '/v1/tasks/' + input.id + '/attachments/' + image.id;
+    expect((await call(path)).status).toBe(401);
+    expect(
+      (await call(path, undefined, { ...headers, 'x-live-run-id': 'stale' }))
+        .status,
+    ).toBe(409);
+    expect(
+      (
+        await call(
+          '/v1/tasks/' + randomUUID() + '/attachments/' + image.id,
+          undefined,
+          headers,
+        )
+      ).status,
+    ).toBe(404);
+    expect((await call(path, undefined, headers)).value).toEqual({
+      id: image.id,
+      taskId: input.id,
+      runId: tasks.runId,
+      mimeType: image.mimeType,
+      data: image.data,
+    });
+    expect(
+      (
+        await call(
+          '/v1/tasks',
+          { ...input, id: randomUUID(), attachments: 'invalid' },
+          headers,
+        )
+      ).status,
+    ).toBe(400);
   },
 );
 

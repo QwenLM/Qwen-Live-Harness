@@ -20,11 +20,11 @@ private final class MemoryConnections: ConnectionPersistence {
 }
 
 private final class StubAPI: RemoteAPI {
-    struct Call { let path: String; let body: [String: String]?; let runID: String? }
+    struct Call { let path: String; let body: [String: Any]?; let runID: String? }
     var calls: [Call] = []
-    var handle: (String, [String: String]?, String?) async throws -> Data
-    init(_ handle: @escaping (String, [String: String]?, String?) async throws -> Data) { self.handle = handle }
-    func request<T: Decodable>(_ path: String, body: [String: String]?, runId: String?) async throws -> T {
+    var handle: (String, [String: Any]?, String?) async throws -> Data
+    init(_ handle: @escaping (String, [String: Any]?, String?) async throws -> Data) { self.handle = handle }
+    func request<T: Decodable>(_ path: String, body: [String: Any]?, runId: String?) async throws -> T {
         calls.append(Call(path: path, body: body, runID: runId))
         return try JSONDecoder().decode(T.self, from: await handle(path, body, runId))
     }
@@ -70,6 +70,102 @@ final class ComputerTests: XCTestCase {
     private func waitFor(_ condition: () -> Bool) async {
         for _ in 0..<1000 { if condition() { return }; await Task.yield() }
         XCTFail("Fixture request did not start")
+    }
+
+    private func imageStore() -> ImageAttachmentStore {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("computer-image-tests-" + UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return ImageAttachmentStore(directory: directory)
+    }
+    private func image(_ store: ImageAttachmentStore) throws -> ImageAttachment {
+        try store.importImage(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")!)
+    }
+    private func imageState(run: String = "same-run", tasks: [[String: Any]] = [], supported: Bool = true) throws -> Data {
+        var value = try JSONSerialization.jsonObject(with: state("fixture", run: run, tasks: tasks)) as! [String: Any]
+        value["capabilities"] = ["conversationTurns": true, "imageAttachments": supported]
+        return try json(value)
+    }
+
+    func testImageOnlyRetriesKeepTheExactBytesAcrossComputerSwitchAndRelaunchWithoutClearingNewDraftImages() async throws {
+        let a = computer("a"), b = computer("b"), preferences = defaults(), storage = store([a, b]), images = imageStore()
+        let sent = try image(images), replacement = try image(images)
+        let originalBytes = try images.read(sent)
+        var accept = false
+        let api = StubAPI { path, body, _ in
+            if path == "v1/tasks" {
+                if !accept { throw URLError(.networkConnectionLost) }
+                var receipt = self.task(body!["text"] as! String, id: body!["id"] as! String)
+                receipt["attachments"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([sent]))
+                return try self.json(receipt)
+            }
+            return try self.imageState()
+        }
+        let model = AppModel(storage: storage, defaults: preferences, imageStore: images, makeAPI: { _ in api })
+        await model.refresh(); let context = model.contextID
+        model.setImages([sent], expectedContext: context)
+        await model.submit(expectedContext: context)
+        let pending = try XCTUnwrap(model.pending)
+        XCTAssertEqual(pending.attachments, [sent]); XCTAssertEqual(pending.text, "")
+        model.setImages([replacement], expectedContext: context)
+        XCTAssertNoThrow(try images.read(sent), "Unconfirmed bytes must stay available for exact retries")
+        let reopened = AppModel(storage: storage, defaults: preferences, imageStore: images, makeAPI: { _ in api })
+        XCTAssertEqual(reopened.pending?.id, pending.id); XCTAssertEqual(reopened.draftImages, [replacement])
+        XCTAssertTrue(reopened.selectComputer(b.id)); await reopened.refresh()
+        XCTAssertTrue(reopened.draftImages.isEmpty); XCTAssertNil(reopened.pending)
+        reopened.setImages([sent], expectedContext: context)
+        XCTAssertTrue(reopened.draftImages.isEmpty, "A late picker must not write into another context")
+        XCTAssertTrue(reopened.selectComputer(a.id)); await reopened.refresh()
+        accept = true; await reopened.retryPending(expectedContext: reopened.contextID)
+        let calls = api.calls.filter { $0.path == "v1/tasks" }
+        XCTAssertEqual(calls.count, 2); XCTAssertEqual(calls[0].body as NSDictionary?, calls[1].body as NSDictionary?)
+        let payload = try XCTUnwrap(calls.last?.body?["attachments"] as? [[String: String]])
+        XCTAssertEqual(payload.first?["data"], originalBytes.base64EncodedString())
+        XCTAssertNil(reopened.pending); XCTAssertEqual(reopened.draftImages, [replacement])
+        XCTAssertThrowsError(try images.read(sent)); XCTAssertNoThrow(try images.read(replacement))
+    }
+
+    func testOldGatewayAndMismatchedImageReceiptKeepDraftAndPending() async throws {
+        let a = computer("a"), images = imageStore(), attachment = try image(images)
+        var supported = false
+        let api = StubAPI { path, body, _ in
+            if path == "v1/tasks" { return try self.json(self.task(body!["text"] as! String, id: body!["id"] as! String)) }
+            return try self.imageState(supported: supported)
+        }
+        let model = AppModel(storage: store([a]), defaults: defaults(), imageStore: images, makeAPI: { _ in api })
+        await model.refresh(); model.setImages([attachment], expectedContext: model.contextID)
+        await model.submit(expectedContext: model.contextID)
+        XCTAssertFalse(api.calls.contains(where: { $0.path == "v1/tasks" })); XCTAssertNil(model.pending)
+        XCTAssertEqual(model.draftImages, [attachment]); XCTAssertNotNil(model.actionError)
+        supported = true; await model.refresh(); await model.submit(expectedContext: model.contextID)
+        XCTAssertNotNil(model.pending, "A receipt without the submitted image must not acknowledge it")
+        XCTAssertEqual(model.draftImages, [attachment]); XCTAssertNoThrow(try images.read(attachment))
+    }
+
+    func testInputImageReadsValidateContentIdentityAndIgnoreLateComputerReplies() async throws {
+        let a = computer("a"), b = computer("b"), images = imageStore(), attachment = try image(images), gate = ReplyGate()
+        let taskID = UUID().uuidString.lowercased(), bytes = try images.read(attachment)
+        var item = task("Image", id: taskID)
+        item["attachments"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([attachment]))
+        var corrupt = true, delayed = false
+        let api = StubAPI { path, _, _ in
+            if path == "v1/state" { return try self.imageState(tasks: [item]) }
+            if delayed { return await gate.wait() }
+            return try self.json(["id": attachment.id, "taskId": taskID, "runId": "same-run", "mimeType": attachment.mimeType,
+                                  "data": (corrupt ? Data("wrong".utf8) : bytes).base64EncodedString()])
+        }
+        let model = AppModel(storage: store([a, b]), defaults: defaults(), imageStore: images, makeAPI: { _ in api })
+        await model.refresh(); let context = model.contextID
+        do { _ = try await model.loadInputImage(attachment, taskID: taskID, expectedContext: context, runID: "same-run"); XCTFail("Changed bytes must not display") }
+        catch MobileFailure.invalidResponse { }
+        corrupt = false
+        let loaded = try await model.loadInputImage(attachment, taskID: taskID, expectedContext: context, runID: "same-run")
+        XCTAssertEqual(loaded, bytes)
+        delayed = true
+        let loading = Task { try await model.loadInputImage(attachment, taskID: taskID, expectedContext: context, runID: "same-run") }
+        await waitFor { gate.waiting }; XCTAssertTrue(model.selectComputer(b.id))
+        gate.resolve(try json(["id": attachment.id, "taskId": taskID, "runId": "same-run", "mimeType": attachment.mimeType, "data": bytes.base64EncodedString()]))
+        do { _ = try await loading.value; XCTFail("Late image must not appear on another computer") }
+        catch is CancellationError { }
     }
 
     func testKeychainMigrationKeepsOriginalCredentialAndDoesNotResurrectForgottenComputer() async throws {
@@ -346,9 +442,9 @@ final class ComputerTests: XCTestCase {
         XCTAssertEqual(pending.conversationId, "conversation-a"); XCTAssertEqual(pending.backend, "qwen")
         await model.retryPending(expectedContext: context)
         let calls = api.calls.filter { $0.path == "v1/tasks" }
-        XCTAssertEqual(calls.count, 2); XCTAssertEqual(calls[0].body, calls[1].body)
-        XCTAssertEqual(calls[0].body?["conversationId"], "conversation-a")
-        XCTAssertEqual(calls[0].body?["backend"], "qwen"); XCTAssertEqual(calls[0].runID, "same-run")
+        XCTAssertEqual(calls.count, 2); XCTAssertEqual(calls[0].body as NSDictionary?, calls[1].body as NSDictionary?)
+        XCTAssertEqual(calls[0].body?["conversationId"] as? String, "conversation-a")
+        XCTAssertEqual(calls[0].body?["backend"] as? String, "qwen"); XCTAssertEqual(calls[0].runID, "same-run")
         let reopened = AppModel(storage: storage, defaults: preferences, makeAPI: { _ in api })
         XCTAssertEqual(reopened.pending?.id, pending.id)
         XCTAssertEqual(reopened.conversationDraft(conversationID: "conversation-a", runID: "same-run"), "Continue the original")
@@ -381,7 +477,7 @@ final class ComputerTests: XCTestCase {
         let api = StubAPI { path, body, _ in
             if path == "v1/tasks" {
                 if fail { throw URLError(.networkConnectionLost) }
-                var receipt = self.task(body!["text"]!, id: body!["id"]!)
+                var receipt = self.task(body!["text"] as! String, id: body!["id"] as! String)
                 receipt["conversationId"] = body!["conversationId"]
                 return try self.json(receipt)
             }
