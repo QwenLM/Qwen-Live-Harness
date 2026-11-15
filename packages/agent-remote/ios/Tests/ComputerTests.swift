@@ -409,8 +409,10 @@ final class ComputerTests: XCTestCase {
         let pendingB = try XCTUnwrap(model.pending)
         gateA.resolve(try json(task("A task", id: pendingA.id))); _ = await sendingA.value
         XCTAssertTrue(model.busy); XCTAssertEqual(model.pending?.id, pendingB.id); XCTAssertEqual(model.draft, "B task")
+        XCTAssertNil(model.confirmedStart)
         gateB.resolve(try json(task("B task", id: pendingB.id))); _ = await sendingB.value
         XCTAssertFalse(model.busy); XCTAssertNil(model.pending)
+        XCTAssertEqual(model.confirmedStart, ConversationRoute(contextID: contextB, conversationID: pendingB.id, runID: pendingB.runId))
         XCTAssertTrue(model.selectComputer(a.id)); XCTAssertNil(model.pending)
         XCTAssertEqual(apiA.calls.filter { $0.path == "v1/tasks" }.count, 1)
         XCTAssertEqual(apiB.calls.filter { $0.path == "v1/tasks" }.count, 1)
@@ -592,6 +594,30 @@ final class ComputerTests: XCTestCase {
         XCTAssertEqual(model.conversationDraft(conversationID: "conversation", runID: run), "")
     }
 
+    func testUnconfirmedFirstMessageOpensOnlyAfterItsExactTaskAppearsInTheSameRun() async throws {
+        let a = computer("a")
+        var tasks: [[String: Any]] = [], run = "original"
+        let api = StubAPI { path, _, _ in
+            if path == "v1/tasks" { throw URLError(.timedOut) }
+            return try self.state("fixture", run: run, tasks: tasks)
+        }
+        let model = AppModel(storage: store([a]), defaults: defaults(), makeAPI: { _ in api })
+        await model.refresh()
+        model.draft = "Check the project"
+        await model.submit(expectedContext: model.contextID)
+        let pending = try XCTUnwrap(model.pending)
+        tasks = [task("Other request", id: pending.id)]
+        await model.refresh()
+        XCTAssertNil(model.confirmedStart)
+        tasks = [task(pending.text, id: pending.id)]
+        run = "other"; await model.refresh()
+        XCTAssertNil(model.confirmedStart); XCTAssertEqual(model.draft, pending.text)
+        run = pending.runId; await model.refresh()
+        XCTAssertEqual(model.confirmedStart, ConversationRoute(contextID: model.contextID, conversationID: pending.id, runID: run))
+        XCTAssertNil(model.actionError); XCTAssertNil(model.pending); XCTAssertTrue(model.draft.isEmpty)
+        XCTAssertEqual(api.calls.filter { $0.path == "v1/tasks" }.count, 1)
+    }
+
     func testMismatchedReceiptCannotClearPendingAndOldGatewayCannotStartFollowup() async throws {
         let a = computer("a"), storage = store([a]), api = StubAPI { path, _, _ in
             if path == "v1/tasks" { return try self.json(self.task("Wrong response")) }
@@ -601,6 +627,7 @@ final class ComputerTests: XCTestCase {
         await model.refresh(); model.draft = "Actual request"
         await model.submit(expectedContext: model.contextID)
         XCTAssertNotNil(model.pending); XCTAssertEqual(model.draft, "Actual request")
+        XCTAssertNil(model.confirmedStart)
         model.clearPending()
         await model.submit(expectedContext: model.contextID, conversationID: "old-conversation")
         XCTAssertEqual(api.calls.filter { $0.path == "v1/tasks" }.count, 1)

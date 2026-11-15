@@ -1,10 +1,8 @@
 "feed" = "动态";
 "me" = "我的";
 "recentThreeThings" = "最近的三件事";
-"assistantEmpty" = "最近的事，会在这里";
-"assistantEmptyDetail" = "在下方随时记下想法。本机保存的输入和已连接工作台的最新任务，会出现在这里。";
+"assistantEmpty" = "记下第一个想法";
 "assistantInputPlaceholder" = "随时说点什么…";
-"textInput" = "文字输入";
 "addImage" = "添加图片";
 "choosePhoto" = "从相册选择";
 "chooseImageFile" = "选择图片文件";
@@ -230,6 +228,9 @@
 "sampleSuggestionReason" = "这条建议结合了之前反复聊到的问题和你优先保证可靠性的目标。工作完成通知报告执行结果，这里展示的是基于上下文提出的新建议。";
 "personalHandoffExplanation" = "未来可以在助手里接着聊；需要 Harness 执行时，再确认电脑、项目和 Agent。此预览不会启动任务。";
 "newConversation" = "新会话";
+"firstMessagePrompt" = "想让 Agent 做什么？";
+"runSettings" = "运行设置";
+"syncingFirstMessage" = "电脑已收到消息，正在同步会话…";
 "startConversation" = "开始会话";
 "conversation" = "会话";
 "request" = "你的要求";

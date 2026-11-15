@@ -1,16 +1,19 @@
 import SwiftUI
 
+private enum WorkbenchPage: Hashable {
+    case newConversation(context: UUID, id: UUID)
+    case conversation(ConversationRoute)
+}
+
 struct WorkbenchView: View {
     @EnvironmentObject private var model: AppModel
     let showWorkbench: () -> Void
     @Binding var requestedRoute: ConversationRoute?
     @Binding var requestedPairingURL: URL?
-    @State private var path: [ConversationRoute] = []
+    @State private var path: [WorkbenchPage] = []
     @State private var showComputers = false
     @State private var showPairing = false
     @State private var pairAfterListDismisses = false
-    @State private var showNewConversation = false
-    @State private var startedConversation: ConversationRoute?
     @State private var search = ""
 
     private var conversations: [RemoteConversation] {
@@ -27,8 +30,13 @@ struct WorkbenchView: View {
                 else { workbench }
             }
             .navigationTitle(tr("workbench"))
-            .navigationDestination(for: ConversationRoute.self) { route in
-                ConversationDetail(route: route, openConversation: { if $0.contextID == model.contextID { path.append($0) } })
+            .navigationDestination(for: WorkbenchPage.self) { page in
+                switch page {
+                case .newConversation(let context, _):
+                    NewConversationView(contextID: context, openDraft: openDraft)
+                case .conversation(let route):
+                    ConversationDetail(route: route, openDraft: openDraft)
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -37,21 +45,19 @@ struct WorkbenchView: View {
                 }
                 if model.connection != nil {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { showNewConversation = true } label: { Label(tr("newConversation"), systemImage: "square.and.pencil") }
+                    Button(action: openDraft) { Label(tr("newConversation"), systemImage: "square.and.pencil") }
                             .disabled(model.state == nil).accessibilityIdentifier("newConversation")
                     }
                 }
             }
         }
-        .onChange(of: model.contextID) { _, _ in path = []; showNewConversation = false; startedConversation = nil; search = "" }
+        .onChange(of: model.contextID) { _, _ in path = []; search = "" }
         .onChange(of: requestedRoute, initial: true) { _, route in
             guard let route else { return }
             requestedRoute = nil
             guard route.contextID == model.contextID, route.runID == model.state?.runId,
                   model.state?.conversations.contains(where: { $0.id == route.conversationID }) == true else { return }
-            showNewConversation = false
-            startedConversation = nil
-            if path.last != route { path.append(route) }
+            if path.last != .conversation(route) { path.append(.conversation(route)) }
         }
         .onChange(of: requestedPairingURL, initial: true) { _, url in
             guard let url else { return }
@@ -76,17 +82,10 @@ struct WorkbenchView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button(tr("cancel")) { showPairing = false } } }
             }
         }
-        .sheet(isPresented: $showNewConversation, onDismiss: {
-            if let route = startedConversation, model.contextID == route.contextID {
-                path.append(route)
-            }
-            startedConversation = nil
-        }) {
-            NewConversationView { route in
-                startedConversation = route
-                showNewConversation = false
-            }
-        }
+    }
+
+    private func openDraft() {
+        path.append(.newConversation(context: model.contextID, id: UUID()))
     }
 
     private var workbench: some View {
@@ -112,7 +111,7 @@ struct WorkbenchView: View {
                 }
             } footer: { Text(tr("macKeepsWorking")) }
             Section {
-                Button { showNewConversation = true } label: { Label(tr("newConversation"), systemImage: "plus.bubble") }
+                Button(action: openDraft) { Label(tr("newConversation"), systemImage: "plus.bubble") }
                     .disabled(model.state == nil).accessibilityIdentifier("newConversationCard")
             }
             if model.pending != nil { Section { PendingSubmissionNotice(contextID: model.contextID) } }
@@ -123,7 +122,7 @@ struct WorkbenchView: View {
                     if !items.isEmpty {
                         Section {
                             ForEach(items) { conversation in
-                                NavigationLink(value: ConversationRoute(contextID: model.contextID, conversationID: conversation.id)) {
+                                NavigationLink(value: WorkbenchPage.conversation(ConversationRoute(contextID: model.contextID, conversationID: conversation.id, runID: state.runId))) {
                                     ConversationRow(conversation: conversation)
                                 }.accessibilityIdentifier("task-\(conversation.id)")
                             }
@@ -132,8 +131,10 @@ struct WorkbenchView: View {
                                 Label(project.name, systemImage: "folder")
                                 Spacer()
                                 Button {
-                                    model.project = project.id; showNewConversation = true
+                                    if model.chooseProject(project, expectedContext: model.contextID, runID: state.runId) { openDraft() }
                                 } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
+                                    .disabled(model.busy || model.pending != nil)
+                                    .accessibilityIdentifier("newConversation-" + project.id)
                                     .accessibilityLabel(tr("newConversation") + ": " + project.name)
                             }
                         }
@@ -179,73 +180,6 @@ struct TaskElapsedTime: View {
     private func label(at date: Date) -> some View {
         let value = Duration.seconds(task.elapsed(at: date)).formatted(.time(pattern: .hourMinuteSecond(padHourToLength: 1)))
         return Text(value).accessibilityValue(value)
-    }
-}
-
-struct NewConversationView: View {
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    @FocusState private var editing: Bool
-    @State private var importingImage = false
-    let onStarted: (ConversationRoute) -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Label(model.selectedComputer?.displayName ?? "", systemImage: "laptopcomputer")
-                    if let state = model.state {
-                        Picker(tr("agent"), selection: $model.backend) {
-                            ForEach(state.backends) { Text($0.name).tag($0.id) }
-                        }.pickerStyle(.segmented).accessibilityIdentifier("backendPicker")
-                        Label(tr(state.permissionMode == "allow-all" ? "automaticPermissions" : "manualPermissions"), systemImage: state.permissionMode == "allow-all" ? "bolt.shield" : "hand.raised")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Section {
-                    WorkingFolderButton(project: model.selectedProject)
-                    if !model.workingFolderAvailable { ErrorNote(text: tr("directory_unavailable")) }
-                    TextEditor(text: $model.draft).frame(minHeight: 150).focused($editing).accessibilityIdentifier("taskInput")
-                    if !model.draftImages.isEmpty {
-                        ImageAttachmentStrip(images: model.draftImages, store: model.imageStore,
-                            remove: model.busy || model.pending != nil ? nil : { image in
-                                model.setImages(model.draftImages.filter { $0.id != image.id }, expectedContext: model.contextID)
-                            })
-                    }
-                    if model.state?.capabilities?.imageAttachments == true {
-                        HStack {
-                            let context = model.contextID
-                            ImageAttachmentPicker(images: Binding(get: { model.draftImages }, set: { model.setImages($0, expectedContext: context) }),
-                                importing: $importingImage, store: model.imageStore,
-                                disabled: model.busy || model.pending != nil || model.state?.backends.first(where: { $0.id == model.backend })?.imageInput == false)
-                                .id(context)
-                            Text(tr("imageAttachmentHint")).font(.caption).foregroundStyle(.secondary)
-                        }
-                    } else if model.state != nil { Text(tr("updateGatewayImages")).font(.caption).foregroundStyle(.secondary) }
-                } header: { Text(tr("request")) } footer: { Text(tr("newConversationHint")) }
-                if model.pending != nil { Section { PendingSubmissionNotice(contextID: model.contextID) } }
-                if let error = model.actionError { Section { ErrorNote(text: error) } }
-                Section {
-                    Button {
-                        editing = false
-                        let context = model.contextID
-                        Task {
-                            if let id = await model.submit(expectedContext: context), model.contextID == context {
-                                onStarted(ConversationRoute(contextID: context, conversationID: id))
-                            }
-                        }
-                    } label: {
-                        HStack { Spacer(); if model.busy { ProgressView() } else { Text(tr("startConversation")) }; Spacer() }
-                    }.disabled(model.busy || model.pending != nil || importingImage || model.state == nil || model.connectionError != nil || model.backend.isEmpty || !model.workingFolderAvailable || (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.draftImages.isEmpty))
-                        .accessibilityIdentifier("sendTask")
-                }
-            }
-            .navigationTitle(tr("newConversation")).navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button(tr("cancel")) { dismiss() } }
-                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button(tr("done")) { editing = false } }
-            }
-        }
     }
 }
 

@@ -1,10 +1,8 @@
 "feed" = "Feed";
 "me" = "Me";
 "recentThreeThings" = "Three recent updates";
-"assistantEmpty" = "Your latest work, right here";
-"assistantEmptyDetail" = "Capture an idea below. Your saved inputs and the connected workbench's latest tasks appear here.";
+"assistantEmpty" = "Capture your first idea";
 "assistantInputPlaceholder" = "Whatever's on your mind…";
-"textInput" = "Text input";
 "addImage" = "Add image";
 "choosePhoto" = "Choose from Photos";
 "chooseImageFile" = "Choose image file";
@@ -230,6 +228,9 @@
 "sampleSuggestionReason" = "The suggestion connects recurring topics in earlier conversations with your stated reliability goal. A work-completion notice reports an outcome; this is a proposal based on context.";
 "personalHandoffExplanation" = "The intended flow: continue the topic with your assistant, then confirm a computer, project and agent when the work needs a Harness. This preview does not start that work.";
 "newConversation" = "New conversation";
+"firstMessagePrompt" = "What should the agent do?";
+"runSettings" = "Run settings";
+"syncingFirstMessage" = "Your computer received the message. Syncing the conversation…";
 "startConversation" = "Start conversation";
 "conversation" = "Conversation";
 "request" = "Your request";

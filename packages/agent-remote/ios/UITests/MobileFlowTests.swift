@@ -37,8 +37,11 @@ final class MobileFlowTests: XCTestCase {
         launchWorkbench(app); app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         app.buttons["newConversation"].tap()
+        app.buttons["runSettings"].tap()
         app.segmentedControls.buttons["Codex"].tap()
-        let input = app.textViews["taskInput"]; input.tap(); input.typeText("artifacts: final outputs")
+        app.buttons["closeRunSettings"].tap()
+        let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
+        input.tap(); input.typeText("artifacts: final outputs")
         app.buttons["sendTask"].tap()
         XCTAssertTrue(app.buttons["artifact-report.md"].waitForExistence(timeout: 20))
         capture(app, name: "Final artifacts in the conversation")
@@ -136,6 +139,20 @@ final class MobileFlowTests: XCTestCase {
     }
     private func sendAndWait(_ app: XCUIApplication, text: String, agent: String) {
         app.buttons["newConversation"].tap()
+        let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["sendTask"].isEnabled)
+        if text == "permission: first computer" {
+            capture(app, name: "Blank conversation with focused first-message composer")
+            input.typeText(text)
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertFalse(taskRow(app, text: text).exists)
+            app.buttons["newConversationCard"].tap()
+            XCTAssertTrue(input.waitForExistence(timeout: 5))
+            XCTAssertEqual(input.value as? String, text)
+        }
+        app.buttons["runSettings"].tap()
         XCTAssertTrue(app.buttons["workingFolderButton"].waitForExistence(timeout: 10))
         app.buttons["workingFolderButton"].tap()
         XCTAssertTrue(app.buttons["useWorkingFolder"].waitForExistence(timeout: 10))
@@ -144,7 +161,8 @@ final class MobileFlowTests: XCTestCase {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: app.segmentedControls.buttons[agent])
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         app.segmentedControls.buttons[agent].tap()
-        let input = app.textViews["taskInput"]; input.tap(); input.typeText(text)
+        app.buttons["closeRunSettings"].tap()
+        if text != "permission: first computer" { input.tap(); input.typeText(text) }
         app.buttons["sendTask"].tap()
         XCTAssertTrue(app.staticTexts["status-completed"].waitForExistence(timeout: 20))
         XCTAssertFalse(app.buttons["allowPermission"].exists)
@@ -186,9 +204,12 @@ final class MobileFlowTests: XCTestCase {
         app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 20))
         for (agent, decision, outcome) in [("Qwen Code", "allowPermission", "completed"), ("Codex", "denyPermission", "cancelled")] {
-            app.buttons["newConversation"].tap()
+            let entry = agent == "Codex" ? "newConversation-ui-fixture" : "newConversation"
+            app.buttons[entry].tap()
+            app.buttons["runSettings"].tap()
             app.segmentedControls.buttons[agent].tap()
-            let input = app.textViews["taskInput"]
+            app.buttons["closeRunSettings"].tap()
+            let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
             input.tap(); input.typeText("permission: \(agent) mobile approval smoke")
             app.buttons["sendTask"].tap()
             let rowPredicate = NSPredicate(format: "identifier BEGINSWITH 'task-' AND label CONTAINS %@", "permission: \(agent) mobile approval smoke")
@@ -239,12 +260,22 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["assistantInput"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label), ["Assistant", "Workbench", "Feed", "Me"])
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 0)
+        XCTAssertTrue(app.staticTexts["assistantEmpty"].exists)
+        XCTAssertGreaterThanOrEqual(app.scrollViews.firstMatch.frame.width, app.frame.width - 1)
+        XCTAssertFalse(app.staticTexts["Three recent updates"].exists)
+        XCTAssertFalse(app.buttons["assistantSend"].exists)
+        XCTAssertTrue(app.navigationBars.buttons["assistantLive"].isHittable)
+        capture(app, name: "Empty assistant with the floating composer")
         let input = app.descendants(matching: .any)["assistantInput"]
         input.tap(); input.typeText("Keep this idea locally until the assistant is connected.")
+        XCTAssertTrue(app.buttons["assistantSend"].isHittable)
         app.buttons["assistantSend"].tap()
         XCTAssertTrue(app.staticTexts["assistantReceipt"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["assistantReceipt"].label.contains("No task has been dispatched"))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).count, 1)
+        XCTAssertTrue(app.staticTexts["Three recent updates"].exists)
+        XCTAssertFalse(app.staticTexts["assistantEmpty"].exists)
+        XCTAssertFalse(app.buttons["assistantSend"].exists)
         XCTAssertFalse(app.buttons["sendFollowup"].exists)
         XCTAssertFalse(app.buttons["sendTask"].exists)
         capture(app, name: "Assistant saves an input locally without a fake reply")
@@ -269,7 +300,7 @@ final class MobileFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
         app.launch()
-        XCTAssertTrue(app.buttons["assistantSend"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["assistantVoice"].waitForExistence(timeout: 10))
         for appearance in ["Light", "Dark", "Light"] {
             app.tabBars.buttons["Me"].tap()
             app.buttons["appearancePicker"].tap()

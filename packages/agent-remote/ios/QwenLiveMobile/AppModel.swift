@@ -29,6 +29,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var pending: PendingSubmission?
+    @Published private(set) var confirmedStart: ConversationRoute?
     @Published private(set) var conversationDrafts: [String: String] = [:]
     @Published private(set) var draftImages: [ImageAttachment] = []
     @Published private(set) var conversationImages: [String: [ImageAttachment]] = [:]
@@ -110,7 +111,7 @@ final class AppModel: ObservableObject {
 
     private func activate(_ id: UUID?) {
         cancelPairing()
-        contextID = UUID(); selectedComputerID = id
+        contextID = UUID(); selectedComputerID = id; confirmedStart = nil
         api = connection.map(makeAPI); state = nil; lastUpdated = nil
         connectionError = nil; actionError = nil; actionOperation = nil; busy = false
         let workspace = id.flatMap { workspaces[$0.uuidString] } ?? ComputerWorkspace()
@@ -210,7 +211,7 @@ final class AppModel: ObservableObject {
             } else if workingFolder?.id != project { project = next.projects.first?.id ?? "" }
             if let pending, next.runId == pending.runId,
                next.tasks.contains(where: { matches($0, submission: pending) }),
-               let owner = selectedComputerID { acknowledge(pending, owner: owner) }
+               let owner = selectedComputerID { acknowledge(pending, owner: owner, context: current) }
         } catch {
             if !Task.isCancelled, contextID == current, sequence > appliedSequence { connectionError = error.localizedDescription }
         }
@@ -311,11 +312,14 @@ final class AppModel: ObservableObject {
             if let attachments = submission.attachments, !attachments.isEmpty { body["attachments"] = try imageStore.payload(attachments) }
             let receipt: RemoteTask = try await api.request("v1/tasks", body: body, runId: submission.runId)
             guard matches(receipt, submission: submission) else { throw MobileFailure.invalidResponse }
-            acknowledge(submission, owner: owner)
+            acknowledge(submission, owner: owner, context: expectedContext)
             if contextID == expectedContext { await refresh(expectedContext: expectedContext) }
             return submission.conversationId ?? submission.id
         } catch {
-            if contextID == expectedContext { actionError = error.localizedDescription; await refresh(expectedContext: expectedContext) }
+            if contextID == expectedContext, pending?.id == submission.id {
+                actionError = error.localizedDescription
+                await refresh(expectedContext: expectedContext)
+            }
             return nil
         }
     }
@@ -356,7 +360,7 @@ final class AppModel: ObservableObject {
         await submit(expectedContext: expectedContext, conversationID: pending.conversationId)
     }
 
-    private func acknowledge(_ submission: PendingSubmission, owner: UUID) {
+    private func acknowledge(_ submission: PendingSubmission, owner: UUID, context: UUID) {
         guard var workspace = workspaces[owner.uuidString], workspace.pending?.id == submission.id else { return }
         workspace.pending = nil
         let submittedImages = submission.attachments ?? []
@@ -373,6 +377,10 @@ final class AppModel: ObservableObject {
         if owner == selectedComputerID {
             restoring = true; pending = nil; draft = workspace.draft; conversationDrafts = workspace.conversationDrafts ?? [:]
             draftImages = workspace.draftImages ?? []; conversationImages = workspace.conversationImages ?? [:]; restoring = false
+            if submission.conversationId == nil, context == contextID, submission.runId == state?.runId {
+                actionError = nil
+                confirmedStart = ConversationRoute(contextID: context, conversationID: submission.id, runID: submission.runId)
+            }
         }
     }
 

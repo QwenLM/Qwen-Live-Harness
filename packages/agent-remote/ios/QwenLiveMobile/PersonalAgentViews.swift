@@ -31,10 +31,8 @@ struct PersonalAgentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(tr("recentThreeThings")).font(.subheadline).foregroundStyle(.secondary).padding(.bottom, 4)
-                    if recent.isEmpty {
-                        ContentUnavailableView(tr("assistantEmpty"), systemImage: "sparkles", description: Text(tr("assistantEmptyDetail")))
-                            .frame(maxWidth: .infinity).padding(.vertical, 30)
+                    if !recent.isEmpty {
+                        Text(tr("recentThreeThings")).font(.subheadline).foregroundStyle(.secondary).padding(.bottom, 4)
                     }
                     ForEach(recent) { item in
                         RecentActivityCard(item: item, stale: item.link != nil && model.connectionError != nil) {
@@ -64,7 +62,9 @@ struct PersonalAgentView: View {
                             Button(tr("dismiss")) { voice.clearError() }.font(.footnote).frame(minHeight: 44)
                         }
                     }
-                }.padding(.horizontal, 22).padding(.vertical, 18)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22).padding(.vertical, 18)
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: latestSaved) { _, value in
@@ -74,7 +74,18 @@ struct PersonalAgentView: View {
         .background(PersonalStyle.background)
         .navigationTitle(tr("personalAgent"))
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { stopVoice(); editing = false; showLive = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "waveform")
+                        Text("Live")
+                    }.foregroundStyle(PersonalStyle.accent)
+                }.disabled(voice.phase != .idle).accessibilityIdentifier("assistantLive")
+                    .accessibilityLabel("Omni Live")
+            }
+        }
+        .bottomComposer { composer }
         .sheet(item: $selectedInput) { input in SavedInputDetail(inputID: input.id) }
         .sheet(isPresented: $showLive) { OmniLiveView() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { stopVoice() } }
@@ -85,6 +96,11 @@ struct PersonalAgentView: View {
         let hasInput = !assistant.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.draftImages.isEmpty
         let images = Binding(get: { assistant.draftImages }, set: { assistant.setDraftImages($0) })
         return VStack(alignment: .leading, spacing: 8) {
+            if recent.isEmpty && !editing && !hasInput && voice.phase == .idle {
+                Text(tr("assistantEmpty")).font(.title2.weight(.medium))
+                    .padding(.leading, 6).padding(.bottom, 8)
+                    .accessibilityIdentifier("assistantEmpty")
+            }
             WorkingFolderButton(project: model.selectedProject, disabled: voice.phase != .idle, connectComputer: openWorkbench)
             if !images.wrappedValue.isEmpty {
                 ImageAttachmentStrip(images: images.wrappedValue, store: assistant.imageStore, remove: { image in
@@ -95,31 +111,16 @@ struct PersonalAgentView: View {
                 Label(tr(voice.phase == .authorizing ? "dictationAuthorizing" : "dictationListening"), systemImage: "waveform")
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
-            HStack(alignment: .bottom, spacing: 4) {
+            ComposerBar {
                 ImageAttachmentPicker(images: images, importing: $importingImage, store: assistant.imageStore,
                                       disabled: voice.phase != .idle)
-                Button {
-                    if !hasInput { editing = true }
-                    else {
-                        let workspace = model.selectedComputer.flatMap { computer in
-                            model.selectedProject.map { AssistantWorkspaceContext(computerID: computer.id, computerName: computer.displayName, project: $0) }
-                        }
-                        if let saved = assistant.saveInput(source: inputSource, workspace: workspace) {
-                            latestSaved = saved.id; inputSource = .text; editing = false
-                        }
-                    }
-                } label: {
-                    Image(systemName: hasInput ? "arrow.up" : "keyboard")
-                        .font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44)
-                }.disabled(voice.phase != .idle || importingImage)
-                    .accessibilityLabel(tr(hasInput ? "saveAssistantInput" : "textInput"))
-                    .accessibilityIdentifier("assistantSend")
+            } field: {
                 TextField(tr("assistantInputPlaceholder"), text: Binding(get: { assistant.draft }, set: {
                     assistant.draft = $0; inputSource = .text
                 }), axis: .vertical)
-                    .font(.body).lineLimit(1...5).textFieldStyle(.plain).focused($editing)
-                    .frame(minHeight: 44).disabled(voice.phase != .idle)
+                    .focused($editing).disabled(voice.phase != .idle)
                     .accessibilityIdentifier("assistantInput")
+            } actions: {
                 Button {
                     if voice.phase == .idle {
                         editing = false
@@ -136,15 +137,23 @@ struct PersonalAgentView: View {
                         .font(.system(size: 20)).frame(width: 44, height: 44)
                 }.accessibilityLabel(tr(voice.phase == .idle ? "voiceInput" : "stopVoiceInput"))
                     .accessibilityIdentifier("assistantVoice")
-                Rectangle().fill(Color(uiColor: .separator)).frame(width: 0.5, height: 26).padding(.bottom, 9)
-                Button { stopVoice(); editing = false; showLive = true } label: {
-                    Label("Live", systemImage: "waveform").font(.subheadline).fixedSize().frame(minHeight: 44).padding(.horizontal, 4)
-                }.disabled(voice.phase != .idle).accessibilityIdentifier("assistantLive")
-                    .accessibilityLabel("Omni Live")
+                if hasInput {
+                    Button {
+                        let workspace = model.selectedComputer.flatMap { computer in
+                            model.selectedProject.map { AssistantWorkspaceContext(computerID: computer.id, computerName: computer.displayName, project: $0) }
+                        }
+                        if let saved = assistant.saveInput(source: inputSource, workspace: workspace) {
+                            latestSaved = saved.id; inputSource = .text; editing = false
+                        }
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill").font(.title)
+                            .frame(width: 44, height: 44)
+                    }.disabled(voice.phase != .idle || importingImage)
+                        .accessibilityLabel(tr("saveAssistantInput"))
+                        .accessibilityIdentifier("assistantSend")
+                }
             }
-            .padding(8).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24))
-            .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Color(uiColor: .separator).opacity(0.2), lineWidth: 0.5))
-        }.padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 10).background(PersonalStyle.background)
+        }
     }
 
     private func stopVoice() { voiceTask?.cancel(); voiceTask = nil; voice.stop() }

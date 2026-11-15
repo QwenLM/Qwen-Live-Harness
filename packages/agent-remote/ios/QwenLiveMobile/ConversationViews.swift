@@ -3,13 +3,11 @@ import SwiftUI
 struct ConversationDetail: View {
     @EnvironmentObject private var model: AppModel
     let route: ConversationRoute
-    let openConversation: (ConversationRoute) -> Void
+    let openDraft: () -> Void
     private struct StopTarget { let task: RemoteTask; let runID: String }
     @State private var stopTarget: StopTarget?
     @State private var showStop = false
     @State private var importingImage = false
-    @State private var newFolder: RemoteProject?
-    @State private var startedConversation: ConversationRoute?
     @FocusState private var editing: Bool
 
     private var conversation: RemoteConversation? {
@@ -22,7 +20,7 @@ struct ConversationDetail: View {
         Group {
             if let conversation, let state = model.state {
                 transcript(conversation, state: state)
-                    .safeAreaInset(edge: .bottom, spacing: 0) { composer(conversation, state: state) }
+                    .bottomComposer { composer(conversation, state: state) }
             } else {
                 ContentUnavailableView(tr("conversationUnavailable"), systemImage: "bubble.left.and.exclamationmark.bubble.right", description: Text(tr("taskUnavailableHint")))
             }
@@ -30,17 +28,6 @@ struct ConversationDetail: View {
         .navigationTitle(tr("conversation"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .sheet(item: $newFolder, onDismiss: {
-            if let route = startedConversation, model.contextID == route.contextID {
-                openConversation(route)
-            }
-            startedConversation = nil
-        }) { _ in
-            NewConversationView { route in
-                startedConversation = route
-                newFolder = nil
-            }
-        }
         .confirmationDialog(tr("stopTurn"), isPresented: $showStop, titleVisibility: .visible, presenting: stopTarget) { target in
             Button(tr("stopTurn"), role: .destructive) {
                 Task { await model.control(task: target.task, expectedContext: route.contextID, expectedRunID: target.runID) }
@@ -96,70 +83,56 @@ struct ConversationDetail: View {
             model.connectionError == nil && !importingImage && (!binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.wrappedValue.isEmpty)
         let agent = state.backends.first { $0.id == conversation.first.backend }?.name ?? conversation.first.backend
         return VStack(alignment: .leading, spacing: 8) {
-            WorkingFolderButton(project: state.projects.first { $0.id == conversation.first.project }) { project in
-                if project.id != conversation.first.project { editing = false; newFolder = project }
+            HStack(spacing: 12) {
+                WorkingFolderButton(project: state.projects.first { $0.id == conversation.first.project }, onSelected: { project in
+                    if project.id != conversation.first.project { editing = false; openDraft() }
+                })
+                Label(agent, systemImage: "terminal").font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             Text(tr("conversationFolderHint")).font(.caption2).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 8) {
-                if !images.wrappedValue.isEmpty {
-                    ImageAttachmentStrip(images: images.wrappedValue, store: model.imageStore,
-                                         remove: model.busy || model.pending != nil ? nil : { image in images.wrappedValue.removeAll { $0.id == image.id } })
+            if !images.wrappedValue.isEmpty {
+                ImageAttachmentStrip(images: images.wrappedValue, store: model.imageStore,
+                                     remove: model.busy || model.pending != nil ? nil : { image in images.wrappedValue.removeAll { $0.id == image.id } })
+            }
+            if !supported {
+                composerNotice(tr("updateGateway"))
+            } else if conversation.latest.terminal && !conversation.canContinue {
+                composerNotice(tr("conversation_unavailable"))
+            }
+            if !conversation.latest.terminal { StatusBadge(status: conversation.latest.status) }
+            ComposerBar {
+                if state.capabilities?.imageAttachments == true {
+                    ImageAttachmentPicker(images: images, importing: $importingImage, store: model.imageStore,
+                        disabled: model.busy || model.pending != nil || state.backends.first(where: { $0.id == conversation.first.backend })?.imageInput == false)
+                        .id(route.contextID.uuidString + state.runId + conversation.id)
                 }
-                if !supported {
-                    composerNotice(tr("updateGateway"))
-                } else if conversation.latest.terminal && !conversation.canContinue {
-                    composerNotice(tr("conversation_unavailable"))
-                }
+            } field: {
                 TextField(tr("continuePrompt"), text: binding, axis: .vertical)
-                    .font(.body).lineLimit(1...6).textFieldStyle(.plain).focused($editing)
-                    .frame(minHeight: 44, alignment: .topLeading)
-                    .padding(.horizontal, 4).padding(.top, 4)
+                    .focused($editing)
                     .accessibilityIdentifier("conversationInput")
                     .accessibilityHint(tr(conversation.latest.terminal ? "sameConversationHint" : "draftWhileWorking"))
-                HStack(spacing: 12) {
-                    if state.capabilities?.imageAttachments == true {
-                        ImageAttachmentPicker(images: images, importing: $importingImage, store: model.imageStore,
-                            disabled: model.busy || model.pending != nil || state.backends.first(where: { $0.id == conversation.first.backend })?.imageInput == false)
-                            .id(route.contextID.uuidString + state.runId + conversation.id)
-                    }
-                    Label(agent, systemImage: "terminal").font(.subheadline).foregroundStyle(.secondary)
-                        .lineLimit(1).padding(.leading, 4)
-                    if !conversation.latest.terminal { StatusBadge(status: conversation.latest.status) }
-                    Spacer(minLength: 0)
-                    if conversation.latest.terminal {
-                        Button {
-                            editing = false
-                            Task { await model.submit(expectedContext: route.contextID, conversationID: conversation.id) }
-                        } label: {
-                            Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(canSend ? Color(uiColor: .systemBackground) : Color(uiColor: .tertiaryLabel))
-                                .frame(width: 44, height: 44)
-                                .background(canSend ? PersonalStyle.accent : Color(uiColor: .quaternarySystemFill), in: Circle())
-                        }.buttonStyle(.plain).disabled(!canSend)
-                            .accessibilityLabel(tr("sendMessage")).accessibilityIdentifier("sendFollowup")
-                    } else {
-                        Button(role: .destructive) {
-                            editing = false
-                            stopTarget = StopTarget(task: conversation.latest, runID: state.runId); showStop = true
-                        } label: {
-                            Image(systemName: "stop.fill").font(.system(size: 16, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                                .background(Color(uiColor: .quaternarySystemFill), in: Circle())
-                        }.buttonStyle(.plain)
-                            .disabled(model.busy || model.connectionError != nil || conversation.latest.status == "cancelling")
-                            .accessibilityLabel(tr(conversation.latest.status == "cancelling" ? "awaitingStop" : "stopTurn"))
-                            .accessibilityIdentifier("stopTurn")
-                    }
+            } actions: {
+                if conversation.latest.terminal {
+                    Button {
+                        editing = false
+                        Task { await model.submit(expectedContext: route.contextID, conversationID: conversation.id) }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44)
+                    }.disabled(!canSend)
+                        .accessibilityLabel(tr("sendMessage")).accessibilityIdentifier("sendFollowup")
+                } else {
+                    Button(role: .destructive) {
+                        editing = false
+                        stopTarget = StopTarget(task: conversation.latest, runID: state.runId); showStop = true
+                    } label: {
+                        Image(systemName: "stop.circle.fill").font(.title).frame(width: 44, height: 44)
+                    }.disabled(model.busy || model.connectionError != nil || conversation.latest.status == "cancelling")
+                        .accessibilityLabel(tr(conversation.latest.status == "cancelling" ? "awaitingStop" : "stopTurn"))
+                        .accessibilityIdentifier("stopTurn")
                 }
             }
-            .padding(12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .strokeBorder(Color(uiColor: .separator).opacity(0.15), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(0.06), radius: 16, y: 4)
-        }.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
+        }
     }
 
     private func composerNotice(_ text: String) -> some View {
