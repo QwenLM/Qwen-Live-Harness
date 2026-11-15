@@ -11,6 +11,7 @@ struct WorkbenchView: View {
     @State private var showPairing = false
     @State private var pairAfterListDismisses = false
     @State private var showNewConversation = false
+    @State private var startedConversation: ConversationRoute?
     @State private var search = ""
 
     private var conversations: [RemoteConversation] {
@@ -43,13 +44,14 @@ struct WorkbenchView: View {
                 }
             }
         }
-        .onChange(of: model.contextID) { _, _ in path = []; showNewConversation = false; search = "" }
+        .onChange(of: model.contextID) { _, _ in path = []; showNewConversation = false; startedConversation = nil; search = "" }
         .onChange(of: requestedRoute, initial: true) { _, route in
             guard let route else { return }
             requestedRoute = nil
             guard route.contextID == model.contextID, route.runID == model.state?.runId,
                   model.state?.conversations.contains(where: { $0.id == route.conversationID }) == true else { return }
             showNewConversation = false
+            startedConversation = nil
             if path.last != route { path.append(route) }
         }
         .onChange(of: requestedPairingURL, initial: true) { _, url in
@@ -75,10 +77,15 @@ struct WorkbenchView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button(tr("cancel")) { showPairing = false } } }
             }
         }
-        .sheet(isPresented: $showNewConversation) {
+        .sheet(isPresented: $showNewConversation, onDismiss: {
+            if let route = startedConversation, model.contextID == route.contextID {
+                path.append(route)
+            }
+            startedConversation = nil
+        }) {
             NewConversationView { route in
+                startedConversation = route
                 showNewConversation = false
-                if model.contextID == route.contextID { path.append(route) }
             }
         }
     }

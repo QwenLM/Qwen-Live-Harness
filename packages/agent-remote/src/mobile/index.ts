@@ -19,6 +19,7 @@ import { ensureMobileTLS } from './tls.js';
 import { privateDirectory } from '../state.js';
 import { claimInstance } from '../instance.js';
 import { localAddresses, pairingPage } from '../pairing.js';
+import { generateFeedPresentation } from './feed-presentation.js';
 
 export interface GatewayOptions {
   projects: string[];
@@ -98,7 +99,23 @@ export async function startGateway(
         name: basename(path),
         path,
       })),
-      { permissionMode: options.ask ? 'ask' : 'allow-all' },
+      {
+        permissionMode: options.ask ? 'ask' : 'allow-all',
+        generatePresentation: (backend, input, signal) => {
+          const agent = agents.find((candidate) => candidate.name === backend)!;
+          return generateFeedPresentation(
+            () =>
+              new AcpAdaptor({
+                name: agent.name,
+                command: agent.command,
+                args: agent.args,
+                env: agent.env,
+              }),
+            input,
+            signal,
+          );
+        },
+      },
     );
     const server = new MobileServer(
       tasks,

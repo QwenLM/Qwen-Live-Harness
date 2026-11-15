@@ -260,3 +260,4 @@
 "previewTruncated" = "Showing the first 512,000 characters.";
 "artifact_unavailable" = "A referenced file could not be previewed. Save outputs inside the shared project folder; missing files and links outside it are unavailable.";
 "artifact_limit" = "Some artifacts exceed the preview limits: 8 MB per file, 12 files and 16 MB per turn, with 64 MB retained by the service.";
+"preparingFeedCover" = "Preparing cover…";

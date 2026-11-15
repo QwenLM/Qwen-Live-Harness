@@ -63,21 +63,75 @@ private struct FeedActivityCard: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(item.category).font(.caption2).foregroundStyle(.secondary)
-                Text(coverText).font(.headline.weight(.medium)).foregroundStyle(.primary).lineLimit(4)
-                Spacer(minLength: 10)
-                Image(systemName: item.symbol).font(.system(size: isImage ? 38 : 27, weight: .light))
-                    .foregroundStyle(.tint).frame(maxWidth: .infinity, alignment: .trailing)
-            }.frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: isImage ? 184 : 152, alignment: .topLeading)
-                .padding(15).background(PersonalStyle.card, in: RoundedRectangle(cornerRadius: 15))
+            if let artifact = item.coverArtifact, let link = item.link {
+                FeedArtifactCover(artifact: artifact, link: link)
+                    .aspectRatio(1.6, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 15))
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(item.category).font(.caption2).foregroundStyle(.secondary)
+                    Text(coverText).font(.headline.weight(.medium)).foregroundStyle(.primary).lineLimit(4)
+                    Spacer(minLength: 10)
+                    Image(systemName: item.symbol).font(.system(size: isImage ? 38 : 27, weight: .light))
+                        .foregroundStyle(.tint).frame(maxWidth: .infinity, alignment: .trailing)
+                }.frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: isImage ? 184 : 152, alignment: .topLeading)
+                    .padding(15).background(PersonalStyle.card, in: RoundedRectangle(cornerRadius: 15))
+            }
             Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(2).padding(.horizontal, 3)
+            if case .artifact = item.content {
+                Text(item.summary).font(.footnote).foregroundStyle(.secondary).lineLimit(3).padding(.horizontal, 3)
+            }
+            if case .artifact(_, let task) = item.content, task.presentationPending == true {
+                Text(tr("preparingFeedCover")).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 3)
+            }
             Text(item.date, style: .relative).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 3)
         }.accessibilityElement(children: .combine)
     }
     private var coverText: String {
         if case .artifact = item.content { return item.title }
         return item.summary
+    }
+}
+
+private struct FeedArtifactCover: View {
+    @EnvironmentObject private var model: AppModel
+    let artifact: RemoteArtifact
+    let link: ActivityLink
+    @State private var data: Data?
+    @State private var previewImage: UIImage?
+    @State private var unavailable = false
+
+    var body: some View {
+        ZStack {
+            PersonalStyle.card
+            if let data {
+                if artifact.mimeType == "image/svg+xml" {
+                    OfflineHTMLPreview(html: "<img alt='' src='data:image/svg+xml;base64," + data.base64EncodedString() + "'>",
+                                       onError: { _ in unavailable = true }, compact: true)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                } else if let image = previewImage {
+                    Image(uiImage: image).resizable().scaledToFill().accessibilityHidden(true)
+                }
+            } else if !unavailable { ProgressView() }
+            if unavailable { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary) }
+        }
+        .clipped()
+        .task(id: link.id + artifact.id) {
+            data = nil; previewImage = nil; unavailable = false
+            do {
+                data = try await model.loadArtifact(artifact, taskID: link.taskID, expectedContext: link.contextID, runID: link.runID)
+                if artifact.mimeType != "image/svg+xml", let data {
+                    previewImage = ArtifactPreview.image(data, maxPixelSize: 640)
+                    unavailable = previewImage == nil
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                if !Task.isCancelled { unavailable = true }
+            }
+        }
+        .onChange(of: model.contextID) { _, _ in data = nil; previewImage = nil }
+        .onChange(of: model.state?.runId) { _, _ in data = nil; previewImage = nil }
     }
 }
 

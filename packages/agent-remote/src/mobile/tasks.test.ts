@@ -18,6 +18,10 @@ import type {
 } from '../adaptor/types.js';
 import { AsyncEventQueue } from '../adaptor/async-event-queue.js';
 import { MobileTasks } from './tasks.js';
+import type {
+  FeedPresentation,
+  FeedPresentationInput,
+} from './feed-presentation.js';
 
 class FakeAdaptor implements BackendAdaptor {
   queues = new Map<string, AsyncEventQueue<BackendEvent>>();
@@ -84,7 +88,14 @@ afterEach(async () => {
   );
   vi.restoreAllMocks();
 });
-function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
+function setup(
+  permissionMode: 'ask' | 'allow-all' = 'ask',
+  generatePresentation?: (
+    backend: string,
+    input: FeedPresentationInput,
+    signal: AbortSignal,
+  ) => Promise<FeedPresentation>,
+) {
   const qwen = new FakeAdaptor('qwen'),
     codex = new FakeAdaptor('codex');
   const service = new MobileTasks(
@@ -93,7 +104,7 @@ function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
       ['codex', codex],
     ]),
     [{ id: 'project', name: 'Project', path: '/tmp/mobile-test' }],
-    { permissionMode },
+    { permissionMode, generatePresentation },
   );
   services.push(service);
   const submit = (backend = 'qwen', id: string = randomUUID()) =>
@@ -113,6 +124,145 @@ const permission: BackendEvent = {
 };
 
 describe('mobile task ownership', () => {
+  it('generates an owned feed cover once after completion without delaying follow-ups or changing the result', async () => {
+    let resolve!: (value: FeedPresentation) => void;
+    const generate = vi.fn(
+      (_backend: string, _input: FeedPresentationInput, signal: AbortSignal) =>
+        new Promise<FeedPresentation>((done, reject) => {
+          resolve = done;
+          signal.addEventListener('abort', () => reject(new Error('Stopped')), {
+            once: true,
+          });
+        }),
+    );
+    const { service, qwen, submit } = setup('ask', generate);
+    const original = submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'artifact',
+      jobRef: 'job-1',
+      source: {
+        type: 'inline',
+        name: 'report.md',
+        mimeType: 'text/markdown',
+        data: Buffer.from('# Result').toString('base64'),
+      },
+    });
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Original completed result',
+    });
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    const completed = service.snapshot().tasks[0]!;
+    expect(completed).toMatchObject({
+      status: 'completed',
+      output: 'Original completed result',
+      canContinue: true,
+      presentationPending: true,
+    });
+    submit('qwen', original.id);
+    expect(generate).toHaveBeenCalledTimes(1);
+    service.submit({
+      id: randomUUID(),
+      conversationId: original.id,
+      backend: 'qwen',
+      project: 'project',
+      text: 'Follow up',
+    });
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(2));
+    resolve({
+      description: 'A completed project report.',
+      coverSvg:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"></svg>',
+    });
+    await vi.waitFor(() =>
+      expect(
+        service.snapshot().tasks.find((task) => task.id === original.id)
+          ?.presentation,
+      ).toBeDefined(),
+    );
+    const enriched = service
+      .snapshot()
+      .tasks.find((task) => task.id === original.id)!;
+    expect(enriched.output).toBe(completed.output);
+    expect(enriched.finishedAt).toBe(completed.finishedAt);
+    expect(enriched.updatedAt).toBe(completed.updatedAt);
+    expect(enriched.artifacts).toEqual(completed.artifacts);
+    expect(enriched.presentationPending).toBe(false);
+    const cover = enriched.presentation!.cover;
+    expect(service.artifact(original.id, cover.id)).toMatchObject({
+      name: 'cover.svg',
+      mimeType: 'image/svg+xml',
+      taskId: original.id,
+      runId: service.runId,
+    });
+    expect(() =>
+      service.artifact(service.snapshot().tasks[0]!.id, cover.id),
+    ).toThrow();
+    expect(qwen.sessions).toHaveLength(1);
+  });
+
+  it('keeps task output and artifacts when optional cover generation fails', async () => {
+    const generate = vi.fn(async () => {
+      throw new Error('Generation failed');
+    });
+    const { service, qwen, submit } = setup('allow-all', generate);
+    submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(1));
+    qwen.emit({
+      type: 'artifact',
+      jobRef: 'job-1',
+      source: {
+        type: 'inline',
+        mimeType: 'text/markdown',
+        data: Buffer.from('# Result').toString('base64'),
+      },
+    });
+    qwen.emit({
+      type: 'turn_complete',
+      jobRef: 'job-1',
+      summary: 'Original output',
+    });
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.presentationPending).toBe(false),
+    );
+    expect(service.snapshot().tasks[0]).toMatchObject({
+      status: 'completed',
+      output: 'Original output',
+      presentationPending: false,
+    });
+    expect(service.snapshot().tasks[0]!.artifacts).toHaveLength(1);
+    expect(service.snapshot().tasks[0]!.presentation).toBeUndefined();
+  });
+
+  it('does not generate covers for failed or cancelled tasks or text-only results', async () => {
+    const generate = vi.fn();
+    const { service, qwen, submit } = setup('ask', generate);
+    for (const error of ['failed', 'cancelled']) {
+      submit();
+      await vi.waitFor(() =>
+        expect(qwen.promptCalls).toBe(error === 'failed' ? 1 : 2),
+      );
+      qwen.emit({
+        type: 'turn_error',
+        jobRef: `job-${qwen.promptCalls}`,
+        error,
+      });
+      await vi.waitFor(() =>
+        expect(service.snapshot().tasks[0]!.status).toBe(error),
+      );
+    }
+    submit();
+    await vi.waitFor(() => expect(qwen.promptCalls).toBe(3));
+    qwen.emit({ type: 'turn_complete', jobRef: 'job-3', summary: 'Text only' });
+    await vi.waitFor(() =>
+      expect(service.snapshot().tasks[0]!.status).toBe('completed'),
+    );
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it('keeps completed results but refuses artifact collection after a selected folder is replaced', async () => {
     const directory = await realpath(
       await mkdtemp(join(tmpdir(), 'mobile-owned-folder-')),

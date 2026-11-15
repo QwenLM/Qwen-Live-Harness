@@ -9,6 +9,7 @@ struct ConversationDetail: View {
     @State private var showStop = false
     @State private var importingImage = false
     @State private var newFolder: RemoteProject?
+    @State private var startedConversation: ConversationRoute?
     @FocusState private var editing: Bool
 
     private var conversation: RemoteConversation? {
@@ -29,8 +30,16 @@ struct ConversationDetail: View {
         .navigationTitle(tr("conversation"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .sheet(item: $newFolder) { _ in
-            NewConversationView { route in newFolder = nil; openConversation(route) }
+        .sheet(item: $newFolder, onDismiss: {
+            if let route = startedConversation, model.contextID == route.contextID {
+                openConversation(route)
+            }
+            startedConversation = nil
+        }) { _ in
+            NewConversationView { route in
+                startedConversation = route
+                newFolder = nil
+            }
         }
         .confirmationDialog(tr("stopTurn"), isPresented: $showStop, titleVisibility: .visible, presenting: stopTarget) { target in
             Button(tr("stopTurn"), role: .destructive) {
@@ -102,7 +111,7 @@ struct ConversationDetail: View {
                     composerNotice(tr("conversation_unavailable"))
                 }
                 TextField(tr("continuePrompt"), text: binding, axis: .vertical)
-                    .font(.body).lineLimit(1...6).textFieldStyle(.plain).tint(.primary).focused($editing)
+                    .font(.body).lineLimit(1...6).textFieldStyle(.plain).focused($editing)
                     .frame(minHeight: 44, alignment: .topLeading)
                     .padding(.horizontal, 4).padding(.top, 4)
                     .accessibilityIdentifier("conversationInput")
@@ -123,9 +132,9 @@ struct ConversationDetail: View {
                             Task { await model.submit(expectedContext: route.contextID, conversationID: conversation.id) }
                         } label: {
                             Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(canSend ? Color.white : Color(uiColor: .tertiaryLabel))
+                                .foregroundStyle(canSend ? Color(uiColor: .systemBackground) : Color(uiColor: .tertiaryLabel))
                                 .frame(width: 44, height: 44)
-                                .background(canSend ? Color.accentColor : Color(uiColor: .quaternarySystemFill), in: Circle())
+                                .background(canSend ? PersonalStyle.accent : Color(uiColor: .quaternarySystemFill), in: Circle())
                         }.buttonStyle(.plain).disabled(!canSend)
                             .accessibilityLabel(tr("sendMessage")).accessibilityIdentifier("sendFollowup")
                     } else {

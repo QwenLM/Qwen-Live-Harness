@@ -274,19 +274,21 @@ final class ComputerTests: XCTestCase {
     }
 
     func testArtifactReadsUseOnlyTheOwnedTurnAndRejectMismatchedResponses() async throws {
-        let a = computer("a"), taskID = UUID().uuidString.lowercased(), artifactID = UUID().uuidString.lowercased()
-        let text = "# Preview", encoded = Data("# Preview".utf8).base64EncodedString()
-        var item = task("work", id: taskID)
-        let metadata: [String: Any] = ["id": artifactID, "name": "report.md", "mimeType": "text/markdown", "kind": "markdown", "size": text.utf8.count]
-        item["artifacts"] = [metadata]; item["status"] = "completed"
-        var responseID = artifactID
-        let api = StubAPI { path, _, _ in
-            if path == "v1/state" { return try self.state("a", tasks: [item]) }
-            return try self.json(["id": responseID, "taskId": taskID, "runId": "same-run", "mimeType": "text/markdown", "data": encoded])
+        for asCover in [false, true] {
+            let a = computer("a"), taskID = UUID().uuidString.lowercased(), artifactID = UUID().uuidString.lowercased()
+            let text = "# Preview", encoded = Data("# Preview".utf8).base64EncodedString()
+            var item = task("work", id: taskID)
+            let metadata: [String: Any] = ["id": artifactID, "name": "report.md", "mimeType": "text/markdown", "kind": "markdown", "size": text.utf8.count]
+            item["artifacts"] = asCover ? [] : [metadata]; item["status"] = "completed"
+            if asCover { item["presentation"] = ["description": "Owned feed cover", "cover": metadata] }
+            var responseID = artifactID
+            let api = StubAPI { path, _, _ in
+                if path == "v1/state" { return try self.state("a", tasks: [item]) }
+                return try self.json(["id": responseID, "taskId": taskID, "runId": "same-run", "mimeType": "text/markdown", "data": encoded])
         }
         let model = AppModel(storage: store([a]), defaults: defaults(), makeAPI: { _ in api })
         await model.refresh()
-        let artifact = try XCTUnwrap(model.state?.tasks.first?.artifacts?.first)
+        let artifact = try XCTUnwrap(asCover ? model.state?.tasks.first?.presentation?.cover : model.state?.tasks.first?.artifacts?.first)
         let content = try await model.loadArtifact(artifact, taskID: taskID, expectedContext: model.contextID, runID: "same-run")
         XCTAssertEqual(String(data: content, encoding: .utf8), text)
         XCTAssertEqual(api.calls.last?.path, "v1/tasks/\(taskID)/artifacts/\(artifactID)")
@@ -298,6 +300,7 @@ final class ComputerTests: XCTestCase {
         do { _ = try await model.loadArtifact(artifact, taskID: UUID().uuidString, expectedContext: model.contextID, runID: "same-run"); XCTFail("Unknown turn must not be requested") }
         catch { }
         XCTAssertEqual(api.calls.count, count)
+        }
     }
 
     func testLateArtifactReadCannotCrossComputerSelectionsOrServerRuns() async throws {

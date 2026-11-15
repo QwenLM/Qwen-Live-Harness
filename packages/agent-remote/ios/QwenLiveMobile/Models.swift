@@ -174,6 +174,8 @@ struct RemoteTask: Decodable, Identifiable {
     let artifacts: [RemoteArtifact]?
     let artifactsPending: Bool?
     let artifactNotice: String?
+    let presentation: RemotePresentation?
+    let presentationPending: Bool?
     let permissions: [RemotePermission]
     let events: [RemoteEvent]
     var terminal: Bool { ["completed", "failed", "cancelled", "interrupted"].contains(status) }
@@ -182,6 +184,11 @@ struct RemoteTask: Decodable, Identifiable {
         let end = terminal ? (finishedAt ?? updatedAt) / 1000 : date.timeIntervalSince1970
         return max(0, end - createdAt / 1000)
     }
+}
+
+struct RemotePresentation: Decodable {
+    let description: String
+    let cover: RemoteArtifact
 }
 
 struct RemoteArtifact: Decodable, Identifiable, Equatable {

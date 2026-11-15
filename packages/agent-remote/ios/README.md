@@ -1,5 +1,7 @@
 # Agent Remote iOS
 
+The interface uses iOS system backgrounds and an adaptive dark-green accent in light and dark appearances. After a completed task has previewable artifacts, the gateway makes one additional Agent request to generate a `cover.svg` and a short description for Feed. Generation uses a separate temporary session, the completed result and artifact names, with a 60-second deadline. Follow-ups remain available while the cover is prepared. Covers use authenticated, offline previews and are held in gateway memory until restart. If generation fails, Feed shows the original artifact. This adds model usage through the selected Agent account. Update both gateway and app to use generated covers.
+
 [简体中文](README_ZH.md) · [Install the computer gateway](../README.md)
 
 From the package directory, run `npm ci && npm run build` first. Then:

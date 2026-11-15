@@ -27,6 +27,25 @@ afterEach(async () => {
 });
 
 describe('shared working folders', () => {
+  it('uses the same canonical path for root selection and state while retaining the original grant check', async () => {
+    const alias = join(temporary, 'shared-alias');
+    await symlink(root, alias);
+    const catalog = new MobileProjects([
+      { id: 'root', name: 'Shared', path: alias },
+    ]);
+    const listing = await catalog.list('root', '');
+    const selected = await catalog.select('root', '');
+    expect(listing.path).toBe(root);
+    expect(selected).toEqual(catalog.projects[0]);
+    expect(selected.path).toBe(listing.path);
+    expect(catalog.roots[0]!.path).toBe(alias);
+    await rm(alias);
+    await symlink(outside, alias);
+    await expect(catalog.select('root', '')).rejects.toThrow(
+      'directory_changed',
+    );
+  });
+
   it('lists only directories, handles names verbatim and returns canonical parents within the shared root', async () => {
     await Promise.all([
       mkdir(join(root, '项目 with spaces')),

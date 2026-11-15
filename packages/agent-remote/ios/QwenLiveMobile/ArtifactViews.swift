@@ -69,7 +69,7 @@ struct ArtifactPreview: View {
 
     @ViewBuilder private func preview(_ data: Data) -> some View {
         if artifact.kind == "image", artifact.mimeType != "image/svg+xml" {
-            if let image = previewImage(data) { ZoomableArtifactImage(image: image).accessibilityIdentifier("imagePreview") }
+            if let image = Self.image(data) { ZoomableArtifactImage(image: image).accessibilityIdentifier("imagePreview") }
             else { ContentUnavailableView(tr("previewUnavailable"), systemImage: "photo.badge.exclamationmark") }
         } else if artifact.mimeType == "image/svg+xml" {
             OfflineHTMLPreview(html: "<img alt='" + tr("artifacts") + "' src='data:image/svg+xml;base64," + data.base64EncodedString() + "'>", onError: { error = $0 })
@@ -85,14 +85,14 @@ struct ArtifactPreview: View {
         } else { ContentUnavailableView(tr("previewUnavailable"), systemImage: "doc.badge.ellipsis") }
     }
 
-    private func previewImage(_ data: Data) -> UIImage? {
+    static func image(_ data: Data, maxPixelSize: Int = 4096) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = info[kCGImagePropertyPixelWidth] as? Double,
               let height = info[kCGImagePropertyPixelHeight] as? Double,
               width > 0, height > 0, width * height <= 64_000_000,
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 4096] as CFDictionary) else { return nil }
+                  kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: maxPixelSize] as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
     }
 }
@@ -163,6 +163,7 @@ struct MarkdownPreviewBlock {
 struct OfflineHTMLPreview: UIViewRepresentable {
     let html: String
     let onError: (String) -> Void
+    var compact = false
     static let contentRules = #"[{"trigger":{"url-filter":"^http:"},"action":{"type":"block"}},{"trigger":{"url-filter":"^https:"},"action":{"type":"block"}},{"trigger":{"url-filter":"^file:"},"action":{"type":"block"}},{"trigger":{"url-filter":"^ftp:"},"action":{"type":"block"}},{"trigger":{"url-filter":"^ws:"},"action":{"type":"block"}},{"trigger":{"url-filter":"^wss:"},"action":{"type":"block"}}]"#
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> WKWebView {
@@ -171,19 +172,23 @@ struct OfflineHTMLPreview: UIViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let view = WKWebView(frame: .zero, configuration: configuration)
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.scrollView.isScrollEnabled = !compact
         view.navigationDelegate = context.coordinator
         WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "agent-remote-offline-preview-v1", encodedContentRuleList: Self.contentRules) { list, error in
             DispatchQueue.main.async {
                 guard let list else { onError(error?.localizedDescription ?? tr("previewUnavailable")); return }
                 view.configuration.userContentController.add(list)
-                view.loadHTMLString(Self.document(html), baseURL: nil)
+                view.loadHTMLString(Self.document(html, compact: compact), baseURL: nil)
             }
         }
         return view
     }
     func updateUIView(_ view: WKWebView, context: Context) {}
-    static func document(_ html: String) -> String {
-        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'\"><style>:root{color-scheme:light dark}body{font:17px -apple-system;margin:16px;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style></head><body>" + html + "</body></html>"
+    static func document(_ html: String, compact: Bool = false) -> String {
+        let layout = compact ? "html,body{margin:0;width:100%;height:100%;overflow:hidden}img{display:block;width:100%;height:100%;object-fit:cover}" : "body{font:17px -apple-system;margin:16px;overflow-wrap:anywhere}img{max-width:100%;height:auto}"
+        return "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'\"><style>:root{color-scheme:light dark}" + layout + "</style></head><body>" + html + "</body></html>"
     }
     final class Coordinator: NSObject, WKNavigationDelegate {
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

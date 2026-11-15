@@ -179,6 +179,13 @@ struct PersonalActivity: Identifiable {
     let link: ActivityLink?
     let content: Content
 
+    var coverArtifact: RemoteArtifact? {
+        if case .artifact(let artifact, let task) = content {
+            return task.presentation?.cover ?? (artifact.kind == "image" ? artifact : nil)
+        }
+        return nil
+    }
+
     var symbol: String {
         switch content {
         case .input(let input): return input.images.isEmpty ? "tray" : "photo"
@@ -210,7 +217,8 @@ struct PersonalActivity: Identifiable {
                     for artifact in task.artifacts ?? [] {
                         foundArtifact = true
                         items.append(Self(id: link.id + "." + Data(artifact.id.utf8).base64EncodedString(), title: artifact.name,
-                                          summary: conversation.first.requestTitle, date: date(task), link: link, content: .artifact(artifact, task)))
+                                          summary: task.presentation?.description ?? conversation.first.requestTitle,
+                                          date: date(task), link: link, content: .artifact(artifact, task)))
                     }
                 }
                 let task = conversation.latest

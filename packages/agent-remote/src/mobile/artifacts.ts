@@ -62,7 +62,10 @@ export class MobileArtifacts {
   ): Promise<{ artifacts: MobileArtifact[]; notice?: string }> {
     const artifacts: MobileArtifact[] = [];
     const hashes = new Set<string>();
-    let bytes = 0;
+    const retained = [...this.stored.values()].filter(
+      (entry) => entry.taskId === taskId,
+    );
+    let bytes = retained.reduce((total, entry) => total + entry.data.length, 0);
     let notice: string | undefined;
     for (const source of sources.slice(0, 48)) {
       try {
@@ -81,7 +84,7 @@ export class MobileArtifacts {
           .digest('hex');
         if (hashes.has(hash)) continue;
         if (
-          artifacts.length >= 12 ||
+          retained.length + artifacts.length >= 12 ||
           bytes + data.length > MAX_TASK_BYTES ||
           this.totalBytes + data.length > MAX_TOTAL_BYTES
         ) {

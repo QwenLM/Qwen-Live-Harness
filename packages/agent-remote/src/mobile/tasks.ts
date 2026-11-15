@@ -16,6 +16,10 @@ import { artifactReferences } from '../adaptor/artifact-content.js';
 import { MobileArtifacts, type MobileArtifact } from './artifacts.js';
 import { MobileError } from './errors.js';
 import { MobileProjects, type MobileProject } from './projects.js';
+import type {
+  FeedPresentation,
+  FeedPresentationInput,
+} from './feed-presentation.js';
 export { MobileError } from './errors.js';
 export type { MobileProject } from './projects.js';
 import {
@@ -67,6 +71,8 @@ export interface MobileTask {
   artifacts: MobileArtifact[];
   artifactsPending?: boolean;
   artifactNotice?: string;
+  presentation?: { description: string; cover: MobileArtifact };
+  presentationPending?: boolean;
   permissions: MobilePermission[];
   events: Array<{ id: string; kind: string; text: string; at: number }>;
 }
@@ -198,6 +204,8 @@ export class MobileTasks {
   private artifactSourceBytes = 0;
   private imageBytes = 0;
   private readonly projectCatalog: MobileProjects;
+  private presentationQueue: Promise<void> = Promise.resolve();
+  private readonly presentationController = new AbortController();
   get projects(): readonly MobileProject[] {
     return this.projectCatalog.projects;
   }
@@ -205,7 +213,14 @@ export class MobileTasks {
   constructor(
     private readonly adaptors: ReadonlyMap<string, BackendAdaptor>,
     projects: readonly MobileProject[],
-    options: { permissionMode?: PermissionBrokerMode } = {},
+    private readonly options: {
+      permissionMode?: PermissionBrokerMode;
+      generatePresentation?: (
+        backend: string,
+        input: FeedPresentationInput,
+        signal: AbortSignal,
+      ) => Promise<FeedPresentation>;
+    } = {},
   ) {
     this.projectCatalog = new MobileProjects(projects);
     this.permissionMode = options.permissionMode ?? 'ask';
@@ -744,6 +759,8 @@ export class MobileTasks {
             if (!this.closed && this.tasks.get(task.view.id) === task) {
               task.view.artifacts = result.artifacts;
               task.view.artifactNotice ??= result.notice;
+              if (result.artifacts.length && this.options.generatePresentation)
+                this.queuePresentation(task);
             }
           })
           .catch(() => {
@@ -761,6 +778,51 @@ export class MobileTasks {
       task.artifactSources = [];
       task.artifactBytes = 0;
     }
+  }
+
+  private queuePresentation(task: OwnedTask): void {
+    task.view.presentationPending = true;
+    this.presentationQueue = this.presentationQueue.then(async () => {
+      try {
+        if (this.closed || this.tasks.get(task.view.id) !== task) return;
+        const presentation = await this.options.generatePresentation!(
+          task.view.backend,
+          {
+            request: task.view.request,
+            output: clean(task.view.output, 8000),
+            artifacts: task.view.artifacts.map(({ name, mimeType }) => ({
+              name,
+              mimeType,
+            })),
+          },
+          this.presentationController.signal,
+        );
+        if (this.closed || this.tasks.get(task.view.id) !== task) return;
+        const result = await this.artifacts.collect(task.view.id, '', [
+          {
+            type: 'inline',
+            name: 'cover.svg',
+            mimeType: 'image/svg+xml',
+            data: Buffer.from(presentation.coverSvg).toString('base64'),
+          },
+        ]);
+        if (
+          !this.closed &&
+          this.tasks.get(task.view.id) === task &&
+          result.artifacts[0]
+        ) {
+          task.view.presentation = {
+            description: presentation.description,
+            cover: result.artifacts[0],
+          };
+        }
+      } catch {
+        // An optional cover never changes the original result or its finish time.
+      } finally {
+        task.view.presentationPending = false;
+      }
+    });
+    this.track(this.presentationQueue);
   }
 
   async permission(
@@ -835,6 +897,7 @@ export class MobileTasks {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.presentationController.abort();
     for (const task of this.tasks.values())
       this.finish(
         task,

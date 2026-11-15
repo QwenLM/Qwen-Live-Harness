@@ -128,6 +128,21 @@ final class AssistantTests: XCTestCase {
         if case .input(let input) = item.content { XCTAssertEqual(input, local) }
         else { XCTFail("Local capture must not fabricate a task") }
     }
+
+    func testFeedUsesTheOwnedPresentationWithoutAddingItsCoverAsAnotherDeliverable() throws {
+        let artifact: [String: Any] = ["id": "report", "name": "report.md", "mimeType": "text/markdown", "kind": "markdown", "size": 10]
+        let cover: [String: Any] = ["id": "cover", "name": "cover.svg", "mimeType": "image/svg+xml", "kind": "image", "size": 50]
+        var item = task("turn", artifacts: [artifact])
+        item["presentation"] = ["description": "A report about the completed project.", "cover": cover]
+        let items = PersonalActivity.feed(state: try state([item]), computerID: UUID(), contextID: UUID(), inputs: [])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.title, "report.md")
+        XCTAssertEqual(items.first?.summary, "A report about the completed project.")
+        XCTAssertEqual(items.first?.coverArtifact?.id, "cover")
+        XCTAssertEqual(items.first?.link?.taskID, "turn")
+        let old = PersonalActivity.feed(state: try state([task("old", artifacts: [artifact])]), computerID: UUID(), contextID: UUID(), inputs: [])
+        XCTAssertNil(old.first?.coverArtifact)
+    }
 }
 
 @MainActor

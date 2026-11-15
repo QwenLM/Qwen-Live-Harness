@@ -145,6 +145,28 @@ new AgentSideConnection(
         .map((block) => block.text)
         .join(' ');
 
+      if (
+        text.startsWith(
+          'Create an activity-feed cover for an already completed task.',
+        )
+      ) {
+        await connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: JSON.stringify({
+                description: 'A project report with a page preview and image.',
+                coverSvg:
+                  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><rect width="640" height="400" fill="#163e35"/><circle cx="510" cy="90" r="140" fill="#e4c780"/><rect x="60" y="60" width="300" height="280" rx="18" fill="#faf9f4"/><text x="90" y="140" font-size="32" fill="#163e35">Project report</text><path d="M90 190h220M90 225h180M90 260h200" stroke="#8cbba4" stroke-width="12"/></svg>',
+              }),
+            },
+          },
+        });
+        return { stopReason: 'end_turn' };
+      }
+
       if (text.includes('cwd:')) {
         await connection.sessionUpdate({
           sessionId,

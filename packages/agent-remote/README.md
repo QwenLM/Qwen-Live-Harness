@@ -114,6 +114,8 @@ To revoke phones, stop the gateway and start once with `--reset-pairing`. This f
 
 ## iOS app
 
+Feed generates a task-specific `cover.svg` and short description after successful artifact collection, using one extra request through the selected Agent account. A separate temporary session has a 60-second deadline and leaves the original conversation available for follow-ups. Generated covers are immutable authenticated previews, retained in gateway memory until restart. Generation failure falls back to the original artifact. The iOS interface uses system backgrounds with an adaptive dark-green accent. Upgrade both gateway and app.
+
 The installed app continues to work with the independent service. Building the new app requires Xcode and XcodeGen:
 
 ```sh

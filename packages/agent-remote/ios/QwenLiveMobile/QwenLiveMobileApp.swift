@@ -10,10 +10,14 @@ struct QwenLiveMobileApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var assistant = AssistantModel()
     @Environment(\.scenePhase) private var scenePhase
+    init() {
+        UIWindow.appearance().tintColor = UIColor(named: "AccentColor")
+    }
     var body: some Scene {
         WindowGroup {
             MainView().environmentObject(model).environmentObject(assistant)
-                .tint(Color(red: 0.12, green: 0.36, blue: 0.31))
+                .tint(PersonalStyle.accent)
+                .accentColor(PersonalStyle.accent)
                 .preferredColorScheme(assistant.appearance == .system ? nil : assistant.appearance == .dark ? .dark : .light)
                 .task(id: PollIdentity(contextID: model.contextID, isActive: scenePhase == .active)) {
                     if scenePhase == .active { await model.poll() }
@@ -63,11 +67,11 @@ struct StatusBadge: View {
     let status: String
     private var color: Color {
         switch status {
-        case "completed": return .green
+        case "completed": return PersonalStyle.accent
         case "waiting": return .orange
         case "failed", "interrupted": return .red
         case "cancelled": return .secondary
-        default: return .accentColor
+        default: return PersonalStyle.accent
         }
     }
     var body: some View {

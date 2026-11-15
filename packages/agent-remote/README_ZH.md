@@ -114,6 +114,8 @@ agent-remote --data-dir "/custom/private/directory" --project "/path/project"
 
 ## iOS App
 
+动态会在任务成功收集产物后，通过所选 Agent 账号额外请求一次，生成与任务相关的 `cover.svg` 和简短介绍。生成使用独立临时会话，限时 60 秒，原会话可以继续追问。封面是鉴权读取的不可变快照，仅在网关内存中保留至服务重启；生成失败时显示原产物。iOS 界面使用系统背景色与自适应墨绿色主题色，需要同时更新网关和 App。
+
 已经装好的 App 可以继续连接独立服务。构建新版需要 Xcode 和 XcodeGen：
 
 ```sh

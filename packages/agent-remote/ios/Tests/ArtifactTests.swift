@@ -1,8 +1,23 @@
 import XCTest
 import WebKit
+import SwiftUI
 @testable import QwenLiveMobile
 
 final class ArtifactTests: XCTestCase {
+    @MainActor func testThemeUsesSystemBackgroundsAndAnAdaptiveGreenAccent() throws {
+        let accent = try XCTUnwrap(UIColor(named: "AccentColor"))
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            let traits = UITraitCollection(userInterfaceStyle: style)
+            XCTAssertEqual(UIColor(PersonalStyle.background).resolvedColor(with: traits), UIColor.systemGroupedBackground.resolvedColor(with: traits))
+            XCTAssertEqual(UIColor(PersonalStyle.card).resolvedColor(with: traits), UIColor.secondarySystemGroupedBackground.resolvedColor(with: traits))
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            XCTAssertTrue(accent.resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+            XCTAssertGreaterThan(green, red)
+            XCTAssertGreaterThan(green, blue)
+        }
+        XCTAssertNotEqual(accent.resolvedColor(with: .init(userInterfaceStyle: .light)), accent.resolvedColor(with: .init(userInterfaceStyle: .dark)))
+    }
+
     @MainActor func testOfflinePreviewRulesCompileInWebKit() async {
         let compiled = expectation(description: "Offline content rules compile")
         WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "artifact-preview-rules-test", encodedContentRuleList: OfflineHTMLPreview.contentRules) { list, error in

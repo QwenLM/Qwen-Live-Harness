@@ -403,7 +403,8 @@ final class AppModel: ObservableObject {
         guard contextID == expectedContext, let api, state?.runId == runID,
               UUID(uuidString: taskID) != nil, UUID(uuidString: artifact.id) != nil,
               (1...8 * 1024 * 1024).contains(artifact.size),
-              state?.tasks.first(where: { $0.id == taskID })?.artifacts?.contains(artifact) == true else {
+              let task = state?.tasks.first(where: { $0.id == taskID }),
+              task.artifacts?.contains(artifact) == true || task.presentation?.cover == artifact else {
             throw MobileFailure.remote(409, "artifact_unavailable")
         }
         let content: ArtifactContent = try await api.request("v1/tasks/\(taskID)/artifacts/\(artifact.id)", body: nil, runId: runID)

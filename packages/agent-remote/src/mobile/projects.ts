@@ -60,7 +60,10 @@ export class MobileProjects {
 
   get projects(): MobileProject[] {
     return [
-      ...this.roots,
+      ...this.roots.map((root) => ({
+        ...root,
+        path: this.grants.get(root.id)?.path ?? root.path,
+      })),
       ...[...this.selected.values()].map((entry) => entry.project),
     ].map((project) => ({ ...project }));
   }
@@ -184,7 +187,7 @@ export class MobileProjects {
         grant.ino === folder.ino
       );
     });
-    if (configured) return { ...configured };
+    if (configured) return { ...configured, path: folder.path };
     const existing = [...this.selected.values()].find(
       (entry) =>
         entry.identity.path === folder.path &&

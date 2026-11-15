@@ -7,6 +7,7 @@ import { AcpAdaptor } from '../dist/adaptor/acp-adaptor.js';
 import { MobileTasks } from '../dist/mobile/tasks.js';
 import { MobileServer } from '../dist/mobile/server.js';
 import { ensureMobileTLS } from '../dist/mobile/tls.js';
+import { generateFeedPresentation } from '../dist/mobile/feed-presentation.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const directory = mkdtempSync(join(tmpdir(), 'agent-remote-ios-fixtures-'));
@@ -30,7 +31,21 @@ async function computer(id, name, permissionMode) {
       ]),
     ),
     [{ id: 'ui-fixture', name: 'UI workspace ' + id, path: workspace }],
-    { permissionMode },
+    {
+      permissionMode,
+      generatePresentation: (backend, input, signal) =>
+        generateFeedPresentation(
+          () =>
+            new AcpAdaptor({
+              name: backend,
+              command: process.execPath,
+              args: [join(root, 'test-fixtures/fake-acp-agent.mjs')],
+              env: { FAKE_ACP_MODES: 'default' },
+            }),
+          input,
+          signal,
+        ),
+    },
   );
   const server = new MobileServer(tasks, tls, {
     pairingLifetimeMs: 60 * 60_000,
@@ -64,6 +79,11 @@ try {
   writeFileSync(join(fixtures, 'pairing.json'), JSON.stringify(legacy), {
     mode: 0o600,
   });
+  writeFileSync(
+    join(fixtures, 'pairing-link.json'),
+    JSON.stringify(await computer('link', 'Mac · Approval fixture', 'ask')),
+    { mode: 0o600 },
+  );
   writeFileSync(join(fixtures, 'computers.json'), JSON.stringify(computers), {
     mode: 0o600,
   });

@@ -260,3 +260,4 @@
 "previewTruncated" = "仅展示前 512,000 个字符。";
 "artifact_unavailable" = "部分引用文件无法预览。请将产物保存在共享项目目录中；文件缺失或链接指向目录外时无法读取。";
 "artifact_limit" = "部分产物超出预览限制：单文件 8 MB，每轮最多 12 个文件、共 16 MB，服务总计保留 64 MB。";
+"preparingFeedCover" = "正在生成封面…";

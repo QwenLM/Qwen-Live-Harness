@@ -16,6 +16,7 @@ import { AcpAdaptor } from '../adaptor/acp-adaptor.js';
 import { MobileTasks } from './tasks.js';
 import { MobileServer } from './server.js';
 import { ensureMobileTLS } from './tls.js';
+import { generateFeedPresentation } from './feed-presentation.js';
 
 let directory: string, key: Buffer, cert: Buffer;
 const servers: MobileServer[] = [];
@@ -31,7 +32,10 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
+async function setup(
+  permissionMode: 'ask' | 'allow-all' = 'ask',
+  covers = false,
+) {
   const fixture = fileURLToPath(
     new URL('../../test-fixtures/fake-acp-agent.mjs', import.meta.url),
   );
@@ -49,7 +53,25 @@ async function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
       ]),
     ),
     [{ id: 'fixture', name: 'Fixture project', path: directory }],
-    { permissionMode },
+    {
+      permissionMode,
+      ...(covers
+        ? {
+            generatePresentation: (backend, input, signal) =>
+              generateFeedPresentation(
+                () =>
+                  new AcpAdaptor({
+                    name: backend,
+                    command: process.execPath,
+                    args: [fixture],
+                    env: { FAKE_ACP_MODES: 'default' },
+                  }),
+                input,
+                signal,
+              ),
+          }
+        : {}),
+    },
   );
   const server = new MobileServer(tasks, { key, cert });
   servers.push(server);
@@ -104,7 +126,7 @@ async function setup(permissionMode: 'ask' | 'allow-all' = 'ask') {
 it.each(['qwen', 'codex'])(
   'delivers %s artifacts through authenticated, run-bound read-only endpoints',
   async (backend) => {
-    const { tasks, call, headers } = await setup('allow-all');
+    const { tasks, call, headers } = await setup('allow-all', true);
     const id = randomUUID();
     expect(
       (
@@ -119,6 +141,36 @@ it.each(['qwen', 'codex'])(
       expect(tasks.snapshot().tasks[0]!.artifacts).toHaveLength(3),
     );
     const task = tasks.snapshot().tasks[0]!;
+    await vi.waitFor(() =>
+      expect(tasks.snapshot().tasks[0]!.presentation).toBeDefined(),
+    );
+    const presentation = tasks.snapshot().tasks[0]!.presentation!;
+    expect(presentation.description).toContain('project report');
+    const coverPath = `/v1/tasks/${id}/artifacts/${presentation.cover.id}`;
+    expect((await call(coverPath)).status).toBe(401);
+    expect(
+      (
+        await call(coverPath, undefined, {
+          ...headers,
+          'x-live-run-id': 'stale',
+        })
+      ).status,
+    ).toBe(409);
+    expect((await call(coverPath, undefined, headers)).value).toMatchObject({
+      id: presentation.cover.id,
+      taskId: id,
+      runId: tasks.runId,
+      mimeType: 'image/svg+xml',
+    });
+    expect(
+      (
+        await call(
+          `/v1/tasks/${randomUUID()}/artifacts/${presentation.cover.id}`,
+          undefined,
+          headers,
+        )
+      ).status,
+    ).toBe(404);
     expect(task.artifacts.map((artifact) => artifact.kind)).toEqual([
       'image',
       'markdown',

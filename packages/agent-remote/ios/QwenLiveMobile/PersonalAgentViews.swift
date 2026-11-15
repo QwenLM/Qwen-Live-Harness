@@ -1,12 +1,9 @@
 import SwiftUI
 
 enum PersonalStyle {
-    static let background = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.08, green: 0.11, blue: 0.09, alpha: 1)
-        : UIColor(red: 0.98, green: 0.985, blue: 0.97, alpha: 1) })
-    static let card = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.14, green: 0.18, blue: 0.15, alpha: 1)
-        : UIColor(red: 0.94, green: 0.955, blue: 0.925, alpha: 1) })
+    static let accent = Color("AccentColor")
+    static let background = Color(uiColor: .systemGroupedBackground)
+    static let card = Color(uiColor: .secondarySystemGroupedBackground)
 }
 
 struct PersonalAgentView: View {

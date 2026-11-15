@@ -20,6 +20,45 @@ async function workspace() {
 }
 
 describe('read-only artifact snapshots', () => {
+  it('keeps the per-turn limits when a generated cover is collected after the original artifacts', async () => {
+    const store = new MobileArtifacts();
+    const source = {
+      type: 'inline' as const,
+      name: 'cover.svg',
+      mimeType: 'image/svg+xml',
+      data: Buffer.from('<svg></svg>').toString('base64'),
+    };
+    const first = await store.collect(
+      'count',
+      '',
+      Array.from({ length: 12 }, (_, index) => ({
+        type: 'inline',
+        mimeType: 'text/markdown',
+        data: Buffer.from(String(index)).toString('base64'),
+      })),
+    );
+    expect(first.artifacts).toHaveLength(12);
+    expect(await store.collect('count', '', [source])).toEqual({
+      artifacts: [],
+      notice: 'artifact_limit',
+    });
+    const full = await store.collect(
+      'bytes',
+      '',
+      [0, 1].map((value) => ({
+        type: 'inline',
+        mimeType: 'image/png',
+        data: Buffer.alloc(MAX_ARTIFACT_BYTES, value).toString('base64'),
+      })),
+    );
+    expect(full.artifacts).toHaveLength(2);
+    expect(await store.collect('bytes', '', [source])).toEqual({
+      artifacts: [],
+      notice: 'artifact_limit',
+    });
+    expect(store.content('count', first.artifacts[0]!.id)).toBeDefined();
+  });
+
   it('previews project images, Markdown and HTML without exposing file paths or live reads', async () => {
     const project = await workspace();
     await mkdir(join(project, 'art'));

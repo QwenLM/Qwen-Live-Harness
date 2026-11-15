@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class MobileFlowTests: XCTestCase {
     func testArtifactPreviewsAndFinishedDuration() throws {
@@ -50,7 +51,11 @@ final class MobileFlowTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.tabBars.buttons["Feed"].tap()
         let report = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@", "report.md")).firstMatch
-        XCTAssertTrue(report.waitForExistence(timeout: 10)); report.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 10))
+        let describedReport = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@ AND label CONTAINS %@", "report.md", "A project report with a page preview and image.")).firstMatch
+        XCTAssertTrue(describedReport.waitForExistence(timeout: 20))
+        capture(app, name: "Feed with generated task covers and descriptions")
+        report.tap()
         XCTAssertTrue(app.staticTexts["Preview report"].waitForExistence(timeout: 10))
         capture(app, name: "Feed opens the owned real artifact")
     }
@@ -113,6 +118,8 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["useWorkingFolder"].waitForExistence(timeout: 10))
         app.buttons["useWorkingFolder"].tap()
         XCTAssertTrue(app.segmentedControls.buttons[agent].waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: app.segmentedControls.buttons[agent])
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         app.segmentedControls.buttons[agent].tap()
         let input = app.textViews["taskInput"]; input.tap(); input.typeText(text)
         app.buttons["sendTask"].tap()
@@ -184,7 +191,7 @@ final class MobileFlowTests: XCTestCase {
     }
 
     func testPairingLinkFromAssistantOpensExistingWorkbench() throws {
-        guard let fixture = Bundle(for: Self.self).url(forResource: "pairing", withExtension: "json"),
+        guard let fixture = Bundle(for: Self.self).url(forResource: "pairing-link", withExtension: "json"),
               let data = try? Data(contentsOf: fixture),
               let values = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let link = values["link"], let url = URL(string: link) else {
@@ -233,9 +240,55 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Keep this idea locally until the assistant is connected."].waitForExistence(timeout: 5))
     }
 
+    func testNativeThemeAcrossAppearanceChangesAndSheets() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"]
+        app.launch()
+        XCTAssertTrue(app.buttons["assistantSend"].waitForExistence(timeout: 10))
+        for appearance in ["Light", "Dark", "Light"] {
+            app.tabBars.buttons["Me"].tap()
+            app.buttons["appearancePicker"].tap()
+            app.buttons[appearance].tap()
+            capture(app, name: "System settings background and green tint " + appearance)
+            app.tabBars.buttons["Assistant"].tap()
+            assertGreenAccent(app.buttons["assistantLive"])
+            capture(app, name: "Native assistant background and controls " + appearance)
+            app.buttons["assistantLive"].tap()
+            XCTAssertTrue(app.alerts["Live is not connected yet"].waitForExistence(timeout: 5))
+            capture(app, name: "Alert tint " + appearance)
+            app.alerts.buttons["Done"].tap()
+            assertGreenAccent(app.buttons["assistantLive"])
+            app.tabBars.buttons["Workbench"].tap()
+            capture(app, name: "Workbench tint after alert dismissal " + appearance)
+        }
+    }
+
     private func capture(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    private func assertGreenAccent(_ element: XCUIElement) {
+        guard let image = element.screenshot().image.cgImage else { XCTFail("Missing control screenshot"); return }
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let sampled = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(sampled)
+        var greenPixels = 0, bluePixels = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let red = Double(pixels[offset]), green = Double(pixels[offset + 1]), blue = Double(pixels[offset + 2])
+            if green > red * 1.15, green > blue * 1.05, green > 30 { greenPixels += 1 }
+            if blue > green * 1.2, blue > red * 1.15, blue > 30 { bluePixels += 1 }
+        }
+        XCTAssertGreaterThan(greenPixels, 10, "Rendered controls must use the green accent")
+        XCTAssertEqual(bluePixels, 0, "Default blue must not return after appearance or alert transitions")
     }
 }
