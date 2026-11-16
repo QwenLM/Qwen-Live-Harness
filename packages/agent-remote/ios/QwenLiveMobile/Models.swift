@@ -96,6 +96,7 @@ struct RemoteState: Decodable {
     let tasks: [RemoteTask]
     let capabilities: RemoteCapabilities?
     let directoryRoots: [RemoteProject]?
+    let feed: PersonalFeedState?
 
     var conversations: [RemoteConversation] {
         Dictionary(grouping: tasks, by: { $0.conversationId ?? $0.id }).map { id, turns in
@@ -110,7 +111,7 @@ struct RemoteState: Decodable {
     }
 }
 
-struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool?; let imageAttachments: Bool?; let directorySelection: Bool? }
+struct RemoteCapabilities: Decodable { let conversationTurns: Bool?; let artifactPreviews: Bool?; let imageAttachments: Bool?; let directorySelection: Bool?; let personalFeed: Bool? }
 
 struct RemoteConversation: Identifiable {
     let id: String

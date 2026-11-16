@@ -77,6 +77,37 @@ final class ComputerTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return ImageAttachmentStore(directory: directory)
     }
+
+    func testInsightMutationsAndDraftsKeepComputerAndRunIdentityAndNeverSendAutomatically() async throws {
+        let a = computer("a"), b = computer("b"), storage = store([a, b])
+        var value = try JSONSerialization.jsonObject(with: state("a")) as! [String: Any]
+        let card: [String: Any] = ["id": "owned-card", "kind": "next_step", "topic": "Memory", "title": "Follow changing decisions", "summary": "A proposed experiment", "why": "You asked about corrections", "sections": [["label": "Try", "text": "Record state"]], "evidence": [["contextId": "source", "source": "codex", "title": "Earlier question", "updatedAt": 1, "role": "user", "quote": "Keep the correction", "incomplete": false]], "followUp": "How can we test this?", "createdAt": 1]
+        value["capabilities"] = ["personalFeed": true]
+        value["feed"] = ["preferences": ["enabled": true, "sources": ["codex"], "backend": "qwen", "language": "en"], "status": "idle", "cards": [card], "sources": []]
+        let response = try json(value)
+        let apiA = StubAPI { path, _, _ in path == "v1/state" ? response : try self.json(["runId": "same-run"]) }
+        let apiB = StubAPI { _, _, _ in try self.state("b") }
+        let model = AppModel(storage: storage, defaults: defaults(), makeAPI: { $0.pin == a.connection.pin ? apiA : apiB })
+        await model.refresh()
+        let originalContext = model.contextID
+        let insight = try XCTUnwrap(model.state?.feed?.cards.first)
+        model.draft = "Keep existing draft"
+        XCTAssertFalse(model.prepareInsightDraft(insight, expectedContext: UUID(), runID: "same-run"))
+        XCTAssertFalse(model.prepareInsightDraft(insight, expectedContext: originalContext, runID: "old-run"))
+        XCTAssertTrue(model.prepareInsightDraft(insight, expectedContext: originalContext, runID: "same-run"))
+        XCTAssertTrue(model.draft.hasPrefix("Keep existing draft"))
+        XCTAssertTrue(model.draft.contains("Keep the correction"))
+        XCTAssertNil(model.pending)
+        XCTAssertFalse(apiA.calls.contains { $0.path == "v1/tasks" })
+        do { try await model.changeFeed("clear", expectedContext: originalContext, runID: "old-run"); XCTFail("Stale run must fail") } catch {}
+        XCTAssertFalse(apiA.calls.contains { $0.path == "v1/feed/clear" })
+        try await model.changeFeed("dismiss", body: ["id": insight.id], expectedContext: originalContext, runID: "same-run")
+        XCTAssertEqual(apiA.calls.first { $0.path == "v1/feed/dismiss" }?.runID, "same-run")
+        model.selectComputer(b.id); await model.refresh()
+        XCTAssertFalse(model.prepareInsightDraft(insight, expectedContext: originalContext, runID: "same-run"))
+        XCTAssertFalse(model.prepareInsightDraft(insight, expectedContext: model.contextID, runID: "same-run"))
+        XCTAssertNotEqual(insight.favoriteID(computerID: a.id), insight.favoriteID(computerID: b.id))
+    }
     private func image(_ store: ImageAttachmentStore) throws -> ImageAttachment {
         try store.importImage(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")!)
     }

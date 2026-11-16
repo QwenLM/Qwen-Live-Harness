@@ -17,6 +17,7 @@ import { MobileTasks } from './tasks.js';
 import { MobileServer } from './server.js';
 import { ensureMobileTLS } from './tls.js';
 import { generateFeedPresentation } from './feed-presentation.js';
+import { PersonalFeed } from './personal-feed.js';
 
 let directory: string, key: Buffer, cert: Buffer;
 const servers: MobileServer[] = [];
@@ -35,6 +36,7 @@ afterAll(async () => {
 async function setup(
   permissionMode: 'ask' | 'allow-all' = 'ask',
   covers = false,
+  personalFeed = false,
 ) {
   const fixture = fileURLToPath(
     new URL('../../test-fixtures/fake-acp-agent.mjs', import.meta.url),
@@ -73,7 +75,19 @@ async function setup(
         : {}),
     },
   );
-  const server = new MobileServer(tasks, { key, cert });
+  const feed = personalFeed
+    ? new PersonalFeed({
+        directory: join(directory, randomUUID()),
+        roots: {
+          codex: join(directory, 'unused-codex'),
+          qwen: join(directory, 'unused-qwen'),
+        },
+        backends: ['qwen', 'codex'],
+        workbench: () => tasks.snapshot(),
+        generate: async () => [],
+      })
+    : undefined;
+  const server = new MobileServer(tasks, { key, cert }, { feed });
   servers.push(server);
   const port = await server.listen(0, '127.0.0.1');
   const call = (
@@ -120,8 +134,52 @@ async function setup(
     authorization: `Bearer ${paired.value['token']}`,
     'x-live-run-id': tasks.runId,
   };
-  return { tasks, server, call, headers };
+  return { tasks, server, call, headers, feed };
 }
+
+it('protects personal context configuration, refresh, dismissal and deletion with pairing and run identity', async () => {
+  const { call, headers, feed } = await setup('allow-all', false, true);
+  const settings = {
+    enabled: true,
+    sources: ['workbench'],
+    backend: 'qwen',
+    language: 'en',
+  };
+  expect((await call('/v1/state')).status).toBe(401);
+  for (const action of ['preferences', 'refresh', 'dismiss', 'clear']) {
+    expect((await call('/v1/feed/' + action, settings)).status).toBe(401);
+    expect(
+      (
+        await call('/v1/feed/' + action, settings, {
+          ...headers,
+          'x-live-run-id': 'old',
+        })
+      ).status,
+    ).toBe(409);
+  }
+  expect(feed!.snapshot().preferences.enabled).toBe(false);
+  expect(
+    (
+      await call(
+        '/v1/feed/preferences',
+        { ...settings, sources: ['arbitrary-file'] },
+        headers,
+      )
+    ).status,
+  ).toBe(400);
+  expect((await call('/v1/feed/preferences', settings, headers)).status).toBe(
+    202,
+  );
+  expect(feed!.snapshot().preferences.enabled).toBe(true);
+  const state = (await call('/v1/state', undefined, headers)).value;
+  expect(state['capabilities']).toHaveProperty('personalFeed', true);
+  expect(state['feed']).not.toHaveProperty('contexts');
+  expect(
+    (await call('/v1/feed/dismiss', { id: 'missing-card' }, headers)).status,
+  ).toBe(404);
+  expect((await call('/v1/feed/clear', {}, headers)).status).toBe(202);
+  expect(feed!.snapshot().preferences.sources).toEqual([]);
+});
 
 it.each(['qwen', 'codex'])(
   'delivers %s artifacts through authenticated, run-bound read-only endpoints',

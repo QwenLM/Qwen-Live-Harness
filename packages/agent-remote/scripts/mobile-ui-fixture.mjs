@@ -8,6 +8,8 @@ import { MobileTasks } from '../dist/mobile/tasks.js';
 import { MobileServer } from '../dist/mobile/server.js';
 import { ensureMobileTLS } from '../dist/mobile/tls.js';
 import { generateFeedPresentation } from '../dist/mobile/feed-presentation.js';
+import { generateInsights } from '../dist/mobile/feed-insights.js';
+import { PersonalFeed } from '../dist/mobile/personal-feed.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const directory = mkdtempSync(join(tmpdir(), 'agent-remote-ios-fixtures-'));
@@ -47,11 +49,55 @@ async function computer(id, name, permissionMode) {
         ),
     },
   );
+  const codexRoot = join(workspace, 'fixture-codex');
+  mkdirSync(codexRoot);
+  for (const [index, message] of [
+    'Please keep corrections to decisions across conversations.',
+    'How can memory track whether a decision was changed or completed?',
+  ].entries()) {
+    writeFileSync(
+      join(codexRoot, `session-${index}.jsonl`),
+      [
+        { type: 'event_msg', payload: { type: 'user_message', message } },
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'agent_message',
+            message:
+              'A possible experiment is to record decision state and test corrections.',
+          },
+        },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n'),
+    );
+  }
+  const feed = new PersonalFeed({
+    directory: workspace,
+    roots: { codex: codexRoot, qwen: join(workspace, 'fixture-qwen') },
+    backends: ['qwen', 'codex'],
+    workbench: () => tasks.snapshot(),
+    generate: (backend, input, signal) =>
+      generateInsights(
+        () =>
+          new AcpAdaptor({
+            name: backend,
+            command: process.execPath,
+            args: [join(root, 'test-fixtures/fake-acp-agent.mjs')],
+            env: { FAKE_ACP_MODES: 'default' },
+            requireAskingMode: true,
+          }),
+        input,
+        signal,
+      ),
+  });
   const server = new MobileServer(tasks, tls, {
     pairingLifetimeMs: 60 * 60_000,
+    feed,
   });
   servers.push(server);
   const port = await server.listen(0, '127.0.0.1');
+  feed.start();
   const pairing = {
     version: 1,
     url: `https://127.0.0.1:${port}`,
@@ -91,6 +137,20 @@ try {
     join(fixtures, 'artifacts.json'),
     JSON.stringify(
       await computer('artifacts', 'Artifact Preview Mac', 'allow-all'),
+    ),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    join(fixtures, 'insights.json'),
+    JSON.stringify(
+      await computer('insights', 'Personal Insights Mac', 'allow-all'),
+    ),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    join(fixtures, 'insights-zh.json'),
+    JSON.stringify(
+      await computer('insights-zh', 'Personal Insights Mac ZH', 'allow-all'),
     ),
     { mode: 0o600 },
   );

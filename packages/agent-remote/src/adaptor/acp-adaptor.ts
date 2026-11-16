@@ -131,6 +131,8 @@ export interface AcpAdaptorOptions {
    * running unapproved.
    */
   sessionMode?: string;
+  /** Background interpretation must fail closed if an asking mode cannot be selected. */
+  requireAskingMode?: boolean;
   logger?: LiveLogger;
   /** Test seam: build the connection instead of spawning. */
   connect?: (
@@ -273,7 +275,11 @@ export class AcpAdaptor implements BackendAdaptor {
         (mode) =>
           mode['id'] === 'read-only' && mode['name'] === 'Ask for approval',
       );
-    const selected = configuredMode ?? askingMode;
+    const selected = this.options.requireAskingMode
+      ? askingMode
+      : (configuredMode ?? askingMode);
+    if (this.options.requireAskingMode && !selected)
+      throw new Error('Background analysis requires an asking mode');
     if (selected) {
       try {
         await conn.setSessionMode({ sessionId, modeId: selected['id'] });
@@ -289,6 +295,10 @@ export class AcpAdaptor implements BackendAdaptor {
           );
         }
       } catch {
+        if (this.options.requireAskingMode)
+          throw new Error(
+            'Background analysis could not select an asking mode',
+          );
         this.logger.warn(
           `[acp ${this.name}] could not select approval mode ` +
             `${JSON.stringify(selected['id'])}; ` +

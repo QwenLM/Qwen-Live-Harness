@@ -9,7 +9,7 @@ import {
   lstatSync,
   unlinkSync,
 } from 'node:fs';
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { basename, join } from 'node:path';
 import { isIP } from 'node:net';
 import { detectAgents } from '../agent-detector.js';
@@ -24,7 +24,8 @@ import {
   normalizePublicHost,
   pairingPage,
 } from '../pairing.js';
-import { generateFeedPresentation } from './feed-presentation.js';
+import { generateInsights } from './feed-insights.js';
+import { PersonalFeed } from './personal-feed.js';
 
 export interface GatewayOptions {
   projects: string[];
@@ -115,26 +116,44 @@ export async function startGateway(
       })),
       {
         permissionMode: options.ask ? 'ask' : 'allow-all',
-        generatePresentation: (backend, input, signal) => {
-          const agent = agents.find((candidate) => candidate.name === backend)!;
-          return generateFeedPresentation(
-            () =>
-              new AcpAdaptor({
-                name: agent.name,
-                command: agent.command,
-                args: agent.args,
-                env: agent.env,
-              }),
-            input,
-            signal,
-          );
-        },
       },
     );
+    const feed = new PersonalFeed({
+      directory,
+      roots: {
+        codex: join(
+          process.env['CODEX_HOME'] ?? join(homedir(), '.codex'),
+          'sessions',
+        ),
+        qwen: join(
+          process.env['QWEN_HOME'] ?? join(homedir(), '.qwen'),
+          'projects',
+        ),
+      },
+      backends: agents.map((agent) => agent.name),
+      workbench: () => tasks.snapshot(),
+      generate: (backend, input, signal) => {
+        const agent = agents.find((candidate) => candidate.name === backend);
+        if (!agent) throw new Error('Insight backend unavailable');
+        return generateInsights(
+          () =>
+            new AcpAdaptor({
+              name: agent.name,
+              command: agent.command,
+              args: agent.args,
+              env: agent.env,
+              requireAskingMode: true,
+            }),
+          input,
+          signal,
+        );
+      },
+    });
     const server = new MobileServer(
       tasks,
       { key, cert },
       {
+        feed,
         ...(existsSync(tokenPath)
           ? { token: readFileSync(tokenPath, 'utf8').trim() }
           : {}),
@@ -145,6 +164,7 @@ export async function startGateway(
     if (!existsSync(tokenPath))
       writeFileSync(tokenPath, server.deviceToken, { mode: 0o600 });
     const port = await server.listen(options.port);
+    feed.start();
     const runtimePath = join(directory, 'runtime.json');
     writeFileSync(
       runtimePath,

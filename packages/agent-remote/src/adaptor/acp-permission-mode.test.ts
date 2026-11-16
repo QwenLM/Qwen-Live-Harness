@@ -14,6 +14,7 @@ interface ModeRigOptions {
   modes?: Array<{ id: string; name: string }>;
   currentModeId?: string;
   sessionMode?: string;
+  requireAskingMode?: boolean;
 }
 
 function createModeRig(options: ModeRigOptions = {}) {
@@ -53,6 +54,7 @@ function createModeRig(options: ModeRigOptions = {}) {
     defaultCwd: '/fixture',
     logger,
     ...(options.sessionMode ? { sessionMode: options.sessionMode } : {}),
+    requireAskingMode: options.requireAskingMode,
     connect: async (value) => {
       client = value;
       return connection;
@@ -69,6 +71,23 @@ function createModeRig(options: ModeRigOptions = {}) {
 }
 
 describe('ACP permission mode compatibility', () => {
+  it('fails background interpretation closed when asking mode is unavailable or rejected', async () => {
+    const missing = createModeRig({ modes: [], requireAskingMode: true });
+    const rejected = createModeRig({ requireAskingMode: true });
+    rejected.setSessionMode.mockRejectedValue(new Error('not supported'));
+    try {
+      await expect(missing.adaptor.createSession()).rejects.toThrow(
+        'requires an asking mode',
+      );
+      await expect(rejected.adaptor.createSession()).rejects.toThrow(
+        'could not select an asking mode',
+      );
+    } finally {
+      await missing.adaptor.close();
+      await rejected.adaptor.close();
+    }
+  });
+
   it('selects the advertised Codex asking mode instead of its automated default', async () => {
     const rig = createModeRig();
     try {

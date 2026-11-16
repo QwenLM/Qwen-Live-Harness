@@ -72,6 +72,9 @@ final class MobileFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["liveStatus"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'recent-'")).firstMatch.exists)
         app.tabBars.buttons["Feed"].tap()
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@", "report.md")).firstMatch.exists)
+        app.tabBars.buttons["Me"].tap()
+        app.buttons["activityArchive"].tap()
         let report = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@", "report.md")).firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10))
         let describedReport = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'feed-' AND label CONTAINS %@ AND label CONTAINS %@", "report.md", "A project report with a page preview and image.")).firstMatch

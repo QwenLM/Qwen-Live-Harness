@@ -226,6 +226,28 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func changeFeed(_ action: String, body: [String: Any] = [:], expectedContext: UUID, runID: String) async throws {
+        struct Receipt: Decodable { let runId: String }
+        guard ["preferences", "refresh", "dismiss", "clear"].contains(action),
+              contextID == expectedContext, state?.runId == runID, state?.capabilities?.personalFeed == true,
+              let api else { throw MobileFailure.remote(409, "feed_unavailable") }
+        let receipt: Receipt = try await api.request("v1/feed/" + action, body: body, runId: runID)
+        try Task.checkCancellation()
+        guard contextID == expectedContext, state?.runId == runID else { throw CancellationError() }
+        guard receipt.runId == runID else { throw MobileFailure.invalidResponse }
+        await refresh(expectedContext: expectedContext)
+    }
+
+    func prepareInsightDraft(_ card: InsightCard, expectedContext: UUID, runID: String) -> Bool {
+        guard contextID == expectedContext, state?.runId == runID, !busy, pending == nil,
+              let currentCard = state?.feed?.cards.first(where: { $0.id == card.id }) else { return false }
+        let combined = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? currentCard.continuationDraft : draft + "\n\n" + currentCard.continuationDraft
+        guard combined.count <= 20_000 else { return false }
+        draft = combined
+        return true
+    }
+
     @discardableResult
     func chooseProject(_ project: RemoteProject, expectedContext: UUID, runID: String) -> Bool {
         guard contextID == expectedContext, state?.runId == runID, !busy, pending == nil,

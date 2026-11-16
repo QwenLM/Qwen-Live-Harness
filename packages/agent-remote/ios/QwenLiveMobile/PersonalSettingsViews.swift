@@ -4,6 +4,7 @@ struct PersonalSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var assistant: AssistantModel
     let openActivity: (ActivityLink) -> Void
+    var openDraft: (InsightCard) -> Void = { _ in }
     @State private var showComputers = false
     @State private var showPairing = false
     @State private var pairAfterListDismisses = false
@@ -33,8 +34,15 @@ struct PersonalSettingsView: View {
                 NavigationLink { SavedInputsView() } label: {
                     HStack { Label(tr("savedInputs"), systemImage: "tray"); Spacer(); Text("\(assistant.inputs.count)").foregroundStyle(.secondary) }
                 }.accessibilityIdentifier("savedInputs")
-                NavigationLink { PersonalFeedView(openActivity: openActivity, favoritesOnly: true) } label: {
+                NavigationLink { PersonalFeedView(openActivity: openActivity, favoritesOnly: true, openDraft: openDraft) } label: {
                     Label(tr("favorites"), systemImage: "bookmark")
+                }
+                NavigationLink { InsightSourcesView() } label: { Label(tr("insightSources"), systemImage: "line.3.horizontal.decrease") }
+                NavigationLink { ActivityArchiveView(openActivity: openActivity) } label: {
+                    Label(tr("activityArchive"), systemImage: "archivebox")
+                }.accessibilityIdentifier("activityArchive")
+                NavigationLink { ActivityArchiveView(openActivity: openActivity, favoritesOnly: true) } label: {
+                    Label(tr("taskFavorites"), systemImage: "bookmark.square")
                 }
                 Button { showComputers = true } label: {
                     HStack {

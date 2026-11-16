@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct PersonalFeedView: View {
+struct ActivityArchiveView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var assistant: AssistantModel
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -35,7 +35,7 @@ struct PersonalFeedView: View {
             }
         }
         .background(PersonalStyle.background)
-        .navigationTitle(tr(favoritesOnly ? "favorites" : "feed")).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(tr(favoritesOnly ? "taskFavorites" : "activityArchive")).navigationBarTitleDisplayMode(.inline)
         .refreshable { await model.refresh() }
         .sheet(item: $selected, onDismiss: {
             if let link = pendingLink { pendingLink = nil; openActivity(link) }

@@ -41,9 +41,9 @@ struct MainView: View {
             WorkbenchView(showWorkbench: { destination = .workbench },
                           requestedRoute: $requestedRoute, requestedPairingURL: $requestedPairingURL)
                 .tabItem { Label(tr("workbench"), systemImage: "laptopcomputer") }.tag(Destination.workbench)
-            NavigationStack { PersonalFeedView(openActivity: openActivity) }
+            NavigationStack { PersonalFeedView(openActivity: openActivity, openDraft: openInsightDraft) }
                 .tabItem { Label(tr("feed"), systemImage: "square.grid.2x2") }.tag(Destination.feed)
-            NavigationStack { PersonalSettingsView(openActivity: openActivity) }
+            NavigationStack { PersonalSettingsView(openActivity: openActivity, openDraft: openInsightDraft) }
                 .tabItem { Label(tr("me"), systemImage: "person.crop.circle") }.tag(Destination.settings)
         }
         .alert(tr("conversationUnavailable"), isPresented: $unavailable) {
@@ -61,6 +61,13 @@ struct MainView: View {
         }
         destination = .workbench
         requestedRoute = route
+    }
+
+    private func openInsightDraft(_ card: InsightCard) {
+        guard let state = model.state, model.prepareInsightDraft(card, expectedContext: model.contextID, runID: state.runId) else {
+            unavailable = true; return
+        }
+        destination = .workbench
     }
 }
 

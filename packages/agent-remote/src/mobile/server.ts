@@ -8,6 +8,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type ServerOptions, type Server } from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { MobileError, MobileTasks } from './tasks.js';
+import type { PersonalFeed } from './personal-feed.js';
 
 function equal(a: string, b: string): boolean {
   const left = Buffer.from(a),
@@ -48,6 +49,7 @@ export class MobileServer {
   private readonly pairingLifetimeMs: number;
   private paired = false;
   private stopping = false;
+  private readonly feed?: PersonalFeed;
 
   constructor(
     private readonly tasks: MobileTasks,
@@ -57,8 +59,10 @@ export class MobileServer {
       saveToken?: (token: string) => void;
       pairingLifetimeMs?: number;
       onTransportEvent?: (code: string) => void;
+      feed?: PersonalFeed;
     } = {},
   ) {
+    this.feed = options.feed;
     // Test fixtures may span a cold Xcode build; the CLI uses fifteen minutes.
     this.pairingLifetimeMs = options.pairingLifetimeMs ?? 15 * 60_000;
     this.pairingDeadline = Date.now() + this.pairingLifetimeMs;
@@ -140,12 +144,43 @@ export class MobileServer {
     )
       throw new MobileError(401, 'unauthorized');
     if (req.method === 'GET' && req.url === '/v1/state') {
-      this.reply(res, 200, this.tasks.snapshot());
+      const state = this.tasks.snapshot();
+      this.reply(res, 200, {
+        ...state,
+        ...(this.feed
+          ? {
+              capabilities: { ...state.capabilities, personalFeed: true },
+              feed: this.feed.snapshot(),
+            }
+          : {}),
+      });
       return;
     }
     // Mutations are bound to the Mac process that the phone actually observed.
     if (req.headers['x-live-run-id'] !== this.tasks.runId)
       throw new MobileError(409, 'server_restarted');
+    if (
+      req.method === 'POST' &&
+      [
+        '/v1/feed/preferences',
+        '/v1/feed/refresh',
+        '/v1/feed/dismiss',
+        '/v1/feed/clear',
+      ].includes(req.url ?? '')
+    ) {
+      if (!this.feed) throw new MobileError(404, 'feed_unavailable');
+      const input = await body(req);
+      if (req.url === '/v1/feed/preferences') this.feed.configure(input);
+      if (req.url === '/v1/feed/dismiss') {
+        if (typeof input['id'] !== 'string')
+          throw new MobileError(400, 'feed_card_unavailable');
+        this.feed.dismiss(input['id']);
+      }
+      if (req.url === '/v1/feed/clear') this.feed.clear();
+      else if (req.url !== '/v1/feed/dismiss') void this.feed.refresh();
+      this.reply(res, 202, { runId: this.tasks.runId });
+      return;
+    }
     if (
       req.method === 'POST' &&
       ['/v1/directories/list', '/v1/directories/select'].includes(req.url ?? '')
@@ -273,7 +308,11 @@ export class MobileServer {
   async close(): Promise<void> {
     this.stopping = true;
     try {
-      await this.tasks.close();
+      try {
+        await this.feed?.close();
+      } finally {
+        await this.tasks.close();
+      }
     } finally {
       this.server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>

@@ -147,6 +147,64 @@ new AgentSideConnection(
 
       if (
         text.startsWith(
+          'Create personal insight cards from the quoted conversation evidence below.',
+        )
+      ) {
+        const input = JSON.parse(text.split('\n').at(-1));
+        const chinese = input.language === 'zh-CN';
+        const evidence = input.contexts.slice(0, 2).map((context) => {
+          const message = context.messages.find(
+            (message) => message.role === 'user',
+          );
+          return {
+            contextId: context.id,
+            messageId: message.id,
+            quote: message.text.slice(0, 160),
+          };
+        });
+        const card = {
+          kind: evidence.length > 1 ? 'connection' : 'next_step',
+          topic: chinese ? 'Agent 记忆' : 'Agent memory',
+          title: chinese
+            ? '让记忆知道，一件事进行到了哪一步'
+            : 'Give a memory a sense of progress',
+          summary: chinese
+            ? '最近的讨论里，有一条值得继续想的线索：记住决定之后，还需要知道它后来有没有改变。'
+            : 'A thread worth following: after remembering a decision, an assistant needs to know whether it has changed.',
+          why: chinese
+            ? '你在不同会话中谈到了记忆和决定的更新。这张卡片提出一个可以验证的小实验。'
+            : 'Your conversations discuss memory and changing decisions. This card suggests a small experiment to test.',
+          sections: [
+            {
+              label: chinese ? '记住当时的决定' : 'Keep the decision',
+              text: chinese
+                ? '保留提出问题的上下文，让后续对话知道一个选择是如何形成的。'
+                : 'Keep the context that led to a choice, so the next conversation can pick up the thread.',
+            },
+            {
+              label: chinese ? '跟上后来的变化' : 'Follow the change',
+              text: chinese
+                ? '把后续的修改、否定和完成状态连回原来的决定，试着减少过时建议。'
+                : 'Link corrections, reversals and completion back to the original decision to reduce stale suggestions.',
+            },
+          ],
+          evidence,
+          followUp: chinese
+            ? '怎样用一个小实验，验证 Agent 能跟上用户决定的变化？'
+            : 'How could a small experiment test whether an agent follows changing decisions?',
+        };
+        await connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: JSON.stringify({ cards: [card] }) },
+          },
+        });
+        return { stopReason: 'end_turn' };
+      }
+
+      if (
+        text.startsWith(
           'Create an activity-feed cover for an already completed task.',
         )
       ) {
