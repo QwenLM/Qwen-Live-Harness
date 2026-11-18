@@ -195,8 +195,8 @@ private struct ConversationRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(conversation.first.requestTitle).font(.body.weight(.medium)).lineLimit(2)
-            HStack(alignment: .firstTextBaseline) {
-                Text(model.state?.backends.first(where: { $0.id == conversation.first.backend })?.name ?? conversation.first.backend)
+            HStack {
+                WorkbenchAgentLabel(backendID: conversation.first.backend, name: model.state?.backends.first(where: { $0.id == conversation.first.backend })?.name ?? conversation.first.backend)
                     .foregroundStyle(.secondary)
                 StatusBadge(status: conversation.latest.status)
                 Spacer()

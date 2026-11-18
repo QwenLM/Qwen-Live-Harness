@@ -36,7 +36,12 @@ final class MobileFlowTests: XCTestCase {
         launchWorkbench(app); app.buttons["connectMac"].tap()
         XCTAssertTrue(app.buttons["runSettings"].waitForExistence(timeout: 20))
         app.buttons["runSettings"].tap()
-        app.segmentedControls.buttons["Codex"].tap()
+        let codex = app.buttons["backend-option-codex"]
+        XCTAssertEqual(codex.label, "Codex")
+        XCTAssertEqual(app.buttons["backend-option-qwen"].label, "Qwen Code")
+        codex.tap()
+        XCTAssertTrue(codex.isSelected)
+        capture(app, name: "Selecting a branded Agent in Run settings")
         app.buttons["closeRunSettings"].tap()
         let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
         input.tap(); input.typeText("artifacts: final outputs")
@@ -167,10 +172,11 @@ final class MobileFlowTests: XCTestCase {
         app.buttons["workingFolderButton"].tap()
         XCTAssertTrue(app.buttons["useWorkingFolder"].waitForExistence(timeout: 10))
         app.buttons["useWorkingFolder"].tap()
-        XCTAssertTrue(app.segmentedControls.buttons[agent].waitForExistence(timeout: 10))
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: app.segmentedControls.buttons[agent])
+        let option = app.buttons["backend-option-" + (agent == "Codex" ? "codex" : "qwen")]
+        XCTAssertTrue(option.waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: option)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
-        app.segmentedControls.buttons[agent].tap()
+        option.tap()
         app.buttons["closeRunSettings"].tap()
         if text != "permission: first computer" { input.tap(); input.typeText(text) }
         app.buttons["sendTask"].tap()
@@ -216,7 +222,7 @@ final class MobileFlowTests: XCTestCase {
         for (agent, decision, outcome) in [("Qwen Code", "allowPermission", "completed"), ("Codex", "denyPermission", "cancelled")] {
             if agent == "Codex" { app.buttons["newConversation-ui-fixture"].tap() }
             app.buttons["runSettings"].tap()
-            app.segmentedControls.buttons[agent].tap()
+            app.buttons["backend-option-" + (agent == "Codex" ? "codex" : "qwen")].tap()
             app.buttons["closeRunSettings"].tap()
             let input = app.descendants(matching: .any).matching(identifier: "taskInput").firstMatch
             input.tap(); input.typeText("permission: \(agent) mobile approval smoke")

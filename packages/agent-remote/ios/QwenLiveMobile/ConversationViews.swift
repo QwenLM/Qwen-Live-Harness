@@ -87,7 +87,7 @@ struct ConversationDetail: View {
                 WorkingFolderButton(project: state.projects.first { $0.id == conversation.first.project }, onSelected: { project in
                     if project.id != conversation.first.project { editing = false; openDraft() }
                 })
-                Label(agent, systemImage: "terminal").font(.caption).foregroundStyle(.secondary)
+                WorkbenchAgentLabel(backendID: conversation.first.backend, name: agent).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: true, vertical: false)
             }
             Text(tr("conversationFolderHint")).font(.caption2).foregroundStyle(.secondary)
@@ -161,7 +161,7 @@ private struct ConversationTurn: View {
                 }.padding(12).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
             }
             HStack {
-                Label(model.state?.backends.first(where: { $0.id == task.backend })?.name ?? task.backend, systemImage: "terminal")
+                WorkbenchAgentLabel(backendID: task.backend, name: model.state?.backends.first(where: { $0.id == task.backend })?.name ?? task.backend)
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 StatusBadge(status: task.status)

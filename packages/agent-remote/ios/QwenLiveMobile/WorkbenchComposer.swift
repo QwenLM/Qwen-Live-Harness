@@ -26,9 +26,20 @@ struct WorkbenchComposer: View {
                 Form {
                     Section { WorkingFolderButton(project: model.selectedProject) }
                     Section(tr("agent")) {
-                        Picker(tr("agent"), selection: $model.backend) {
-                            ForEach(state.backends) { Text($0.name).tag($0.id) }
-                        }.pickerStyle(.segmented).accessibilityIdentifier("backendPicker")
+                        ForEach(state.backends) { backend in
+                            let selected = model.backend == backend.id
+                            Button { model.backend = backend.id } label: {
+                                HStack {
+                                    WorkbenchAgentLabel(backendID: backend.id, name: backend.name)
+                                    Spacer()
+                                    if selected {
+                                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                                    }
+                                }.contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityIdentifier("backend-option-\(backend.id)")
+                        }
                     }
                 }
                 .navigationTitle(tr("runSettings")).navigationBarTitleDisplayMode(.inline)
@@ -60,7 +71,7 @@ struct WorkbenchComposer: View {
                     Image(systemName: "folder")
                     Text(model.selectedProject?.name ?? tr("chooseWorkingFolder")).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Text(backend?.name ?? tr("agent")).lineLimit(1)
+                    WorkbenchAgentLabel(backendID: model.backend, name: backend?.name ?? tr("agent")).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption)
                 }.font(.subheadline).foregroundStyle(.secondary)
                     .frame(minHeight: 44).contentShape(Rectangle())
