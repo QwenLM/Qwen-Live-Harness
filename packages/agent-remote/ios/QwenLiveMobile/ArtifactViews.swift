@@ -122,41 +122,9 @@ struct MarkdownArtifactPreview: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(MarkdownPreviewBlock.parse(text).enumerated()), id: \.offset) { _, block in
-                    if block.code {
-                        ScrollView(.horizontal) { Text(block.text).font(.system(.footnote, design: .monospaced)).textSelection(.enabled).padding(12) }
-                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-                    } else {
-                        Text((try? AttributedString(markdown: block.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(block.text))
-                            .font(block.heading == 1 ? .title : block.heading == 2 ? .title2 : block.heading > 0 ? .headline : .body)
-                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                    }
-                }
+                MarkdownContent(text: text)
             }.padding()
-        }.environment(\.openURL, OpenURLAction { _ in .discarded })
-    }
-}
-
-struct MarkdownPreviewBlock {
-    var text: String
-    var heading = 0
-    var code = false
-    static func parse(_ text: String) -> [Self] {
-        var blocks: [Self] = [], lines: [String] = [], code = false
-        func flush() { if !lines.isEmpty { blocks.append(Self(text: lines.joined(separator: "\n"), code: code)); lines = [] } }
-        for line in text.components(separatedBy: .newlines) {
-            if line.hasPrefix("```") || line.hasPrefix("~~~") { flush(); code.toggle() }
-            else if code { lines.append(line) }
-            else if line.trimmingCharacters(in: .whitespaces).isEmpty { flush() }
-            else {
-                let level = line.prefix(while: { $0 == "#" }).count
-                if (1...6).contains(level), line.dropFirst(level).first == " " {
-                    flush(); blocks.append(Self(text: String(line.dropFirst(level + 1)), heading: level))
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") { flush(); blocks.append(Self(text: "• " + line.dropFirst(2))) }
-                else { lines.append(line) }
-            }
         }
-        flush(); return blocks
     }
 }
 

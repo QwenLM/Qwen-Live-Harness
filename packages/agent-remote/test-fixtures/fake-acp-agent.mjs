@@ -265,6 +265,16 @@ new AgentSideConnection(
       }
 
       if (text.includes('artifacts:')) {
+        await connection.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: '\n\n## Run summary\n\n**Build passed** with `swift test`.\n\n1. Review the report\n\n| Result | Count |\n| --- | ---: |\n| Passed | 2 |\n\n```swift\nlet checked = true\n```',
+            },
+          },
+        });
         // Display fixtures only: no filesystem access, account or model call.
         for (const content of [
           {

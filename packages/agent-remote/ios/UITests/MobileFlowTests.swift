@@ -42,6 +42,12 @@ final class MobileFlowTests: XCTestCase {
         input.tap(); input.typeText("artifacts: final outputs")
         app.buttons["sendTask"].tap()
         XCTAssertTrue(app.buttons["artifact-report.md"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Run summary"].exists)
+        XCTAssertTrue(app.staticTexts["Build passed with swift test."].exists)
+        XCTAssertTrue(app.staticTexts["Review the report"].exists)
+        XCTAssertTrue(app.staticTexts["Count"].exists)
+        XCTAssertTrue(app.staticTexts["let checked = true"].exists)
+        XCTAssertFalse(app.staticTexts["## Run summary"].exists)
         capture(app, name: "Final artifacts in the conversation")
         app.buttons["artifact-report.md"].tap()
         XCTAssertTrue(app.staticTexts["Preview report"].waitForExistence(timeout: 15))
@@ -184,7 +190,7 @@ final class MobileFlowTests: XCTestCase {
             XCTAssertLessThanOrEqual(send.frame.maxY, keyboard.frame.minY + 1)
             capture(app, name: "Multiline composer above the keyboard")
             send.tap()
-            let output = app.staticTexts.matching(NSPredicate(format: "identifier == 'taskOutput' AND label CONTAINS %@", "followup retained context")).firstMatch
+            let output = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "echo: followup retained context")).firstMatch
             XCTAssertTrue(output.waitForExistence(timeout: 20))
             capture(app, name: "Native conversation with two turns")
         }
@@ -227,7 +233,7 @@ final class MobileFlowTests: XCTestCase {
             XCTAssertTrue(app.buttons[decision].isHittable)
             app.buttons[decision].tap()
             XCTAssertTrue(app.staticTexts["status-\(outcome)"].waitForExistence(timeout: 20))
-            if outcome == "completed" { XCTAssertTrue(app.staticTexts["taskOutput"].exists) }
+            if outcome == "completed" { XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "taskOutput").firstMatch.exists) }
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
     }

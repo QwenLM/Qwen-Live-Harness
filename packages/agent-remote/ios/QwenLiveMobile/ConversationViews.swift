@@ -167,7 +167,11 @@ private struct ConversationTurn: View {
                 StatusBadge(status: task.status)
             }
             if !task.output.isEmpty {
-                Text(task.output).font(.body).textSelection(.enabled).accessibilityIdentifier("taskOutput")
+                VStack(alignment: .leading, spacing: 10) {
+                    MarkdownContent(text: task.output)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("taskOutput")
                 if task.outputTruncated { Text(tr("outputTruncated")).font(.caption).foregroundStyle(.secondary) }
             }
             if task.status == "failed", task.events.last?.text == "image_input_unsupported" {

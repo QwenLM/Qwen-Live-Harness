@@ -49,10 +49,4 @@ final class ArtifactTests: XCTestCase {
             XCTAssertEqual(task.elapsed(at: Date(timeIntervalSince1970: 0)), 0)
         }
     }
-    func testMarkdownPreviewPreservesHeadingsListsInlineFormattingAndCode() {
-        let blocks = MarkdownPreviewBlock.parse("# Report\n\n**Done**\n\n- First\n- Second\n\n```swift\nlet result = 1\n# code, not a heading\n```")
-        XCTAssertEqual(blocks.map(\.text), ["Report", "**Done**", "• First", "• Second", "let result = 1\n# code, not a heading"])
-        XCTAssertEqual(blocks.first?.heading, 1)
-        XCTAssertEqual(blocks.last?.code, true)
-    }
 }

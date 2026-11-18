@@ -34,7 +34,7 @@ Workbench and conversation input bars use native Liquid Glass on iOS 26 and late
 
 Open **Working folder** from **Run settings** above the Workbench input, or from an existing conversation, to browse shared roots, open subfolders, go to the parent folder, search the loaded folder names and confirm **Use this folder**. Selections are remembered separately for each computer and become the actual working directory of a new agent session. In an existing conversation, choosing a different folder returns to the Workbench input to prepare a new task; the original session and its draft keep their folder. Only directories shared through the computer app or `--project` can be browsed; symlinks cannot leave those roots. Older gateways still allow selecting their configured folders. After a gateway restart, a previously selected subfolder requires explicit reselection before sending, and drafts remain intact.
 
-Finished turns show a fixed run duration. Open **Artifacts** below a reply to preview images, Markdown or static HTML. Preview support requires the updated gateway and app; see the [gateway guide](../README.md#ios-app) for supported files and limits.
+Workbench replies display Markdown headings, lists, quotes, tables and code directly in the conversation. The app does not load external images or open links in Markdown. Finished turns show a fixed run duration. Open **Artifacts** below a reply to preview images, Markdown or static HTML. Artifact previews require the updated gateway and app; see the [gateway guide](../README.md#ios-app) for supported files and limits.
 
 ### Omni Live with your own key
 
